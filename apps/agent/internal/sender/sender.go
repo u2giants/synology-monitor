@@ -184,10 +184,9 @@ func (s *Sender) flushTable(table string) {
 		return
 	}
 
-	// Send batch to Supabase REST API
-	body, err := json.Marshal(payloads)
+	body, err := normalizeBatchPayloads(payloads)
 	if err != nil {
-		log.Printf("[sender] error marshaling batch for %s: %v", table, err)
+		log.Printf("[sender] error normalizing batch for %s: %v", table, err)
 		return
 	}
 
@@ -251,6 +250,37 @@ func (s *Sender) enforceWALLimit() {
 
 	// Also clean up entries with too many failed attempts
 	s.db.Exec("DELETE FROM wal_entries WHERE attempts >= 5")
+}
+
+func normalizeBatchPayloads(payloads []json.RawMessage) ([]byte, error) {
+	normalized := make([]map[string]interface{}, 0, len(payloads))
+	keySet := make(map[string]struct{})
+
+	for _, payload := range payloads {
+		var row map[string]interface{}
+		if err := json.Unmarshal(payload, &row); err != nil {
+			return nil, fmt.Errorf("unmarshal payload: %w", err)
+		}
+		for key := range row {
+			keySet[key] = struct{}{}
+		}
+		normalized = append(normalized, row)
+	}
+
+	for _, row := range normalized {
+		for key := range keySet {
+			if _, ok := row[key]; !ok {
+				row[key] = nil
+			}
+		}
+	}
+
+	body, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("marshal normalized payloads: %w", err)
+	}
+
+	return body, nil
 }
 
 // SendHeartbeat updates the NAS unit's last_seen timestamp
