@@ -1,0 +1,36 @@
+# Docker Compose for Synology Monitor Agent
+# Deploy this on each Synology NAS unit
+#
+# Usage:
+#   1. Copy this file and .env.example to the NAS
+#   2. Create .env from .env.example and fill in values
+#   3. docker-compose up -d
+
+services:
+  synology-monitor-agent:
+    build:
+      context: ./apps/agent
+      dockerfile: Dockerfile
+    image: synology-monitor-agent:latest
+    container_name: synology-monitor-agent
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /var/log:/host/log:ro
+      - /volume1:/host/volume1:ro
+      - agent-data:/app/data
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  agent-data:

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.next/
+dist/
+out/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Turbo
+.turbo/
+
+# Go
+apps/agent/synology-monitor-agent
+apps/agent/data/
+
+# Supabase
+supabase/.temp/
+
+# Docker
+apps/agent/data/
+.claude/
+package-lock.json
+pnpm-lock.yaml
