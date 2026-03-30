@@ -11,7 +11,6 @@ services:
     volumes:
       - /var/log:/host/log:ro
       - /volume1:/host/volume1:ro
-      - /volume2:/host/volume2:ro
       - agent-data:/app/data
     healthcheck:
       test: ["CMD", "test", "-f", "/app/data/wal.db"]

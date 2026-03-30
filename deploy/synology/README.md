@@ -50,8 +50,8 @@ docker compose -f docker-compose.agent.yml up -d
   that are usually self-signed.
 - The example env files now use fixed UUIDs for `NAS_ID`. Keep each NAS on its
   own UUID consistently.
-- The compose file is only a starting point. If a NAS uses only `/volume1`,
-  remove the `/volume2` bind mount and keep `WATCH_PATHS` and `CHECKSUM_PATHS`
-  aligned with the actual mounted paths.
+- The default compose file mounts only `/volume1`. If a NAS has additional data
+  volumes, add the extra bind mounts explicitly and keep `WATCH_PATHS` and
+  `CHECKSUM_PATHS` aligned with the actual mounted paths.
 - The healthcheck only verifies that the agent created its WAL database. It is a
   lightweight process check, not a full application-level health probe.
