@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ type LogWatcher struct {
 	logDir   string
 	interval time.Duration
 	offsets  map[string]int64
+	logFiles []LogFile
 }
 
 // LogFile defines a DSM log file to watch
@@ -36,13 +38,19 @@ var defaultLogFiles = []LogFile{
 	{Path: "synolog/synopkg.log", Source: "package"},
 }
 
-func New(s *sender.Sender, nasID, logDir string, interval time.Duration) *LogWatcher {
+func New(s *sender.Sender, nasID, logDir string, watchPaths, extraLogFiles []string, interval time.Duration) *LogWatcher {
+	logFiles := make([]LogFile, 0, len(defaultLogFiles)+len(watchPaths)+len(extraLogFiles))
+	logFiles = append(logFiles, defaultLogFiles...)
+	logFiles = append(logFiles, inferDriveLogFiles(watchPaths)...)
+	logFiles = append(logFiles, parseExtraLogFiles(extraLogFiles)...)
+
 	return &LogWatcher{
 		sender:   s,
 		nasID:    nasID,
 		logDir:   logDir,
 		interval: interval,
 		offsets:  make(map[string]int64),
+		logFiles: dedupeLogFiles(logFiles),
 	}
 }
 
@@ -53,10 +61,11 @@ func (w *LogWatcher) Run(stop <-chan struct{}) {
 	log.Printf("[logwatcher] started (interval: %s, dir: %s)", w.interval, w.logDir)
 
 	// Initialize offsets to end of file (don't replay history on first start)
-	for _, lf := range defaultLogFiles {
-		fullPath := filepath.Join(w.logDir, lf.Path)
-		if info, err := os.Stat(fullPath); err == nil {
-			w.offsets[fullPath] = info.Size()
+	for _, lf := range w.logFiles {
+		for _, fullPath := range w.expandLogFile(lf) {
+			if info, err := os.Stat(fullPath); err == nil {
+				w.offsets[fullPath] = info.Size()
+			}
 		}
 	}
 
@@ -72,10 +81,28 @@ func (w *LogWatcher) Run(stop <-chan struct{}) {
 }
 
 func (w *LogWatcher) scan() {
-	for _, lf := range defaultLogFiles {
-		fullPath := filepath.Join(w.logDir, lf.Path)
-		w.tailFile(fullPath, lf.Source)
+	for _, lf := range w.logFiles {
+		for _, fullPath := range w.expandLogFile(lf) {
+			w.tailFile(fullPath, lf.Source)
+		}
 	}
+}
+
+func (w *LogWatcher) expandLogFile(lf LogFile) []string {
+	path := lf.Path
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(w.logDir, path)
+	}
+
+	if strings.ContainsAny(path, "*?[") {
+		matches, err := filepath.Glob(path)
+		if err != nil || len(matches) == 0 {
+			return nil
+		}
+		return matches
+	}
+
+	return []string{path}
 }
 
 func (w *LogWatcher) tailFile(path, source string) {
@@ -188,6 +215,17 @@ func parseLine(line, source string) parsedEntry {
 		entry.metadata = parseConnectionLog(line)
 	}
 
+	if strings.HasPrefix(source, "drive") {
+		entry.metadata = mergeMetadata(entry.metadata, parseDriveLog(line))
+
+		if strings.Contains(lower, "conflict") {
+			entry.severity = "warning"
+		}
+		if strings.Contains(lower, "error") || strings.Contains(lower, "fail") {
+			entry.severity = "error"
+		}
+	}
+
 	return entry
 }
 
@@ -235,6 +273,129 @@ func parseConnectionLog(line string) map[string]interface{} {
 	}
 
 	return meta
+}
+
+var (
+	quotedPathPattern = regexp.MustCompile(`"([^"\n]*?/[^"\n]+)"`)
+	plainPathPattern  = regexp.MustCompile(`(/[^,\s]+)`)
+	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([A-Za-z0-9._@-]+)`)
+	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+([A-Za-z0-9._@-]+)`)
+)
+
+func parseDriveLog(line string) map[string]interface{} {
+	meta := make(map[string]interface{})
+	lower := strings.ToLower(line)
+
+	if user := firstCapture(driveUserPattern, line); user != "" {
+		meta["user"] = user
+	} else if user := firstCapture(driveByPattern, line); user != "" {
+		meta["user"] = user
+	}
+
+	if path := extractPath(line); path != "" {
+		meta["path"] = path
+	}
+
+	switch {
+	case strings.Contains(lower, "sharesync"):
+		meta["component"] = "sharesync"
+	case strings.Contains(lower, "admin"):
+		meta["component"] = "admin_console"
+	default:
+		meta["component"] = "drive"
+	}
+
+	switch {
+	case strings.Contains(lower, "rename") || strings.Contains(lower, "renamed"):
+		meta["action"] = "rename"
+	case strings.Contains(lower, "move") || strings.Contains(lower, "moved"):
+		meta["action"] = "move"
+	case strings.Contains(lower, "delete") || strings.Contains(lower, "deleted") || strings.Contains(lower, "remove"):
+		meta["action"] = "delete"
+	case strings.Contains(lower, "conflict"):
+		meta["action"] = "sync_conflict"
+	case strings.Contains(lower, "fail") || strings.Contains(lower, "error"):
+		meta["action"] = "sync_failure"
+	}
+
+	return meta
+}
+
+func firstCapture(pattern *regexp.Regexp, line string) string {
+	match := pattern.FindStringSubmatch(line)
+	if len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func extractPath(line string) string {
+	if match := quotedPathPattern.FindStringSubmatch(line); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	if match := plainPathPattern.FindStringSubmatch(line); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func mergeMetadata(base, extra map[string]interface{}) map[string]interface{} {
+	if len(extra) == 0 {
+		return base
+	}
+	if base == nil {
+		base = make(map[string]interface{}, len(extra))
+	}
+	for k, v := range extra {
+		base[k] = v
+	}
+	return base
+}
+
+func inferDriveLogFiles(watchPaths []string) []LogFile {
+	var files []LogFile
+	for _, watchPath := range watchPaths {
+		files = append(files,
+			LogFile{Path: filepath.Join(watchPath, "@synologydrive/log/*.log"), Source: "drive"},
+			LogFile{Path: filepath.Join(watchPath, "@synologydrive/log/syncfolder.log"), Source: "drive_sharesync"},
+		)
+	}
+	return files
+}
+
+func parseExtraLogFiles(specs []string) []LogFile {
+	var files []LogFile
+	for _, spec := range specs {
+		parts := strings.SplitN(spec, "|", 2)
+		path := strings.TrimSpace(parts[0])
+		if path == "" {
+			continue
+		}
+
+		source := "custom"
+		if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
+			source = strings.TrimSpace(parts[1])
+		}
+
+		files = append(files, LogFile{Path: path, Source: source})
+	}
+	return files
+}
+
+func dedupeLogFiles(logFiles []LogFile) []LogFile {
+	seen := make(map[string]struct{}, len(logFiles))
+	result := make([]LogFile, 0, len(logFiles))
+
+	for _, lf := range logFiles {
+		key := lf.Source + "\x00" + lf.Path
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, lf)
+	}
+
+	return result
 }
 
 func looksLikeIP(s string) bool {

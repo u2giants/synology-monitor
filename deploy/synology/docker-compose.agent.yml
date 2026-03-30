@@ -10,6 +10,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - /var/log:/host/log:ro
+      - /var/packages:/host/packages:ro
       - /volume1:/host/volume1:ro
       - agent-data:/app/data
     healthcheck:

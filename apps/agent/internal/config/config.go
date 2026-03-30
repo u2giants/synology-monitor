@@ -34,6 +34,7 @@ type Config struct {
 	ChecksumPaths  []string
 	MaxInotifyDirs int
 	LogDir         string
+	ExtraLogFiles  []string
 
 	// Data directory (SQLite WAL, checksums)
 	DataDir string
@@ -67,6 +68,7 @@ func Load() (*Config, error) {
 		ChecksumPaths:  getEnvList("CHECKSUM_PATHS", []string{"/host/volume1"}),
 		MaxInotifyDirs: getEnvInt("MAX_INOTIFY_DIRS", 5000),
 		LogDir:         getEnv("LOG_DIR", "/host/log"),
+		ExtraLogFiles:  getEnvList("EXTRA_LOG_FILES", nil),
 
 		DataDir: getEnv("DATA_DIR", "/app/data"),
 

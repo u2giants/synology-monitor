@@ -59,5 +59,14 @@ docker compose -f docker-compose.agent.yml up -d
 - The default compose file mounts only `/volume1`. If a NAS has additional data
   volumes, add the extra bind mounts explicitly and keep `WATCH_PATHS` and
   `CHECKSUM_PATHS` aligned with the actual mounted paths.
+- The default compose file also mounts `/var/packages` read-only so package
+  logs can be added through `EXTRA_LOG_FILES` without another image change.
+- The agent now auto-discovers Synology Drive logs under
+  `WATCH_PATHS/@synologydrive/log/*.log`, including `syncfolder.log` when it is
+  present.
+- If Drive Admin Console or package-specific logs live outside the watched
+  volume, set `EXTRA_LOG_FILES` using `path|source` entries separated by commas.
+  Example:
+  `/host/packages/SynologyDrive/target/var/custom.log|drive_admin`
 - The healthcheck only verifies that the agent created its WAL database. It is a
   lightweight process check, not a full application-level health probe.

@@ -78,7 +78,7 @@ func main() {
 	go dockerCollector.Run(stop)
 
 	// Start log watcher
-	logW := logwatcher.New(s, cfg.NasID, cfg.LogDir, cfg.LogInterval)
+	logW := logwatcher.New(s, cfg.NasID, cfg.LogDir, cfg.WatchPaths, cfg.ExtraLogFiles, cfg.LogInterval)
 	go logW.Run(stop)
 
 	// Start security watcher
