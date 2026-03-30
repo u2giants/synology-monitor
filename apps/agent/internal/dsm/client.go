@@ -242,6 +242,44 @@ type DiskInfo struct {
 	SmartStatus string `json:"smart_status"`
 }
 
+func (d *DiskInfo) UnmarshalJSON(data []byte) error {
+	type diskInfoAlias struct {
+		ID          string          `json:"id"`
+		Name        string          `json:"name"`
+		Device      string          `json:"device"`
+		Model       string          `json:"model"`
+		Serial      string          `json:"serial"`
+		SizeTotal   json.RawMessage `json:"size_total"`
+		Temp        json.RawMessage `json:"temp"`
+		SmartStatus string          `json:"smart_status"`
+	}
+
+	var aux diskInfoAlias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	sizeTotal, err := parseInt64Value(aux.SizeTotal)
+	if err != nil {
+		return fmt.Errorf("parsing disk size_total: %w", err)
+	}
+
+	temp, err := parseIntValue(aux.Temp)
+	if err != nil {
+		return fmt.Errorf("parsing disk temp: %w", err)
+	}
+
+	d.ID = aux.ID
+	d.Name = aux.Name
+	d.Device = aux.Device
+	d.Model = aux.Model
+	d.Serial = aux.Serial
+	d.SizeTotal = sizeTotal
+	d.Temp = temp
+	d.SmartStatus = aux.SmartStatus
+	return nil
+}
+
 func (c *Client) GetStorageInfo() (*StorageInfo, error) {
 	data, err := c.request("SYNO.Storage.CGI.Storage", 1, "load_info", nil)
 	if err != nil {
@@ -273,6 +311,61 @@ type DockerContainer struct {
 	MemLimit  int64
 }
 
+func (d *DockerContainer) UnmarshalJSON(data []byte) error {
+	type dockerContainerAlias struct {
+		ID       string          `json:"id"`
+		Name     string          `json:"name"`
+		Image    string          `json:"image"`
+		Status   string          `json:"status"`
+		State    json.RawMessage `json:"state"`
+		UpTime   json.RawMessage `json:"up_time"`
+		CPUUsage json.RawMessage `json:"cpu_usage"`
+		MemUsage json.RawMessage `json:"memory"`
+		MemLimit json.RawMessage `json:"memory_limit"`
+	}
+
+	var aux dockerContainerAlias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	state, err := parseContainerState(aux.State)
+	if err != nil {
+		return fmt.Errorf("parsing container state: %w", err)
+	}
+
+	upTime, err := parseInt64Value(aux.UpTime)
+	if err != nil {
+		return fmt.Errorf("parsing container uptime: %w", err)
+	}
+
+	cpuUsage, err := parseFloat64Value(aux.CPUUsage)
+	if err != nil {
+		return fmt.Errorf("parsing container cpu_usage: %w", err)
+	}
+
+	memUsage, err := parseInt64Value(aux.MemUsage)
+	if err != nil {
+		return fmt.Errorf("parsing container memory: %w", err)
+	}
+
+	memLimit, err := parseInt64Value(aux.MemLimit)
+	if err != nil {
+		return fmt.Errorf("parsing container memory_limit: %w", err)
+	}
+
+	d.ID = aux.ID
+	d.Name = aux.Name
+	d.Image = aux.Image
+	d.Status = firstNonEmpty(aux.Status, state)
+	d.State = state
+	d.UpTime = upTime
+	d.CPUUsage = cpuUsage
+	d.MemUsage = memUsage
+	d.MemLimit = memLimit
+	return nil
+}
+
 func (c *Client) GetDockerContainers() ([]DockerContainer, error) {
 	data, err := c.request("SYNO.Docker.Container", 1, "list", url.Values{
 		"limit":  {"-1"},
@@ -287,6 +380,101 @@ func (c *Client) GetDockerContainers() ([]DockerContainer, error) {
 		return nil, fmt.Errorf("parsing docker containers: %w", err)
 	}
 	return list.Containers, nil
+}
+
+func parseIntValue(raw json.RawMessage) (int, error) {
+	value, err := parseInt64Value(raw)
+	if err != nil {
+		return 0, err
+	}
+	return int(value), nil
+}
+
+func parseInt64Value(raw json.RawMessage) (int64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+
+	var asInt int64
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return asInt, nil
+	}
+
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return int64(asFloat), nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		var parsed int64
+		_, scanErr := fmt.Sscanf(asString, "%d", &parsed)
+		if scanErr == nil {
+			return parsed, nil
+		}
+		return 0, nil
+	}
+
+	return 0, nil
+}
+
+func parseFloat64Value(raw json.RawMessage) (float64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+
+	var asFloat float64
+	if err := json.Unmarshal(raw, &asFloat); err == nil {
+		return asFloat, nil
+	}
+
+	var asInt int64
+	if err := json.Unmarshal(raw, &asInt); err == nil {
+		return float64(asInt), nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		var parsed float64
+		_, scanErr := fmt.Sscanf(asString, "%f", &parsed)
+		if scanErr == nil {
+			return parsed, nil
+		}
+		return 0, nil
+	}
+
+	return 0, nil
+}
+
+func parseContainerState(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		return asString, nil
+	}
+
+	var asObject struct {
+		Status string `json:"status"`
+		State  string `json:"state"`
+		Value  string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &asObject); err == nil {
+		return firstNonEmpty(asObject.Status, asObject.State, asObject.Value), nil
+	}
+
+	return "", nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // === System Info ===

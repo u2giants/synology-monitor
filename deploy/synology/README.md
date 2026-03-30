@@ -40,6 +40,7 @@ docker compose -f docker-compose.agent.yml up -d
 - `DSM_USERNAME`
 - `DSM_PASSWORD`
 - `SUPABASE_SERVICE_KEY`
+- `NAS_ID` must be a UUID because it maps directly to `smon_nas_units.id`
 
 ## Notes
 
@@ -47,8 +48,10 @@ docker compose -f docker-compose.agent.yml up -d
   DSM API on the same NAS.
 - `DSM_INSECURE_SKIP_VERIFY=true` is the safe default for local DSM certificates
   that are usually self-signed.
-- The compose file mounts `/volume1` and `/volume2` read-only. If a NAS uses a
-  different volume layout, adjust `WATCH_PATHS`, `CHECKSUM_PATHS`, and the mount
-  list together.
+- The example env files now use fixed UUIDs for `NAS_ID`. Keep each NAS on its
+  own UUID consistently.
+- The compose file is only a starting point. If a NAS uses only `/volume1`,
+  remove the `/volume2` bind mount and keep `WATCH_PATHS` and `CHECKSUM_PATHS`
+  aligned with the actual mounted paths.
 - The healthcheck only verifies that the agent created its WAL database. It is a
   lightweight process check, not a full application-level health probe.

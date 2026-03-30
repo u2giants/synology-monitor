@@ -81,6 +81,9 @@ func Load() (*Config, error) {
 	if cfg.SupabaseURL == "" || cfg.SupabaseServiceKey == "" {
 		return nil, fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_KEY are required")
 	}
+	if !looksLikeUUID(cfg.NasID) {
+		return nil, fmt.Errorf("NAS_ID must be a UUID to match smon_nas_units.id")
+	}
 
 	return cfg, nil
 }
@@ -164,4 +167,31 @@ func trimSpaces(s string) string {
 	}
 
 	return s[start:end]
+}
+
+func looksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !isHexChar(byte(c)) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func isHexChar(c byte) bool {
+	return (c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'f') ||
+		(c >= 'A' && c <= 'F')
 }
