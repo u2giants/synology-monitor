@@ -42,6 +42,12 @@ docker compose -f docker-compose.agent.yml up -d
 - `SUPABASE_SERVICE_KEY`
 - `NAS_ID` must be a UUID because it maps directly to `smon_nas_units.id`
 
+## Credential model
+
+- `DSM_USERNAME` and `DSM_PASSWORD` are only for the agent's local DSM API calls.
+- Synology SSH access is separate operator access and is not used by the container at runtime.
+- It is fine if the DSM account and the SSH account are different users.
+
 ## Notes
 
 - `DSM_URL` defaults to `https://localhost:5001` because the agent talks to the
