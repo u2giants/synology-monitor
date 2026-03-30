@@ -29,7 +29,7 @@ func main() {
 	os.MkdirAll(cfg.DataDir, 0755)
 
 	// Initialize DSM API client
-	dsmClient := dsm.NewClient(cfg.DsmURL, cfg.DsmUsername, cfg.DsmPassword, cfg.DsmHTTPS)
+	dsmClient := dsm.NewClient(cfg.DsmURL, cfg.DsmUsername, cfg.DsmPassword, cfg.DsmInsecureSkipVerify)
 
 	// Login to DSM
 	if err := dsmClient.Login(); err != nil {
@@ -78,7 +78,7 @@ func main() {
 	go dockerCollector.Run(stop)
 
 	// Start log watcher
-	logW := logwatcher.New(s, cfg.NasID, "/host/log", cfg.LogInterval)
+	logW := logwatcher.New(s, cfg.NasID, cfg.LogDir, cfg.LogInterval)
 	go logW.Run(stop)
 
 	// Start security watcher

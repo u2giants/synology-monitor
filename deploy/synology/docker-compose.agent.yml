@@ -1,19 +1,24 @@
-# Legacy local compose kept for development only.
-# For Synology deployment, use deploy/synology/docker-compose.agent.yml
-# with a published image instead of building on the NAS.
-
 services:
   synology-monitor-agent:
     image: ghcr.io/u2giants/synology-monitor-agent:latest
     container_name: synology-monitor-agent
     network_mode: host
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-UTC}
     volumes:
       - /var/log:/host/log:ro
       - /volume1:/host/volume1:ro
+      - /volume2:/host/volume2:ro
       - agent-data:/app/data
-    env_file:
-      - .env
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/data/wal.db"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     logging:
       driver: json-file
       options:

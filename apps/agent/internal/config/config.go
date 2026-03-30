@@ -13,10 +13,10 @@ type Config struct {
 	NasName string
 
 	// DSM API
-	DsmURL      string
-	DsmUsername  string
-	DsmPassword string
-	DsmHTTPS    bool
+	DsmURL                string
+	DsmUsername           string
+	DsmPassword           string
+	DsmInsecureSkipVerify bool
 
 	// Supabase
 	SupabaseURL        string
@@ -33,6 +33,7 @@ type Config struct {
 	WatchPaths     []string
 	ChecksumPaths  []string
 	MaxInotifyDirs int
+	LogDir         string
 
 	// Data directory (SQLite WAL, checksums)
 	DataDir string
@@ -48,10 +49,10 @@ func Load() (*Config, error) {
 		NasID:   getEnv("NAS_ID", "nas-1"),
 		NasName: getEnv("NAS_NAME", "Synology NAS 1"),
 
-		DsmURL:      getEnv("DSM_URL", "http://localhost:5001"),
-		DsmUsername:  getEnv("DSM_USERNAME", ""),
-		DsmPassword:  getEnv("DSM_PASSWORD", ""),
-		DsmHTTPS:    getEnvBool("DSM_HTTPS", false),
+		DsmURL:                getEnv("DSM_URL", "https://localhost:5001"),
+		DsmUsername:           getEnv("DSM_USERNAME", ""),
+		DsmPassword:           getEnv("DSM_PASSWORD", ""),
+		DsmInsecureSkipVerify: getEnvBool("DSM_INSECURE_SKIP_VERIFY", true),
 
 		SupabaseURL:        getEnv("SUPABASE_URL", ""),
 		SupabaseServiceKey: getEnv("SUPABASE_SERVICE_KEY", ""),
@@ -65,6 +66,7 @@ func Load() (*Config, error) {
 		WatchPaths:     getEnvList("WATCH_PATHS", []string{"/host/volume1"}),
 		ChecksumPaths:  getEnvList("CHECKSUM_PATHS", []string{"/host/volume1"}),
 		MaxInotifyDirs: getEnvInt("MAX_INOTIFY_DIRS", 5000),
+		LogDir:         getEnv("LOG_DIR", "/host/log"),
 
 		DataDir: getEnv("DATA_DIR", "/app/data"),
 
@@ -140,12 +142,26 @@ func splitAndTrim(s string) []string {
 	current := ""
 	for _, c := range s {
 		if c == ',' {
-			result = append(result, current)
+			result = append(result, trimSpaces(current))
 			current = ""
 		} else {
 			current += string(c)
 		}
 	}
-	result = append(result, current)
+	result = append(result, trimSpaces(current))
 	return result
+}
+
+func trimSpaces(s string) string {
+	start := 0
+	for start < len(s) && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
+		start++
+	}
+
+	end := len(s)
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
+		end--
+	}
+
+	return s[start:end]
 }
