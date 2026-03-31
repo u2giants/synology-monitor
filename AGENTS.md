@@ -175,6 +175,8 @@ Current implementation details:
   - chat loading
   - approved action running
   - action completed/failed
+- long assistant/evidence/action lines now wrap in the UI instead of forcing a
+  horizontal scroll bar
 
 Current practical behavior:
 
@@ -421,6 +423,8 @@ Recent relevant commits:
 - `fd8518a` Speed up copilot NAS diagnostics
 - `9bb416c` Add multi-chat copilot sessions
 - `e8fc858` Wrap copilot assistant lines
+- `23c659d` Document deployment flow and copilot state
+- `805f672` Fix copilot assistant message serialization
 
 ## Operational Pitfalls
 
@@ -460,6 +464,10 @@ If continuing from here:
    - persistence/database failures
    - SSH diagnostic latency failures
    - UI state/feedback failures
+9. If a follow-up copilot turn fails with a Responses API content-type error such as
+   `input_text` vs `output_text`, inspect `apps/web/src/lib/server/copilot.ts`.
+   Prior assistant turns must be serialized back to the model differently from
+   user turns.
 
 ## Practical Verification
 
