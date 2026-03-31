@@ -1,6 +1,6 @@
 services:
   synology-monitor-agent:
-    image: ghcr.io/u2giants/synology-monitor-agent:latest
+    image: ghcr.io/u2giants/synology-monitor-agent:${AGENT_IMAGE_TAG:-latest}
     container_name: synology-monitor-agent
     network_mode: host
     restart: unless-stopped

@@ -41,6 +41,8 @@ docker compose -f docker-compose.agent.yml up -d
 - `DSM_PASSWORD`
 - `SUPABASE_SERVICE_KEY`
 - `NAS_ID` must be a UUID because it maps directly to `smon_nas_units.id`
+- `AGENT_IMAGE_TAG` defaults to `latest`, but pinning a specific published tag
+  like `sha-19e8f6a` is safer for controlled rollouts
 
 ## Credential model
 
@@ -61,6 +63,9 @@ docker compose -f docker-compose.agent.yml up -d
   `CHECKSUM_PATHS` aligned with the actual mounted paths.
 - The default compose file also mounts `/var/packages` read-only so package
   logs can be added through `EXTRA_LOG_FILES` without another image change.
+- The compose file reads `AGENT_IMAGE_TAG` from `.env`, so each NAS can pin a
+  specific published GHCR image revision during rollout without editing the
+  compose file itself.
 - The agent also tails `/var/log/synologydrive.log` by default, which captures
   Synology Drive server events emitted through syslog.
 - The agent now auto-discovers Synology Drive logs under
