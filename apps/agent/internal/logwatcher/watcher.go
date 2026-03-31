@@ -344,6 +344,12 @@ var (
 	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([^"',\s]+)`)
 	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+'?([^'(\s]+)`)
 	driveUserQuoted   = regexp.MustCompile(`(?i)\buser\b\s+'([^']+)'`)
+	drivePathField    = regexp.MustCompile(`(?i)\bpath\b\s*[:=]\s*'([^']+)'`)
+	driveSharePath    = regexp.MustCompile(`(?i)\bshare_path\b\s*=\s*'([^']+)'`)
+	driveNewSharePath = regexp.MustCompile(`(?i)\bnew_share_path\b\s*=\s*'([^']+)'`)
+	driveShareName    = regexp.MustCompile(`(?i)\bshare_name\b\s*=\s*'([^']+)'`)
+	driveNewShareName = regexp.MustCompile(`(?i)\bnew_share_name\b\s*=\s*'([^']+)'`)
+	driveActionField  = regexp.MustCompile(`(?i)\baction\b\s*[:=]\s*'([A-Z_]+)'`)
 	isoTimePattern    = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z))\s+(.*)$`)
 )
 
@@ -359,11 +365,30 @@ func parseDriveLog(line string) map[string]interface{} {
 		meta["user"] = normalizeDriveUser(user)
 	}
 
-	if path := extractPath(line); path != "" {
+	if shareName := firstCapture(driveShareName, line); shareName != "" {
+		meta["share_name"] = strings.TrimSpace(shareName)
+	}
+	if newShareName := firstCapture(driveNewShareName, line); newShareName != "" {
+		meta["new_share_name"] = strings.TrimSpace(newShareName)
+	}
+
+	if path := extractDrivePath(line); path != "" {
 		meta["path"] = path
 	}
 
 	switch {
+	case strings.Contains(lower, "cloudstation::share"):
+		meta["component"] = "sharesync"
+	case strings.Contains(lower, "synoscgi_syno.synologydrive"):
+		meta["component"] = "admin_console"
+	case strings.Contains(lower, "clean-recycle-control"):
+		meta["component"] = "admin_console"
+	case strings.Contains(lower, "recycle"):
+		meta["component"] = "admin_console"
+	case strings.Contains(lower, "sharesnapshotnotify"):
+		meta["component"] = "sharesync"
+	case strings.Contains(lower, "sharepre") || strings.Contains(lower, "sharepost"):
+		meta["component"] = "sharesync"
 	case strings.Contains(lower, "sharesync"):
 		meta["component"] = "sharesync"
 	case strings.Contains(lower, "admin"):
@@ -379,10 +404,29 @@ func parseDriveLog(line string) map[string]interface{} {
 		meta["action"] = "move"
 	case strings.Contains(lower, "delete") || strings.Contains(lower, "deleted") || strings.Contains(lower, "remove"):
 		meta["action"] = "delete"
+	case strings.Contains(lower, "create") || strings.Contains(lower, "created"):
+		meta["action"] = "create"
+	case strings.Contains(lower, "upload"):
+		meta["action"] = "upload"
+	case strings.Contains(lower, "download"):
+		meta["action"] = "download"
 	case strings.Contains(lower, "conflict"):
 		meta["action"] = "sync_conflict"
 	case strings.Contains(lower, "fail") || strings.Contains(lower, "error"):
 		meta["action"] = "sync_failure"
+	}
+
+	if action := firstCapture(driveActionField, line); action != "" {
+		switch strings.ToLower(strings.TrimSpace(action)) {
+		case "create":
+			meta["action"] = "create"
+		case "delete":
+			meta["action"] = "delete"
+		case "rename":
+			meta["action"] = "rename"
+		case "move":
+			meta["action"] = "move"
+		}
 	}
 
 	return meta
@@ -402,6 +446,22 @@ func normalizeDriveUser(user string) string {
 		return user[idx+1:]
 	}
 	return user
+}
+
+func extractDrivePath(line string) string {
+	if path := firstCapture(drivePathField, line); path != "" {
+		return strings.TrimSpace(path)
+	}
+	if path := firstCapture(driveSharePath, line); path != "" {
+		return strings.TrimSpace(path)
+	}
+	if path := firstCapture(driveNewSharePath, line); path != "" {
+		return strings.TrimSpace(path)
+	}
+	if path := extractPath(line); path != "" {
+		return strings.TrimSpace(path)
+	}
+	return ""
 }
 
 func extractPath(line string) string {

@@ -1,69 +1,128 @@
-# Synology Monitor: Developer Handoff
+# Synology Monitor: Project Guide
 
-## Purpose
+## Read This First
 
-This repository is building a monitoring system for two Synology DS1621xs+ NAS units.
-The main business priority is not generic hardware monitoring. It is filesystem and
-sync observability, especially:
+This repository exists to monitor two Synology DS1621xs+ NAS devices, but the real
+business priority is not generic hardware telemetry. The highest-value problem space is:
 
-- Synology Drive / ShareSync problems
-- Drive Admin Console style events
-- rename / move / delete patterns
-- user-attributed activity where Synology exposes a username
-- ransomware-style behavior such as entropy spikes and mass rename bursts
+- Synology Drive reliability
+- ShareSync behavior
+- filesystem changes
+- user-attributed file operations where Synology exposes a username
+- sync failures, sync conflicts, rename/move/delete activity
+- ransomware-style behavior on shared storage
 
-The current deployment also includes a web dashboard and Supabase-backed storage, but
-filesystem and sync visibility are the primary operational concern.
+If you are choosing between generic infrastructure work and better filesystem/sync
+observability, favor the filesystem/sync work.
 
-## Architecture
+## Operating Rules
 
-- `apps/web`
-  Next.js 15 dashboard with Supabase Auth and Realtime.
+The owner has been explicit about change control:
+
+- GitHub is the source of truth.
+- Do not patch production code directly on the server.
+- Repo changes must be committed and pushed.
+- Deployments must flow from GitHub through Coolify or GitHub Actions.
+- Direct server-side hotfixes are forbidden unless explicitly approved.
+
+It is acceptable to inspect live systems for diagnostics and to restart/recreate
+containers when deploying repo-produced images. It is not acceptable to edit live
+application code or config outside the repository.
+
+## Product Goal
+
+The system has three major parts:
 
 - `apps/agent`
-  Go agent deployed as a Docker container on each NAS.
+  A Go Docker agent that runs on each NAS and sends telemetry/events upstream.
+
+- `apps/web`
+  A Next.js 15 dashboard with Supabase Auth + Realtime.
+
+- `supabase`
+  The central Postgres store plus migrations and in-database AI scheduling.
+
+The long-term product is a monitoring and operational forensics system for Synology NAS
+environments, with special emphasis on shared-file workflows and sync failures.
+
+## Current Live Topology
+
+- Repo: `https://github.com/u2giants/synology-monitor`
+- Branch strategy: direct to `master`
+- Web UI: `https://mon.designflow.app`
+- Coolify app UUID: `lrddgp8im0276gllujfu7wm3`
+- Supabase project ref: `ryltkzzernhwnojzouyb`
+- Supabase URL: `https://ryltkzzernhwnojzouyb.supabase.co`
+- NAS reachability from the VPS: over Tailscale
+
+Current NAS endpoints:
+
+- `edgesynology1`
+  - Tailscale SSH target: `popdam@100.107.131.35:22`
+- `edgesynology2`
+  - Tailscale SSH target: `popdam@100.107.131.36:1904`
+
+The NAS Docker deployment directory on both boxes is:
+
+- `/volume1/docker/synology-monitor-agent`
+
+## Repository Structure
+
+- `apps/web`
+  Next.js 15 app.
+
+- `apps/agent`
+  Go agent.
 
 - `packages/shared`
-  Shared TypeScript types for the monorepo.
+  Shared TypeScript types.
 
 - `supabase/migrations`
-  Database schema and server-side logic. Tables are prefixed `smon_` because the
-  Supabase project is shared with another app.
+  Database schema and behavior.
 
-## Live Topology
+- `deploy/synology`
+  Synology Docker deployment assets and templates.
 
-- Web UI is deployed through Coolify from GitHub.
-- GitHub is the source of truth for code and deployment inputs.
-- The NAS agents pull their image from GHCR via the GitHub Actions workflow in
-  `.github/workflows/agent-image.yml`.
-- The two NAS boxes are reachable from the VPS over Tailscale.
+- `.github/workflows/agent-image.yml`
+  Builds and publishes the NAS agent image to GHCR.
 
-## Current Web App State
+## Web App State
 
-- Login supports email/password and Google OAuth through Supabase.
-- The Google OAuth callback flow was hardened for proxy deployment and currently
-  works at `https://mon.designflow.app/login`.
-- There is no app-specific admin role system yet. Authenticated users can access
-  the dashboard, but there is no separate RBAC model in the app today.
+The web app currently provides:
+
+- Supabase Auth email/password login
+- Google OAuth login
+- dashboard placeholders and real-time data wiring
+- deployment through Coolify
 
 Relevant files:
 
 - `apps/web/src/app/login/page.tsx`
 - `apps/web/src/app/auth/callback/route.ts`
+- `apps/web/src/lib/supabase/*`
 
-## Current Agent State
+Known auth facts:
 
-The agent currently collects:
+- Google OAuth is working
+- Google is configured through Supabase
+- the callback flow was hardened for reverse-proxy deployment
+- there is no app-level RBAC or admin-role model yet
+- authenticated user does not imply “admin”, because no admin concept exists in the app today
 
-- system metrics
-- storage snapshots
-- Docker/container status
-- DSM log files
-- connection logs
-- security logs
-- filesystem watcher events via `fsnotify`
-- entropy-based and mass-rename ransomware signals
-- checksum-based security scanning
+## Agent State
+
+The agent currently does all of the following:
+
+- DSM API login
+- system metrics collection
+- storage/volume/disk collection
+- Docker/container collection
+- DSM/system/security/connection/package log ingestion
+- filesystem watching via `fsnotify`
+- entropy-based ransomware detection
+- mass-rename detection
+- checksum-based scanning
+- local SQLite WAL buffering before Supabase flush
 
 Relevant files:
 
@@ -76,68 +135,126 @@ Relevant files:
 
 ## Synology Drive Coverage
 
-Current Drive-related ingestion is intentionally layered:
+Drive-related observability has been expanded substantially.
 
-1. `watcher.go` tails `/var/log/synologydrive.log` by default.
-   This is the main confirmed Drive server syslog source on both NASes.
+The agent now ingests these Drive-related sources:
 
-2. It also auto-discovers files under:
-   - `WATCH_PATHS/@synologydrive/log/*.log`
-   - `WATCH_PATHS/@synologydrive/log/syncfolder.log`
+- `/var/log/synologydrive.log`
+  - stored as `source=drive_server`
 
-3. Additional package or admin logs can be injected with:
-   - `EXTRA_LOG_FILES=path|source,path|source`
+- `WATCH_PATHS/@synologydrive/log/*.log`
+  - stored as `source=drive`
 
-Drive parsing currently attempts to extract:
+- `WATCH_PATHS/@synologydrive/log/syncfolder.log`
+  - stored as `source=drive_sharesync`
+
+- any extra package logs supplied through:
+  - `EXTRA_LOG_FILES=path|source,path|source`
+
+The live database was updated to allow:
+
+- `drive`
+- `drive_server`
+- `drive_sharesync`
+
+Relevant migration:
+
+- `supabase/migrations/00006_expand_log_sources_for_drive.sql`
+
+## Startup Backfill
+
+Drive logs are too important to only tail from EOF after a restart.
+
+Current behavior:
+
+- on startup, Drive-related sources bootstrap the last `200` lines
+- after bootstrap, normal tail-from-EOF resumes
+
+This is intentionally bounded so the agent does not replay entire historical system logs
+on each restart.
+
+That startup backfill is implemented in:
+
+- `apps/agent/internal/logwatcher/watcher.go`
+
+## Drive Parsing: What It Extracts
+
+The Drive parser attempts to enrich events with:
 
 - `user`
 - `path`
+- `share_name`
+- `new_share_name`
 - `component`
-  - `drive`
-  - `sharesync`
-  - `admin_console`
 - `action`
-  - `rename`
-  - `move`
-  - `delete`
-  - `sync_conflict`
-  - `sync_failure`
 
-Important limitations:
+Current component values include:
 
-- Not every filesystem event has a reliable username.
-- Raw `fsnotify` events do not inherently carry a user identity.
-- Username attribution depends on Synology log content.
-- We do not yet ingest every possible Drive Admin Console event source through an
-  official Synology API.
+- `drive`
+- `sharesync`
+- `admin_console`
 
-## Startup Backfill Behavior
+Current action values include:
 
-Drive logs are important enough that waiting for only new lines after container
-restart is not acceptable.
+- `create`
+- `delete`
+- `rename`
+- `move`
+- `upload`
+- `download`
+- `sync_conflict`
+- `sync_failure`
 
-The agent now performs a bounded startup bootstrap for Drive sources only:
+## What Is Actually Verified
 
-- on startup, it ingests the last 200 lines from each Drive source
-- after that, it switches to normal tail-from-EOF behavior
+Verified from live NAS logs and live Supabase ingestion:
 
-This is meant to surface recent Drive failures immediately without replaying the
-entire historical system log set.
+- `drive` rows are landing
+- `drive_server` rows are landing
+- `drive_sharesync` rows are landing
+- ShareSync snapshot-style events are being classified as `drive_sharesync`
+- delete events from ShareSync-style notifications are being detected
+- Drive user attribution works when Synology includes the user in the log line
 
-## Known Operational Findings
+Examples already observed:
 
-- `/var/log/synologydrive.log` exists on both NASes and contains real Drive events.
-- Those logs can contain usernames in lines such as:
+- repeated download events with `metadata.user = "ahazan"`
+- `drive_server` bootstrap rows from edge2 with messages like:
   - `Checking user 'ahazan' ...`
-- The Drive package also references ShareSync components internally, but the exact
-  package-private log files were not cleanly exposed in the initial filesystem scan.
-- If more Drive Admin Console coverage is needed, the next likely step is to
-  identify additional package log files or API endpoints and add them via
-  `EXTRA_LOG_FILES` or new DSM/API collectors.
 
-## Synology Deployment Notes
+Important caveat:
 
-The Synology deployment assets live in:
+- username attribution is only available when Synology includes it in the log line
+- raw filesystem watcher events do not inherently contain a user identity
+- not every Drive/Admin log row contains a username
+
+## Known Gaps
+
+These are still incomplete:
+
+- SMB per-file audit coverage
+  - current SMB visibility is only basic connection-level logging
+
+- complete Synology Drive Admin Console coverage
+  - current coverage is log-based, not API-complete
+
+- guaranteed per-user attribution for all file operations
+  - only available where Synology provides the identity
+
+- polished parsing for every Synology Drive log variant
+  - many useful variants are covered, but the log surface is large and still evolving
+
+## Synology Deployment Model
+
+The NAS agents do not build from source on the appliances.
+
+Instead:
+
+- GitHub Actions builds the agent image
+- the image is pushed to GHCR
+- each NAS pulls `ghcr.io/u2giants/synology-monitor-agent:latest`
+
+Deployment assets:
 
 - `deploy/synology/docker-compose.agent.yml`
 - `deploy/synology/.env.agent.example`
@@ -145,43 +262,100 @@ The Synology deployment assets live in:
 - `deploy/synology/nas-2.env.example`
 - `deploy/synology/README.md`
 
-Important environment details:
+Important environment facts:
 
-- `DSM_USERNAME` / `DSM_PASSWORD` are DSM API credentials used by the agent.
-- They are not the same thing as SSH credentials.
-- `NAS_ID` must be a UUID because Supabase expects UUID foreign keys.
+- `NAS_ID` must be a UUID
+- `DSM_USERNAME` / `DSM_PASSWORD` are DSM API credentials, not SSH credentials
+- the Synology boxes in this environment only use `/volume1`
+- `/volume2` should not be assumed
 
-## Deployment / Change-Control Rules
+## Supabase Notes
 
-The operating model for this repo is strict:
+This Supabase project is shared with another application.
 
-- do not patch production code directly on the server
-- GitHub is the source of truth
-- repo changes must be committed and pushed
-- Coolify and GHCR deployments must flow from GitHub changes
-- NAS Docker cleanup may still be required locally when DSM Docker state gets wedged,
-  but application changes must still come from the repo
+Consequences:
 
-## Useful Verification Paths
+- all tables are prefixed `smon_`
+- do not casually change global auth settings without checking cross-app impact
+- auth/provider settings may affect the other app if changed incorrectly
 
-- Web app health:
+Current important tables:
+
+- `smon_nas_units`
+- `smon_metrics`
+- `smon_logs`
+- `smon_storage_snapshots`
+- `smon_container_status`
+- `smon_security_events`
+- `smon_alerts`
+- `smon_ai_analyses`
+
+## Important Historical Fixes
+
+These fixes already happened and matter for future work:
+
+- Google OAuth added to the web app
+- auth callback hardened for proxy-safe redirects
+- agent `NAS_ID` changed from ad hoc strings to UUID-compatible values
+- DSM JSON parsing fixed for real device responses
+- sender batch payloads normalized so PostgREST accepts them
+- Drive startup backfill added
+- Supabase constraint expanded to allow Drive log sources
+
+Recent relevant commits:
+
+- `86e2135` Ingest Synology Drive syslog by default
+- `dd43e1e` Bootstrap recent Drive logs on startup
+- `622a33b` Allow Drive log sources in Supabase
+- `d1f29cb` Normalize Drive usernames from DSM logs
+
+## Operational Pitfalls
+
+These are worth remembering:
+
+- Synology DSM Docker operations can be very slow during `compose up -d --force-recreate`
+- DSM may leave replacement containers in `Created` state while an older one still exists
+- invoking `sudo sh -lc` can lose the original working directory, so `docker compose` should
+  `cd` inside the sudo shell
+- `docker` is available on the NAS at `/usr/local/bin/docker`
+- some log files are old and only become visible after startup backfill, not from fresh tailing
+
+## Advice For The Next Developer / Next Codex Session
+
+If continuing from here:
+
+1. Prefer improving Drive/Admin/file-operation observability over generic metrics polish.
+2. Query live `smon_logs` samples before changing parsers. The exact Synology log format matters.
+3. Treat NAS-side Docker behavior as operationally flaky; verify image revision explicitly.
+4. Keep repo and production aligned. If a live schema change is required, land the migration in
+   the repo first, then apply the same SQL to production.
+5. Be careful with Supabase auth changes because the project is shared with another app.
+6. Do not assume SMB auditing is already solved. It is not.
+
+## Practical Verification
+
+Useful checks:
+
+- web login:
   - `https://mon.designflow.app/login`
 
-- Dashboard data verification script:
-  - `scripts/check-dashboard-data.mjs`
+- dashboard data script:
   - `pnpm check:dashboard-data`
 
-- Agent image publishing workflow:
+- recent Drive rows:
+  - query `smon_logs` where `source in ('drive','drive_server','drive_sharesync')`
+
+- agent image publishing:
   - `.github/workflows/agent-image.yml`
 
-## Next High-Value Work
+- NAS deployment path:
+  - `/volume1/docker/synology-monitor-agent`
 
-If continuing from here, prioritize in this order:
+## Immediate Next High-Value Work
 
-1. Improve Drive/Admin coverage beyond `synologydrive.log`
-2. Add richer user attribution where Synology exposes it
-3. Expand SMB observability only if needed for actual file-operation debugging
-4. Add app-level RBAC/admin concepts if the product needs them
+If there is time for one more meaningful improvement, do one of these:
 
-When choosing between generic infra work and better filesystem/sync visibility,
-the filesystem/sync work is the higher-value path for this project.
+1. Improve Drive/Admin username extraction coverage further.
+2. Add cleaner parsing for move/rename/delete events that include old/new names.
+3. Expand admin-console event capture if additional package logs or DSM endpoints are found.
+4. Add SMB file-audit coverage only if the business workflow actually depends on SMB-level forensic detail.
