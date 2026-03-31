@@ -142,7 +142,7 @@ const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     write: false,
     buildPreview: (_target, input) => {
       const lines = Math.max(40, Math.min(240, (input.lookbackHours ?? 2) * 30));
-      return `find /volume1 -path '*/@synologydrive/log/syncfolder.log' -print -exec tail -n ${lines} {} \\;`;
+      return `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "$f"; tail -n ${lines} "$f"; done`;
     },
   },
   restart_monitor_agent: {

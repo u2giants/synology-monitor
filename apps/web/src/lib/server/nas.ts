@@ -73,6 +73,12 @@ export async function runNasScript(config: NasConfig, script: string, timeoutMs 
         "-p",
         config.port,
         "-o",
+        "ConnectTimeout=6",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=1",
+        "-o",
         "StrictHostKeyChecking=no",
         "-o",
         "UserKnownHostsFile=/dev/null",
@@ -141,7 +147,7 @@ export async function collectNasDiagnostics(lookbackHours = 2) {
     "echo '## drive_log'",
     `tail -n ${driveLines} /var/log/synologydrive.log 2>/dev/null || true`,
     "echo '## sharesync_log'",
-    `find /volume1 -path '*/@synologydrive/log/syncfolder.log' -print -exec tail -n ${shareSyncLines} {} \\; 2>/dev/null || true`,
+    `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "$f"; tail -n ${shareSyncLines} "$f"; done 2>/dev/null || true`,
   ].join("\n");
 
   const results = await Promise.all(
