@@ -12,6 +12,7 @@ import {
   Shield,
   Container,
   Brain,
+  Bot,
   Settings,
 } from "lucide-react";
 
@@ -24,6 +25,7 @@ const navItems = [
   { href: "/security", label: "Security", icon: Shield },
   { href: "/docker", label: "Docker", icon: Container },
   { href: "/ai-insights", label: "AI Insights", icon: Brain },
+  { href: "/assistant", label: "NAS Copilot", icon: Bot },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

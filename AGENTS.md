@@ -93,6 +93,7 @@ The web app currently provides:
 - Supabase Auth email/password login
 - Google OAuth login
 - dashboard placeholders and real-time data wiring
+- NAS Copilot chat with GPT-5.4, live SSH diagnostics over Tailscale, and per-action approval for repair commands
 - deployment through Coolify
 
 Relevant files:
@@ -108,6 +109,61 @@ Known auth facts:
 - the callback flow was hardened for reverse-proxy deployment
 - there is no app-level RBAC or admin-role model yet
 - authenticated user does not imply “admin”, because no admin concept exists in the app today
+
+## NAS Copilot
+
+The web app now includes a `NAS Copilot` surface at:
+
+- `/assistant`
+
+It is intended to:
+
+- answer questions about current NAS state
+- inspect both NASes live over Tailscale SSH
+- summarize recent logs, alerts, and Drive activity from Supabase
+- propose exact repair commands when appropriate
+- require an explicit human approval click before any proposed command executes
+
+Relevant files:
+
+- `apps/web/src/app/(dashboard)/assistant/page.tsx`
+- `apps/web/src/app/api/copilot/chat/route.ts`
+- `apps/web/src/app/api/copilot/execute/route.ts`
+- `apps/web/src/lib/server/copilot.ts`
+- `apps/web/src/lib/server/nas.ts`
+
+Current implementation details:
+
+- model default: `gpt-5.4`
+- reasoning options exposed in the UI:
+  - `high`
+  - `xhigh`
+- chat history currently persists in browser local storage only
+- no DB-backed chat transcript or action history exists yet
+- write actions are server-signed and expire after a short window before execution
+
+Runtime env required by the web app:
+
+- `OPENAI_API_KEY`
+- `OPENAI_CHAT_MODEL`
+- `COPILOT_ACTION_SIGNING_KEY` (recommended)
+- `NAS_EDGE1_HOST`
+- `NAS_EDGE1_PORT`
+- `NAS_EDGE1_USER`
+- `NAS_EDGE1_PASSWORD`
+- `NAS_EDGE1_SUDO_PASSWORD`
+- `NAS_EDGE2_HOST`
+- `NAS_EDGE2_PORT`
+- `NAS_EDGE2_USER`
+- `NAS_EDGE2_PASSWORD`
+- `NAS_EDGE2_SUDO_PASSWORD`
+
+Important safety boundary:
+
+- the execute endpoint must never trust arbitrary browser-supplied commands
+- only server-signed proposed actions may execute
+- destructive command families are blocked in `apps/web/src/lib/server/nas.ts`
+- this is still not equivalent to a full privileged access system; it is a constrained approval layer
 
 ## Agent State
 

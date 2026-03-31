@@ -1,6 +1,7 @@
 # Next.js production Dockerfile for Coolify deployment
 # Build context must be the repo root (not apps/web/)
 FROM node:22-alpine AS base
+RUN apk add --no-cache openssh-client sshpass
 RUN npm install -g pnpm@9
 
 # Dependencies
@@ -32,6 +33,7 @@ RUN npx next build
 
 # Production
 FROM node:22-alpine AS runner
+RUN apk add --no-cache openssh-client sshpass
 RUN npm install -g pnpm@9
 WORKDIR /app
 
