@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
-  const next = requestUrl.searchParams.get("next") ?? "/";
+  const next = normalizeNextPath(requestUrl.searchParams.get("next"));
 
   if (code) {
     const supabase = await createClient();
@@ -16,4 +16,16 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.redirect(new URL("/login", requestUrl.origin));
+}
+
+function normalizeNextPath(next: string | null): string {
+  if (!next) {
+    return "/";
+  }
+
+  if (!next.startsWith("/") || next.startsWith("//")) {
+    return "/";
+  }
+
+  return next;
 }
