@@ -355,6 +355,7 @@ export async function generateCopilotResponse(
 
   const input = [
     {
+      type: "message" as const,
       role: "system" as const,
       content: [
         {
@@ -368,6 +369,7 @@ export async function generateCopilotResponse(
       ],
     },
     {
+      type: "message" as const,
       role: "system" as const,
       content: [
         {
@@ -377,15 +379,23 @@ export async function generateCopilotResponse(
       ],
     },
     ...messages.map((message) => ({
+      type: "message" as const,
       role: message.role === "assistant" ? ("assistant" as const) : ("user" as const),
-      content: [{ type: "input_text" as const, text: message.content }],
+      content: [
+        {
+          type: (message.role === "assistant" ? "output_text" : "input_text") as
+            | "input_text"
+            | "output_text",
+          text: message.content,
+        },
+      ],
     })),
   ];
 
   const response = await client.responses.create({
     model,
     reasoning: { effort: reasoningEffort },
-    input,
+    input: input as never,
     text: {
       format: {
         type: "json_schema",
