@@ -481,7 +481,7 @@ export default function AssistantPage() {
                           <Icon className="h-4 w-4" />
                         </div>
                         <div className="space-y-3">
-                          <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
+                          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
                             {message.content}
                           </p>
 
@@ -497,7 +497,7 @@ export default function AssistantPage() {
                                     <div className="text-xs font-medium text-foreground">
                                       {item.title}
                                     </div>
-                                    <div className="mt-1 text-xs text-muted-foreground">
+                                    <div className="mt-1 break-words text-xs text-muted-foreground">
                                       {item.detail}
                                     </div>
                                     <div className="mt-1 text-[11px] text-muted-foreground">
@@ -532,12 +532,12 @@ export default function AssistantPage() {
                                     </span>
                                   </div>
                                   <p className="mt-2 text-sm text-muted-foreground">{action.reason}</p>
-                                  <pre className="mt-3 overflow-x-auto rounded-md bg-black/80 p-3 text-xs text-white">
+                                  <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-black/80 p-3 text-xs text-white">
                                     {action.commandPreview}
                                   </pre>
 
                                   {action.result && (
-                                    <pre className="mt-3 overflow-x-auto rounded-md bg-muted p-3 text-xs text-foreground">
+                                    <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs text-foreground">
                                       {action.result}
                                     </pre>
                                   )}
