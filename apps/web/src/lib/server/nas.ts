@@ -123,8 +123,10 @@ export async function runNasScript(config: NasConfig, script: string, timeoutMs 
   });
 }
 
-export async function collectNasDiagnostics() {
+export async function collectNasDiagnostics(lookbackHours = 2) {
   const configs = getNasConfigs();
+  const driveLines = Math.max(60, Math.min(300, lookbackHours * 50));
+  const shareSyncLines = Math.max(40, Math.min(240, lookbackHours * 30));
 
   const script = [
     "set -e",
@@ -137,7 +139,9 @@ export async function collectNasDiagnostics() {
     "echo '## agent'",
     "/usr/local/bin/docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
     "echo '## drive_log'",
-    "tail -n 20 /var/log/synologydrive.log 2>/dev/null || true",
+    `tail -n ${driveLines} /var/log/synologydrive.log 2>/dev/null || true`,
+    "echo '## sharesync_log'",
+    `find /volume1 -path '*/@synologydrive/log/syncfolder.log' -print -exec tail -n ${shareSyncLines} {} \\; 2>/dev/null || true`,
   ].join("\n");
 
   const results = await Promise.all(

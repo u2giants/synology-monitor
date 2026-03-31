@@ -138,15 +138,19 @@ Current implementation details:
 - reasoning options exposed in the UI:
   - `high`
   - `xhigh`
-- chat history currently persists in browser local storage only
-- no DB-backed chat transcript or action history exists yet
+- chat history now prefers Supabase persistence and falls back to browser local storage if the copilot tables are unavailable
+- messages can carry evidence bundles derived from alerts, logs, and SSH diagnostics
 - write actions are server-signed and expire after a short window before execution
+- the assistant uses a structured NAS tool catalog instead of unconstrained shell proposals
+- the UI exposes a bounded history window selector (`1h`, `2h`, `6h`, `24h`)
+- roles can be supplied through `smon_user_roles` and/or `COPILOT_ADMIN_EMAILS`
 
 Runtime env required by the web app:
 
 - `OPENAI_API_KEY`
 - `OPENAI_CHAT_MODEL`
 - `COPILOT_ACTION_SIGNING_KEY` (recommended)
+- `COPILOT_ADMIN_EMAILS`
 - `NAS_EDGE1_HOST`
 - `NAS_EDGE1_PORT`
 - `NAS_EDGE1_USER`
@@ -163,6 +167,7 @@ Important safety boundary:
 - the execute endpoint must never trust arbitrary browser-supplied commands
 - only server-signed proposed actions may execute
 - destructive command families are blocked in `apps/web/src/lib/server/nas.ts`
+- the model proposes structured tools which the server materializes into shell commands
 - this is still not equivalent to a full privileged access system; it is a constrained approval layer
 
 ## Agent State
