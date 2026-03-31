@@ -495,7 +495,21 @@ func extractPath(line string) string {
 func cleanDrivePath(path string) string {
 	path = strings.TrimSpace(path)
 	path = strings.Trim(path, "[]()\"'")
-	path = strings.TrimRight(path, "],")
+	for _, delimiter := range []string{
+		"' @",
+		"' -",
+		"' ->",
+		"' |",
+		"][",
+		"](",
+		"],",
+	} {
+		if idx := strings.Index(path, delimiter); idx >= 0 {
+			path = path[:idx]
+		}
+	}
+	path = strings.TrimRight(path, "],\"'")
+	path = strings.TrimSpace(path)
 	return path
 }
 
