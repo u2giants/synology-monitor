@@ -16,12 +16,13 @@ import (
 
 // LogWatcher tails DSM log files and sends parsed entries to Supabase
 type LogWatcher struct {
-	sender   *sender.Sender
-	nasID    string
-	logDir   string
-	interval time.Duration
-	offsets  map[string]int64
-	logFiles []LogFile
+	sender             *sender.Sender
+	nasID              string
+	logDir             string
+	interval           time.Duration
+	offsets            map[string]int64
+	logFiles           []LogFile
+	bootstrapDriveTail int
 }
 
 // LogFile defines a DSM log file to watch
@@ -46,12 +47,13 @@ func New(s *sender.Sender, nasID, logDir string, watchPaths, extraLogFiles []str
 	logFiles = append(logFiles, parseExtraLogFiles(extraLogFiles)...)
 
 	return &LogWatcher{
-		sender:   s,
-		nasID:    nasID,
-		logDir:   logDir,
-		interval: interval,
-		offsets:  make(map[string]int64),
-		logFiles: dedupeLogFiles(logFiles),
+		sender:             s,
+		nasID:              nasID,
+		logDir:             logDir,
+		interval:           interval,
+		offsets:            make(map[string]int64),
+		logFiles:           dedupeLogFiles(logFiles),
+		bootstrapDriveTail: 200,
 	}
 }
 
@@ -61,10 +63,13 @@ func (w *LogWatcher) Run(stop <-chan struct{}) {
 
 	log.Printf("[logwatcher] started (interval: %s, dir: %s)", w.interval, w.logDir)
 
-	// Initialize offsets to end of file (don't replay history on first start)
+	// Bootstrap recent Drive history once on startup, then tail from EOF.
 	for _, lf := range w.logFiles {
 		for _, fullPath := range w.expandLogFile(lf) {
 			if info, err := os.Stat(fullPath); err == nil {
+				if strings.HasPrefix(lf.Source, "drive") {
+					w.bootstrapFile(fullPath, lf.Source, w.bootstrapDriveTail)
+				}
 				w.offsets[fullPath] = info.Size()
 			}
 		}
@@ -163,6 +168,58 @@ func (w *LogWatcher) tailFile(path, source string) {
 	if count > 0 {
 		log.Printf("[logwatcher] %s: ingested %d new lines", filepath.Base(path), count)
 	}
+}
+
+func (w *LogWatcher) bootstrapFile(path, source string, maxLines int) {
+	lines, err := readLastLines(path, maxLines)
+	if err != nil || len(lines) == 0 {
+		return
+	}
+
+	count := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		entry := parseLine(line, source)
+		w.sender.QueueLog(sender.LogPayload{
+			NasID:    w.nasID,
+			Source:   source,
+			Severity: entry.severity,
+			Message:  entry.message,
+			Metadata: entry.metadata,
+			LoggedAt: entry.timestamp,
+		})
+		count++
+	}
+
+	if count > 0 {
+		log.Printf("[logwatcher] %s: bootstrapped %d recent %s lines", filepath.Base(path), count, source)
+	}
+}
+
+func readLastLines(path string, maxLines int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	lines := make([]string, 0, maxLines)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) > maxLines {
+			lines = lines[1:]
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
 }
 
 type parsedEntry struct {
