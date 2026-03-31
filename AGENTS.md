@@ -55,6 +55,28 @@ environments, with special emphasis on shared-file workflows and sync failures.
 - Supabase URL: `https://ryltkzzernhwnojzouyb.supabase.co`
 - NAS reachability from the VPS: over Tailscale
 
+## Deployment Flow
+
+There are two different deployment paths in this repo. They are easy to confuse.
+
+- Web app deploys do **not** go through GitHub Actions.
+  - `apps/web` is connected directly to Coolify.
+  - A push to `master` triggers a Coolify webhook deployment from GitHub.
+  - Evidence for web deploys is in Coolify deployment history, not in the GitHub
+    Actions tab.
+
+- NAS agent image publishing **does** go through GitHub Actions.
+  - The workflow file is `.github/workflows/agent-image.yml`.
+  - It publishes `ghcr.io/u2giants/synology-monitor-agent`.
+  - NAS appliances then pull the published tag from GHCR.
+
+If a developer says “it deployed from GitHub,” that may mean one of two things:
+
+- web: Coolify pulled the latest GitHub commit
+- agent: GitHub Actions built and published a new image
+
+Check the right control plane before assuming something failed.
+
 Current NAS endpoints:
 
 - `edgesynology1`
@@ -138,12 +160,34 @@ Current implementation details:
 - reasoning options exposed in the UI:
   - `high`
   - `xhigh`
+- multiple saved chats are now supported
+  - the old single rolling-session behavior was replaced
+  - users can start a new chat for a separate problem
+  - the session list is loaded from `smon_copilot_sessions`
 - chat history now prefers Supabase persistence and falls back to browser local storage if the copilot tables are unavailable
 - messages can carry evidence bundles derived from alerts, logs, and SSH diagnostics
 - write actions are server-signed and expire after a short window before execution
 - the assistant uses a structured NAS tool catalog instead of unconstrained shell proposals
 - the UI exposes a bounded history window selector (`1h`, `2h`, `6h`, `24h`)
 - roles can be supplied through `smon_user_roles` and/or `COPILOT_ADMIN_EMAILS`
+- the UI now shows visible activity state
+  - GPT thinking
+  - chat loading
+  - approved action running
+  - action completed/failed
+
+Current practical behavior:
+
+- the copilot can answer using both:
+  - historical data already stored in Supabase
+  - live SSH diagnostics from both NASes over Tailscale
+- direct SSH evidence was initially timing out because the assistant recursively
+  searched all of `/volume1` for `syncfolder.log`
+- that was fixed by switching to a shallow per-share lookup under:
+  - `/volume1/*/@synologydrive/log/syncfolder.log`
+- if SSH evidence starts timing out again, inspect:
+  - `apps/web/src/lib/server/nas.ts`
+  - `apps/web/src/lib/server/copilot.ts`
 
 Runtime env required by the web app:
 
@@ -221,6 +265,7 @@ The live database was updated to allow:
 Relevant migration:
 
 - `supabase/migrations/00006_expand_log_sources_for_drive.sql`
+- `supabase/migrations/00007_create_copilot_tables.sql`
 
 ## Startup Backfill
 
@@ -369,6 +414,13 @@ Recent relevant commits:
 - `dd43e1e` Bootstrap recent Drive logs on startup
 - `622a33b` Allow Drive log sources in Supabase
 - `d1f29cb` Normalize Drive usernames from DSM logs
+- `1bbe10e` Add NAS Copilot assistant
+- `649eb0b` Persist copilot history and add tool-based actions
+- `21cc116` Fix copilot response schema
+- `9a93954` Generate copilot message ids server-side
+- `fd8518a` Speed up copilot NAS diagnostics
+- `9bb416c` Add multi-chat copilot sessions
+- `e8fc858` Wrap copilot assistant lines
 
 ## Operational Pitfalls
 
@@ -380,6 +432,15 @@ These are worth remembering:
   `cd` inside the sudo shell
 - `docker` is available on the NAS at `/usr/local/bin/docker`
 - some log files are old and only become visible after startup backfill, not from fresh tailing
+- Synology SSH sessions may emit warnings like:
+  - host key first-seen warnings
+  - post-quantum key exchange warnings
+  - a visible `bash` token on stderr from `sudo bash -s`
+  These are not automatically failures. Check exit status and resulting output
+  before treating stderr as an execution failure.
+- The copilot UI previously gave poor feedback for approved actions; that was
+  improved with explicit activity/status indicators, but future developers
+  should still verify the action result body, not just the visual status chip.
 
 ## Advice For The Next Developer / Next Codex Session
 
@@ -392,6 +453,13 @@ If continuing from here:
    the repo first, then apply the same SQL to production.
 5. Be careful with Supabase auth changes because the project is shared with another app.
 6. Do not assume SMB auditing is already solved. It is not.
+7. Do not expect web deployments in GitHub Actions. Check Coolify for web deploys and
+   GitHub Actions only for the NAS agent image.
+8. When debugging copilot failures, distinguish between:
+   - model/schema failures
+   - persistence/database failures
+   - SSH diagnostic latency failures
+   - UI state/feedback failures
 
 ## Practical Verification
 
@@ -420,3 +488,5 @@ If there is time for one more meaningful improvement, do one of these:
 2. Add cleaner parsing for move/rename/delete events that include old/new names.
 3. Expand admin-console event capture if additional package logs or DSM endpoints are found.
 4. Add SMB file-audit coverage only if the business workflow actually depends on SMB-level forensic detail.
+5. Consider a dedicated copilot evidence/audit page that lists prior approved actions,
+   results, and supporting evidence outside the chat transcript.

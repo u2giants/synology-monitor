@@ -11,6 +11,24 @@ This directory contains the repo-backed deployment assets for running the
 - The compose file is isolated here so the NAS deployment is explicit and
   repeatable.
 
+## Important CI/CD Clarification
+
+This repository has two distinct deploy pipelines:
+
+- `apps/web`
+  - deployed by Coolify directly from the GitHub repo
+  - pushes to `master` trigger Coolify webhook deployments
+  - these web deploys do **not** appear in GitHub Actions
+
+- `apps/agent`
+  - image is built and published by GitHub Actions
+  - workflow: `.github/workflows/agent-image.yml`
+  - NAS units pull the published GHCR image
+
+If you do not see a recent entry in `github.com/u2giants/synology-monitor/actions`,
+that does **not** mean the web app failed to deploy. It usually just means the
+web app deployed through Coolify instead of Actions.
+
 ## Files
 
 - `docker-compose.agent.yml`: Compose file to run on each NAS.
@@ -77,3 +95,15 @@ docker compose -f docker-compose.agent.yml up -d
   `/host/packages/SynologyDrive/target/var/custom.log|drive_admin`
 - The healthcheck only verifies that the agent created its WAL database. It is a
   lightweight process check, not a full application-level health probe.
+
+## Practical Notes From This Environment
+
+- Both NAS units in this environment only use `/volume1`.
+- Recursive filesystem searches over all of `/volume1` can be too expensive for
+  interactive diagnostics. Prefer shallow per-share patterns when possible.
+- Tailscale is the preferred path from the VPS to the NASes.
+  - `edgesynology1`: `100.107.131.35:22`
+  - `edgesynology2`: `100.107.131.36:1904`
+- Synology Docker/Compose can be flaky during recreate operations. If a running
+  container does not switch to the intended image tag, verify the actual running
+  image explicitly instead of assuming the compose action succeeded.
