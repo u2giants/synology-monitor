@@ -33,6 +33,7 @@ type LogFile struct {
 var defaultLogFiles = []LogFile{
 	{Path: "messages", Source: "system"},
 	{Path: "synobackup.log", Source: "system"},
+	{Path: "synologydrive.log", Source: "drive_server"},
 	{Path: "synolog/synosecurity.log", Source: "security"},
 	{Path: "synolog/synoconnection.log", Source: "connection"},
 	{Path: "synolog/synopkg.log", Source: "package"},
@@ -178,8 +179,13 @@ func parseLine(line, source string) parsedEntry {
 		message:   line,
 	}
 
-	// Try to parse syslog-style timestamp (e.g., "Mar 30 12:34:56")
-	if len(line) > 15 {
+	if match := isoTimePattern.FindStringSubmatch(line); len(match) == 3 {
+		if ts, err := time.Parse(time.RFC3339, match[1]); err == nil {
+			entry.timestamp = ts
+			entry.message = strings.TrimSpace(match[2])
+		}
+	} else if len(line) > 15 {
+		// Try to parse syslog-style timestamp (e.g. "Mar 30 12:34:56")
 		ts, err := time.Parse("Jan  2 15:04:05", line[:15])
 		if err == nil {
 			ts = ts.AddDate(time.Now().Year(), 0, 0)
@@ -191,12 +197,12 @@ func parseLine(line, source string) parsedEntry {
 	// Detect severity from content
 	lower := strings.ToLower(line)
 	switch {
-	case strings.Contains(lower, "error") || strings.Contains(lower, "fail"):
+	case strings.Contains(lower, "crit") || strings.Contains(lower, "emerg") || strings.Contains(lower, "panic"):
+		entry.severity = "critical"
+	case strings.Contains(lower, "error") || strings.Contains(lower, "[error]") || strings.Contains(lower, "fail"):
 		entry.severity = "error"
 	case strings.Contains(lower, "warn"):
 		entry.severity = "warning"
-	case strings.Contains(lower, "crit") || strings.Contains(lower, "emerg") || strings.Contains(lower, "panic"):
-		entry.severity = "critical"
 	}
 
 	// Security-specific parsing
@@ -216,7 +222,7 @@ func parseLine(line, source string) parsedEntry {
 	}
 
 	if strings.HasPrefix(source, "drive") {
-		entry.metadata = mergeMetadata(entry.metadata, parseDriveLog(line))
+		entry.metadata = mergeMetadata(entry.metadata, parseDriveLog(entry.message))
 
 		if strings.Contains(lower, "conflict") {
 			entry.severity = "warning"
@@ -280,6 +286,8 @@ var (
 	plainPathPattern  = regexp.MustCompile(`(/[^,\s]+)`)
 	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([A-Za-z0-9._@-]+)`)
 	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+([A-Za-z0-9._@-]+)`)
+	driveUserQuoted   = regexp.MustCompile(`(?i)\buser\b\s+'([^']+)'`)
+	isoTimePattern    = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z))\s+(.*)$`)
 )
 
 func parseDriveLog(line string) map[string]interface{} {
@@ -287,6 +295,8 @@ func parseDriveLog(line string) map[string]interface{} {
 	lower := strings.ToLower(line)
 
 	if user := firstCapture(driveUserPattern, line); user != "" {
+		meta["user"] = user
+	} else if user := firstCapture(driveUserQuoted, line); user != "" {
 		meta["user"] = user
 	} else if user := firstCapture(driveByPattern, line); user != "" {
 		meta["user"] = user

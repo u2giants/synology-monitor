@@ -61,6 +61,8 @@ docker compose -f docker-compose.agent.yml up -d
   `CHECKSUM_PATHS` aligned with the actual mounted paths.
 - The default compose file also mounts `/var/packages` read-only so package
   logs can be added through `EXTRA_LOG_FILES` without another image change.
+- The agent also tails `/var/log/synologydrive.log` by default, which captures
+  Synology Drive server events emitted through syslog.
 - The agent now auto-discovers Synology Drive logs under
   `WATCH_PATHS/@synologydrive/log/*.log`, including `syncfolder.log` when it is
   present.
