@@ -54,11 +54,12 @@ export async function POST(request: Request) {
 
     const userMessage = [...(body.messages ?? [])].reverse().find((message) => message.role === "user");
     const assistantMessageId = crypto.randomUUID();
+    const persistedUserMessageId = crypto.randomUUID();
     if (sessionState.persistenceEnabled && sessionState.sessionId && userMessage) {
       await persistTurn(supabase, user.id, {
         sessionId: sessionState.sessionId,
         userMessage: {
-          id: userMessage.id,
+          id: persistedUserMessageId,
           content: userMessage.content,
           createdAt: new Date().toISOString(),
         },
