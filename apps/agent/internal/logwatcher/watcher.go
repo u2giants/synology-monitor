@@ -341,8 +341,8 @@ func parseConnectionLog(line string) map[string]interface{} {
 var (
 	quotedPathPattern = regexp.MustCompile(`"([^"\n]*?/[^"\n]+)"`)
 	plainPathPattern  = regexp.MustCompile(`(/[^,\s]+)`)
-	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([A-Za-z0-9._@-]+)`)
-	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+([A-Za-z0-9._@-]+)`)
+	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([^"',\s]+)`)
+	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+'?([^'(\s]+)`)
 	driveUserQuoted   = regexp.MustCompile(`(?i)\buser\b\s+'([^']+)'`)
 	isoTimePattern    = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z))\s+(.*)$`)
 )
@@ -351,12 +351,12 @@ func parseDriveLog(line string) map[string]interface{} {
 	meta := make(map[string]interface{})
 	lower := strings.ToLower(line)
 
-	if user := firstCapture(driveUserPattern, line); user != "" {
-		meta["user"] = user
-	} else if user := firstCapture(driveUserQuoted, line); user != "" {
-		meta["user"] = user
+	if user := firstCapture(driveUserQuoted, line); user != "" {
+		meta["user"] = normalizeDriveUser(user)
+	} else if user := firstCapture(driveUserPattern, line); user != "" {
+		meta["user"] = normalizeDriveUser(user)
 	} else if user := firstCapture(driveByPattern, line); user != "" {
-		meta["user"] = user
+		meta["user"] = normalizeDriveUser(user)
 	}
 
 	if path := extractPath(line); path != "" {
@@ -394,6 +394,14 @@ func firstCapture(pattern *regexp.Regexp, line string) string {
 		return strings.TrimSpace(match[1])
 	}
 	return ""
+}
+
+func normalizeDriveUser(user string) string {
+	user = strings.Trim(user, "[]()\"'")
+	if idx := strings.LastIndex(user, `\`); idx >= 0 && idx+1 < len(user) {
+		return user[idx+1:]
+	}
+	return user
 }
 
 func extractPath(line string) string {
