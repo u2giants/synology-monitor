@@ -6,6 +6,7 @@ import {
   Database,
   LoaderCircle,
   MessageSquareText,
+  Plus,
   Search,
   ShieldAlert,
   Sparkles,
@@ -52,6 +53,15 @@ interface ChatMessage {
   actions?: ProposedAction[];
 }
 
+interface SessionSummary {
+  id: string;
+  title: string;
+  reasoningEffort: ReasoningEffort;
+  lookbackHours: LookbackHours;
+  updatedAt: string;
+  createdAt: string;
+}
+
 const STORAGE_KEY = "smon-copilot-chat-v2";
 
 function messageTone(role: MessageRole) {
@@ -78,29 +88,43 @@ function roleIcon(role: MessageRole) {
 
 export default function AssistantPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingSession, setLoadingSession] = useState(false);
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("high");
   const [lookbackHours, setLookbackHours] = useState<LookbackHours>(2);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [role, setRole] = useState<CopilotRole>("admin");
   const [persistenceEnabled, setPersistenceEnabled] = useState(false);
+  const [activityMessage, setActivityMessage] = useState<string | null>(null);
+  const [activeActionId, setActiveActionId] = useState<string | null>(null);
+
+  async function loadServerSession(targetSessionId?: string | null) {
+    const suffix = targetSessionId ? `?sessionId=${encodeURIComponent(targetSessionId)}` : "";
+    const response = await fetch(`/api/copilot/session${suffix}`);
+    if (!response.ok) throw new Error("session load failed");
+    const payload = await response.json();
+    setRole(payload.role ?? "admin");
+    setPersistenceEnabled(Boolean(payload.persistenceEnabled));
+    setSessions(payload.sessions ?? []);
+    if (payload.session) {
+      setSessionId(payload.session.id);
+      setReasoningEffort(payload.session.reasoningEffort ?? "high");
+      setLookbackHours(payload.session.lookbackHours ?? 2);
+      setMessages(payload.session.messages ?? []);
+    } else {
+      setSessionId(null);
+      setMessages([]);
+    }
+    return payload;
+  }
 
   useEffect(() => {
     async function bootstrap() {
       try {
-        const response = await fetch("/api/copilot/session");
-        if (!response.ok) throw new Error("session load failed");
-        const payload = await response.json();
-        setRole(payload.role ?? "admin");
-        setPersistenceEnabled(Boolean(payload.persistenceEnabled));
-        if (payload.session) {
-          setSessionId(payload.session.id);
-          setReasoningEffort(payload.session.reasoningEffort ?? "high");
-          setLookbackHours(payload.session.lookbackHours ?? 2);
-          setMessages(payload.session.messages ?? []);
-          return;
-        }
+        await loadServerSession();
+        return;
       } catch {
         // fallback to local storage below
       }
@@ -150,6 +174,7 @@ export default function AssistantPage() {
     setMessages(nextMessages);
     setPrompt("");
     setLoading(true);
+    setActivityMessage(`Thinking with GPT-5.4 (${reasoningEffort}) over the last ${lookbackHours} hour${lookbackHours > 1 ? "s" : ""}...`);
 
     try {
       const response = await fetch("/api/copilot/chat", {
@@ -188,8 +213,14 @@ export default function AssistantPage() {
         createdAt: new Date().toISOString(),
       };
 
-      setMessages((current) => [...current, assistantMessage]);
+      if (payload.persistenceEnabled && payload.sessionId) {
+        await loadServerSession(payload.sessionId);
+      } else {
+        setMessages((current) => [...current, assistantMessage]);
+      }
+      setActivityMessage(null);
     } catch (error) {
+      setActivityMessage(null);
       setMessages((current) => [
         ...current,
         {
@@ -227,6 +258,7 @@ export default function AssistantPage() {
     if (!action) return;
 
     if (decision === "reject") {
+      setActivityMessage(`Rejected ${action.title}.`);
       await fetch("/api/copilot/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -238,8 +270,14 @@ export default function AssistantPage() {
           decision: "reject",
         }),
       });
+      if (persistenceEnabled && sessionId) {
+        await loadServerSession(sessionId);
+      }
       return;
     }
+
+    setActiveActionId(actionId);
+    setActivityMessage(`Running ${action.title} on ${action.target}...`);
 
     try {
       const response = await fetch("/api/copilot/execute", {
@@ -259,34 +297,41 @@ export default function AssistantPage() {
         throw new Error(payload.error ?? payload.content ?? "Action execution failed.");
       }
 
-      setMessages((current) => {
-        const updated = current.map((item) => {
-          if (item.id !== messageId) return item;
-          return {
-            ...item,
-            actions: item.actions?.map((candidate) =>
-              candidate.id === actionId
-                ? {
-                    ...candidate,
-                    status: "executed" as ActionStatus,
-                    result: payload.content,
-                  }
-                : candidate
-            ),
-          };
-        });
+      if (persistenceEnabled && sessionId) {
+        await loadServerSession(sessionId);
+      } else {
+        setMessages((current) => {
+          const updated = current.map((item) => {
+            if (item.id !== messageId) return item;
+            return {
+              ...item,
+              actions: item.actions?.map((candidate) =>
+                candidate.id === actionId
+                  ? {
+                      ...candidate,
+                      status: "executed" as ActionStatus,
+                      result: payload.content,
+                    }
+                  : candidate
+              ),
+            };
+          });
 
-        return [
-          ...updated,
-          {
-            id: crypto.randomUUID(),
-            role: "tool",
-            content: `Approved action ran on ${action.target}.\n\n${payload.content}`,
-            createdAt: new Date().toISOString(),
-          },
-        ];
-      });
+          return [
+            ...updated,
+            {
+              id: crypto.randomUUID(),
+              role: "tool",
+              content: `Approved action ran on ${action.target}.\n\n${payload.content}`,
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        });
+      }
+      setActivityMessage(`${action.title} completed on ${action.target}.`);
     } catch (error) {
+      const resultText = error instanceof Error ? error.message : "Unknown action failure.";
+      setActivityMessage(`${action.title} failed on ${action.target}.`);
       setMessages((current) => {
         const updated = current.map((item) => {
           if (item.id !== messageId) return item;
@@ -297,7 +342,7 @@ export default function AssistantPage() {
                 ? {
                     ...candidate,
                     status: "failed" as ActionStatus,
-                    result: error instanceof Error ? error.message : "Unknown action failure.",
+                    result: resultText,
                   }
                 : candidate
             ),
@@ -309,18 +354,39 @@ export default function AssistantPage() {
           {
             id: crypto.randomUUID(),
             role: "tool",
-            content: error instanceof Error ? error.message : "Unknown action failure.",
+            content: resultText,
             createdAt: new Date().toISOString(),
           },
         ];
       });
+    } finally {
+      setActiveActionId(null);
     }
   }
 
-  function resetChat() {
+  function startNewChat() {
     setMessages([]);
     setSessionId(null);
+    setActivityMessage("Started a new chat.");
+  }
+
+  async function openSession(targetSessionId: string) {
+    if (loading || loadingSession || targetSessionId === sessionId) return;
+    setLoadingSession(true);
+    setActivityMessage("Loading chat...");
+    try {
+      await loadServerSession(targetSessionId);
+      setActivityMessage(null);
+    } catch {
+      setActivityMessage("Failed to load that chat.");
+    } finally {
+      setLoadingSession(false);
+    }
+  }
+
+  function clearLocalFallback() {
     window.localStorage.removeItem(STORAGE_KEY);
+    setActivityMessage("Cleared local fallback cache.");
   }
 
   return (
@@ -343,7 +409,58 @@ export default function AssistantPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+      {activityMessage ? (
+        <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
+          {(loading || loadingSession || activeActionId) ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="h-4 w-4" />
+          )}
+          <span>{activityMessage}</span>
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px]">
+        <aside className="space-y-4">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Chats</h2>
+              <button
+                onClick={startNewChat}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New
+              </button>
+            </div>
+            <div className="mt-3 space-y-2">
+              {sessions.length === 0 ? (
+                <div className="text-xs text-muted-foreground">
+                  No saved chats yet. Your first question will create one.
+                </div>
+              ) : (
+                sessions.map((session) => (
+                  <button
+                    key={session.id}
+                    onClick={() => openSession(session.id)}
+                    className={cn(
+                      "w-full rounded-lg border px-3 py-2 text-left",
+                      session.id === sessionId
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-background hover:bg-muted/40"
+                    )}
+                  >
+                    <div className="line-clamp-2 text-sm font-medium">{session.title}</div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {timeAgo(session.updatedAt)} · {session.reasoningEffort} · {session.lookbackHours}h
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        </aside>
+
         <section className="rounded-xl border border-border bg-card p-4">
           <div className="space-y-3">
             {messages.length === 0 ? (
@@ -408,7 +525,10 @@ export default function AssistantPage() {
                                       </div>
                                     </div>
                                     <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                                      {action.status ?? "proposed"}
+                                      <span className="inline-flex items-center gap-1">
+                                        {action.status === "running" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
+                                        {action.status ?? "proposed"}
+                                      </span>
                                     </span>
                                   </div>
                                   <p className="mt-2 text-sm text-muted-foreground">{action.reason}</p>
@@ -426,12 +546,14 @@ export default function AssistantPage() {
                                     <div className="mt-3 flex gap-2">
                                       <button
                                         onClick={() => handleAction(message.id, action.id, "approve")}
+                                        disabled={Boolean(activeActionId)}
                                         className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
                                       >
                                         Approve
                                       </button>
                                       <button
                                         onClick={() => handleAction(message.id, action.id, "reject")}
+                                        disabled={Boolean(activeActionId)}
                                         className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
                                       >
                                         Reject
@@ -536,10 +658,10 @@ export default function AssistantPage() {
 
           <div className="rounded-xl border border-border bg-card p-4">
             <button
-              onClick={resetChat}
+              onClick={clearLocalFallback}
               className="w-full rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
             >
-              Clear Local Chat
+              Clear Local Fallback Cache
             </button>
           </div>
         </aside>

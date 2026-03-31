@@ -38,9 +38,19 @@ export interface StoredMessage {
 
 export interface StoredSession {
   id: string;
+  title: string;
   reasoningEffort: "high" | "xhigh";
   lookbackHours: 1 | 2 | 6 | 24;
   messages: StoredMessage[];
+}
+
+export interface StoredSessionSummary {
+  id: string;
+  title: string;
+  reasoningEffort: "high" | "xhigh";
+  lookbackHours: 1 | 2 | 6 | 24;
+  updatedAt: string;
+  createdAt: string;
 }
 
 function isMissingRelation(error: unknown) {
@@ -95,17 +105,52 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function loadLatestSession(supabase: SupabaseClient, userId: string): Promise<{
+export async function listSessions(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<{ persistenceEnabled: boolean; sessions: StoredSessionSummary[] }> {
+  const { data, error } = await supabase
+    .from("smon_copilot_sessions")
+    .select("id, title, reasoning_effort, lookback_hours, updated_at, created_at")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(25);
+
+  if (error) {
+    if (isMissingRelation(error)) {
+      return { persistenceEnabled: false, sessions: [] };
+    }
+    throw error;
+  }
+
+  return {
+    persistenceEnabled: true,
+    sessions: (data ?? []).map((session) => ({
+      id: session.id,
+      title: session.title,
+      reasoningEffort: session.reasoning_effort,
+      lookbackHours: session.lookback_hours,
+      updatedAt: session.updated_at,
+      createdAt: session.created_at,
+    })),
+  };
+}
+
+export async function loadSession(
+  supabase: SupabaseClient,
+  userId: string,
+  sessionId?: string | null
+): Promise<{
   persistenceEnabled: boolean;
   session: StoredSession | null;
 }> {
-  const sessionQuery = await supabase
+  const sessionBaseQuery = supabase
     .from("smon_copilot_sessions")
-    .select("id, reasoning_effort, lookback_hours")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .select("id, title, reasoning_effort, lookback_hours");
+
+  const sessionQuery = sessionId
+    ? await sessionBaseQuery.eq("id", sessionId).eq("user_id", userId).maybeSingle()
+    : await sessionBaseQuery.eq("user_id", userId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
 
   if (sessionQuery.error) {
     if (isMissingRelation(sessionQuery.error)) {
@@ -118,18 +163,18 @@ export async function loadLatestSession(supabase: SupabaseClient, userId: string
     return { persistenceEnabled: true, session: null };
   }
 
-  const sessionId = sessionQuery.data.id;
+  const resolvedSessionId = sessionQuery.data.id;
   const [messagesQuery, actionsQuery] = await Promise.all([
     supabase
       .from("smon_copilot_messages")
       .select("id, role, content, evidence, created_at, message_order")
-      .eq("session_id", sessionId)
+      .eq("session_id", resolvedSessionId)
       .eq("user_id", userId)
       .order("message_order", { ascending: true }),
     supabase
       .from("smon_copilot_actions")
       .select("id, assistant_message_id, title, target, tool_name, command_preview, reason, risk, status, result_text, metadata")
-      .eq("session_id", sessionId)
+      .eq("session_id", resolvedSessionId)
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
   ]);
@@ -159,7 +204,8 @@ export async function loadLatestSession(supabase: SupabaseClient, userId: string
   return {
     persistenceEnabled: true,
     session: {
-      id: sessionId,
+      id: resolvedSessionId,
+      title: sessionQuery.data.title,
       reasoningEffort: sessionQuery.data.reasoning_effort,
       lookbackHours: sessionQuery.data.lookback_hours,
       messages: (messagesQuery.data ?? []).map((message) => ({
@@ -172,6 +218,12 @@ export async function loadLatestSession(supabase: SupabaseClient, userId: string
       })),
     },
   };
+}
+
+function buildSessionTitle(content: string) {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) return "NAS Copilot Session";
+  return normalized.length > 72 ? `${normalized.slice(0, 69)}...` : normalized;
 }
 
 export async function ensureSession(
@@ -295,7 +347,10 @@ export async function persistTurn(
 
   await supabase
     .from("smon_copilot_sessions")
-    .update({ updated_at: new Date().toISOString() })
+    .update({
+      updated_at: new Date().toISOString(),
+      ...(baseOrder === 0 ? { title: buildSessionTitle(input.userMessage.content) } : {}),
+    })
     .eq("id", input.sessionId)
     .eq("user_id", userId);
 
