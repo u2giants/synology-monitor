@@ -340,6 +340,7 @@ func parseConnectionLog(line string) map[string]interface{} {
 
 var (
 	quotedPathPattern = regexp.MustCompile(`"([^"\n]*?/[^"\n]+)"`)
+	singleQuotedPath  = regexp.MustCompile(`'([^'\n]*?/[^'\n]+)'`)
 	plainPathPattern  = regexp.MustCompile(`(/[^,\s]+)`)
 	driveUserPattern  = regexp.MustCompile(`(?i)\b(?:user|username|account)\b[:= ]+["']?([^"',\s]+)`)
 	driveByPattern    = regexp.MustCompile(`(?i)\bby\b\s+'?([^'(\s]+)`)
@@ -402,6 +403,8 @@ func parseDriveLog(line string) map[string]interface{} {
 		meta["action"] = "rename"
 	case strings.Contains(lower, "move") || strings.Contains(lower, "moved"):
 		meta["action"] = "move"
+	case strings.Contains(lower, "<nativeremove>") || strings.Contains(lower, "removed successfully"):
+		meta["action"] = "delete"
 	case strings.Contains(lower, "delete") || strings.Contains(lower, "deleted") || strings.Contains(lower, "remove"):
 		meta["action"] = "delete"
 	case strings.Contains(lower, "create") || strings.Contains(lower, "created"):
@@ -450,16 +453,16 @@ func normalizeDriveUser(user string) string {
 
 func extractDrivePath(line string) string {
 	if path := firstCapture(drivePathField, line); path != "" {
-		return strings.TrimSpace(path)
+		return cleanDrivePath(path)
 	}
 	if path := firstCapture(driveSharePath, line); path != "" {
-		return strings.TrimSpace(path)
+		return cleanDrivePath(path)
 	}
 	if path := firstCapture(driveNewSharePath, line); path != "" {
-		return strings.TrimSpace(path)
+		return cleanDrivePath(path)
 	}
 	if path := extractPath(line); path != "" {
-		return strings.TrimSpace(path)
+		return cleanDrivePath(path)
 	}
 	return ""
 }
@@ -468,10 +471,32 @@ func extractPath(line string) string {
 	if match := quotedPathPattern.FindStringSubmatch(line); len(match) > 1 {
 		return strings.TrimSpace(match[1])
 	}
+	if matches := singleQuotedPath.FindAllStringSubmatch(line, -1); len(matches) > 0 {
+		best := ""
+		for _, match := range matches {
+			if len(match) < 2 {
+				continue
+			}
+			candidate := strings.TrimSpace(match[1])
+			if strings.Count(candidate, "/") >= strings.Count(best, "/") && len(candidate) > len(best) {
+				best = candidate
+			}
+		}
+		if best != "" {
+			return best
+		}
+	}
 	if match := plainPathPattern.FindStringSubmatch(line); len(match) > 1 {
 		return strings.TrimSpace(match[1])
 	}
 	return ""
+}
+
+func cleanDrivePath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, "[]()\"'")
+	path = strings.TrimRight(path, "],")
+	return path
 }
 
 func mergeMetadata(base, extra map[string]interface{}) map[string]interface{} {
