@@ -38,6 +38,8 @@ var defaultLogFiles = []LogFile{
 	{Path: "synolog/synosecurity.log", Source: "security"},
 	{Path: "synolog/synoconnection.log", Source: "connection"},
 	{Path: "synolog/synopkg.log", Source: "package"},
+	{Path: "samba/log.smbd", Source: "smb"},
+	{Path: "samba/log.nmbd", Source: "smb"},
 }
 
 func New(s *sender.Sender, nasID, logDir string, watchPaths, extraLogFiles []string, interval time.Duration) *LogWatcher {
@@ -276,6 +278,19 @@ func parseLine(line, source string) parsedEntry {
 	// Connection log parsing
 	if source == "connection" {
 		entry.metadata = parseConnectionLog(line)
+	}
+
+	// SMB-specific parsing
+	if source == "smb" {
+		entry.metadata = parseSMBLog(line)
+		// Filter out low-value/noise messages
+		if shouldFilterSMBLine(entry.message) {
+			entry.severity = "filter"
+		}
+		// Upgrade SMB errors
+		if entry.severity == "info" && strings.Contains(lower, "error") {
+			entry.severity = "error"
+		}
 	}
 
 	if strings.HasPrefix(source, "drive") {
@@ -583,6 +598,120 @@ func looksLikeIP(s string) bool {
 		}
 	}
 	return dots == 3 && len(s) >= 7
+}
+
+// SMB log parsing
+
+var (
+	// Patterns for SMB log extraction
+	smbPathPattern    = regexp.MustCompile(`smb_fname\(([^)]+)\)`)
+	smbUserPattern    = regexp.MustCompile(`(?i)(?:user|authenticated|login|connect)[:\s]+'?([^'\s,]+)`)
+	smbIPPattern      = regexp.MustCompile(`(?:ip|address)[:\s=]+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
+	smbSessionPattern = regexp.MustCompile(`(?:session|connect).*(?:to|with) (\S+)`)
+
+	// Noise patterns to filter out (high-volume low-value messages)
+	smbNoisePatterns = []string{
+		"Cannot get valid session",
+		"ReloadConnPerProc",
+		"is_symlink_path",
+		"Failed to lstat",
+		"NT_STATUS_USER_SESSION_DELETED",
+		"SYNOSmbReloadConnPerProc",
+		"is_symlink",
+		"oplock",
+	}
+)
+
+func parseSMBLog(line string) map[string]interface{} {
+	meta := make(map[string]interface{})
+	lower := strings.ToLower(line)
+
+	// Extract file paths
+	if matches := smbPathPattern.FindAllStringSubmatch(line, -1); len(matches) > 0 {
+		paths := make([]string, 0, len(matches))
+		for _, m := range matches {
+			if len(m) > 1 {
+				path := strings.TrimSpace(m[1])
+				// Skip temp files, symlinks
+				if !strings.HasPrefix(path, "~") && !strings.Contains(path, "No such file") {
+					paths = append(paths, path)
+				}
+			}
+		}
+		if len(paths) > 0 {
+			meta["file_paths"] = paths
+			// Set primary path for easier querying
+			if paths[0] != "" {
+				meta["path"] = paths[0]
+			}
+		}
+	}
+
+	// Extract username
+	if user := firstCapture(smbUserPattern, line); user != "" {
+		meta["user"] = normalizeDriveUser(user)
+	}
+
+	// Extract IP address
+	if ip := firstCapture(smbIPPattern, line); ip != "" {
+		meta["ip"] = ip
+	}
+
+	// Detect SMB operation type
+	switch {
+	case strings.Contains(lower, "create") && !strings.Contains(lower, "created"):
+		meta["operation"] = "create_pending"
+	case strings.Contains(lower, "open") || strings.Contains(lower, "opened"):
+		meta["operation"] = "open"
+	case strings.Contains(lower, "close") || strings.Contains(lower, "closed"):
+		meta["operation"] = "close"
+	case strings.Contains(lower, "write") || strings.Contains(lower, "written"):
+		meta["operation"] = "write"
+	case strings.Contains(lower, "read"):
+		meta["operation"] = "read"
+	case strings.Contains(lower, "delete") || strings.Contains(lower, "unlink"):
+		meta["operation"] = "delete"
+	case strings.Contains(lower, "rename"):
+		meta["operation"] = "rename"
+	case strings.Contains(lower, "mkdir"):
+		meta["operation"] = "mkdir"
+	case strings.Contains(lower, "session") && (strings.Contains(lower, "connect") || strings.Contains(lower, "establish")):
+		meta["operation"] = "session_connect"
+	case strings.Contains(lower, "session") && strings.Contains(lower, "closed"):
+		meta["operation"] = "session_close"
+	case strings.Contains(lower, "connection"):
+		meta["operation"] = "connection"
+	}
+
+	return meta
+}
+
+// shouldFilterSMBLine returns true if the SMB log line is noise/low-value
+func shouldFilterSMBLine(line string) bool {
+	// Filter by pattern
+	for _, pattern := range smbNoisePatterns {
+		if strings.Contains(line, pattern) {
+			return true
+		}
+	}
+
+	// Filter very short lines (usually noise)
+	if len(line) < 50 {
+		return true
+	}
+
+	// Filter lines that are only about symlinks/missing files
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "no such file") ||
+		strings.Contains(lower, "cannot find") ||
+		strings.Contains(lower, "does not exist") {
+		// Keep some - might indicate deleted files
+		if strings.Contains(lower, "smb_fname") && strings.Count(line, "smb_fname") < 2 {
+			return true
+		}
+	}
+
+	return false
 }
 
 // fmt import used by the package
