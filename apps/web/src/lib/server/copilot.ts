@@ -16,7 +16,11 @@ export type CopilotToolName =
   | "tail_sharesync_log"
   | "restart_monitor_agent"
   | "restart_synology_drive_server"
-  | "restart_synology_drive_sharesync";
+  | "restart_synology_drive_sharesync"
+  | "check_sharesync_status"
+  | "rename_file_to_old"
+  | "remove_invalid_chars"
+  | "trigger_sharesync_resync";
 
 export interface CopilotMessage {
   id: string;
@@ -159,6 +163,39 @@ const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     description: "Write. Restart the Synology Drive ShareSync package.",
     write: true,
     buildPreview: () => "/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+  },
+  check_sharesync_status: {
+    description: "Read-only. Check current ShareSync task status and any stuck sync operations. Useful for diagnosing stuck syncs.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const lines = Math.max(60, Math.min(200, (input.lookbackHours ?? 2) * 40));
+      return `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "=== $f ==="; tail -n ${lines} "$f"; done | grep -A2 -B2 -i "syncing\\|stuck\\|error\\|conflict" || echo "No issues found in recent logs"`;
+    },
+  },
+  rename_file_to_old: {
+    description: "Write. Rename a problematic file by appending .old to its name. Use this for files causing sync conflicts. Requires file_path parameter.",
+    write: true,
+    buildPreview: (_target, input) => {
+      const filePath = input.filter || "/volume1/SharedDrive/problematic_file.txt";
+      return `mv "${filePath}" "${filePath}.old" && echo "Renamed successfully"`;
+    },
+  },
+  remove_invalid_chars: {
+    description: "Write. Remove invalid characters (like /\\:*?\"<>|) from a filename. Use this when ShareSync fails due to special characters in file names. Requires file_path parameter.",
+    write: true,
+    buildPreview: (_target, input) => {
+      const filePath = input.filter || "/volume1/SharedDrive/file_with_invalid_chars.txt";
+      // Get the directory and filename, then sanitize the filename
+      return `dir=$(dirname "${filePath}"); file=$(basename "${filePath}"); newfile=$(echo "$file" | sed 's/[/\\:*?"<>|]/_/g'); [ "$file" != "$newfile" ] && mv "${filePath}" "$dir/$newfile" && echo "Renamed: $file -> $newfile" || echo "No invalid characters found"`;
+    },
+  },
+  trigger_sharesync_resync: {
+    description: "Write. Trigger a manual re-sync for a specific ShareSync task by restarting ShareSync for the affected folder. Use after resolving sync issues. Requires folder path in filter parameter.",
+    write: true,
+    buildPreview: (_target, input) => {
+      const folder = input.filter || "/volume1/SharedFolder";
+      return `/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
+    },
   },
 };
 

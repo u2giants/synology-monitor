@@ -1,16 +1,20 @@
 "use client";
 
+import { useState } from "react";
 import { useNasUnits } from "@/hooks/use-nas-units";
 import { useRealtimeAlerts } from "@/hooks/use-realtime-alerts";
 import { useMetrics } from "@/hooks/use-metrics";
 import { NasStatusCard } from "@/components/dashboard/nas-status-card";
-import { AlertList } from "@/components/dashboard/alert-list";
+import { AlertList, AlertDetailModal } from "@/components/dashboard/alert-list";
 import { MetricGauge } from "@/components/dashboard/metric-gauge";
 import { Activity, AlertTriangle, HardDrive, Shield } from "lucide-react";
+import Link from "next/link";
+import type { Alert } from "@synology-monitor/shared";
 
 export default function OverviewPage() {
   const { units, loading: unitsLoading } = useNasUnits();
   const { alerts, loading: alertsLoading } = useRealtimeAlerts();
+  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
 
   const firstNasId = units[0]?.id ?? null;
   const { series } = useMetrics(
@@ -44,6 +48,7 @@ export default function OverviewPage() {
           value={criticalCount.toString()}
           detail={`${warningCount} warnings`}
           highlight={criticalCount > 0}
+          onClick={alerts.length > 0 ? () => {/* navigate handled by alert click */} : undefined}
         />
         <StatCard
           icon={<Activity className="h-5 w-5 text-primary" />}
@@ -89,16 +94,36 @@ export default function OverviewPage() {
 
         {/* Alerts */}
         <section>
-          <h2 className="mb-3 text-lg font-semibold">Active Alerts</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Active Alerts</h2>
+            {alerts.length > 0 && (
+              <Link 
+                href="/sync-triage" 
+                className="text-sm text-primary hover:underline flex items-center gap-1"
+              >
+                View in Sync Triage
+              </Link>
+            )}
+          </div>
           <div className="rounded-lg border border-border p-4">
             {alertsLoading ? (
               <div className="text-sm text-muted-foreground">Loading...</div>
             ) : (
-              <AlertList alerts={alerts} limit={5} />
+              <AlertList 
+                alerts={alerts} 
+                limit={5} 
+                onAlertClick={setSelectedAlert}
+              />
             )}
           </div>
         </section>
       </div>
+
+      {/* Alert Detail Modal */}
+      <AlertDetailModal 
+        alert={selectedAlert} 
+        onClose={() => setSelectedAlert(null)} 
+      />
     </div>
   );
 }
@@ -109,18 +134,21 @@ function StatCard({
   value,
   detail,
   highlight = false,
+  onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   detail: string;
   highlight?: boolean;
+  onClick?: () => void;
 }) {
   return (
     <div
+      onClick={onClick}
       className={`rounded-lg border p-4 ${
         highlight ? "border-critical/30 bg-critical/5" : "border-border bg-card"
-      }`}
+      } ${onClick ? "cursor-pointer hover:opacity-80 transition-opacity" : ""}`}
     >
       <div className="flex items-center gap-2 text-muted-foreground">
         {icon}
