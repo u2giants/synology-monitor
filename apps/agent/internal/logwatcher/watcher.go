@@ -620,6 +620,20 @@ var (
 		"is_symlink",
 		"oplock",
 	}
+
+	// Enhanced user attribution patterns for Drive logs
+	// These patterns handle various Synology log formats
+	userPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\buser\b\s*[:=]\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\busername\b\s*[:=]\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\baccount\b\s*[:=]\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\bby\s+'([^']+)'`),
+		regexp.MustCompile(`(?i)\bby\s+(\S+@\S+)`),
+		regexp.MustCompile(`(?i)\bowner\b\s*[:=]\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\binitiated\s+by\b\s*[:=]?\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\bfrom\s+user\b\s*[:=]?\s*'?([^'"\s,]+)`),
+		regexp.MustCompile(`(?i)\bclient\b.*?user\b[:\s]+'?([^'"\s,]+)`),
+	}
 )
 
 func parseSMBLog(line string) map[string]interface{} {
