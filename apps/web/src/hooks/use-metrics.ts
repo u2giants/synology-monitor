@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 interface MetricDataPoint {
@@ -22,13 +22,12 @@ export function useMetrics(
   const [series, setSeries] = useState<MetricSeries[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const rangeToInterval: Record<string, string> = {
-    "1h": "1 hour",
-    "6h": "6 hours",
-    "24h": "24 hours",
-    "7d": "7 days",
-    "30d": "30 days",
-  };
+  // Memoize types to prevent infinite re-render loop
+  const typesKey = types.join(",");
+  const typesRef = useRef(typesKey);
+  if (typesKey !== typesRef.current) {
+    typesRef.current = typesKey;
+  }
 
   const fetchMetrics = useCallback(async () => {
     if (!nasId) return;
@@ -40,7 +39,7 @@ export function useMetrics(
 
     const results: MetricSeries[] = [];
 
-    for (const type of types) {
+    for (const type of typesRef.current.split(",")) {
       const { data, error } = await supabase
         .from("smon_metrics")
         .select("recorded_at, value, unit")
@@ -64,7 +63,7 @@ export function useMetrics(
 
     setSeries(results);
     setLoading(false);
-  }, [nasId, types.join(","), range]);
+  }, [nasId, range]); // Only depend on nasId and range, not types
 
   useEffect(() => {
     fetchMetrics();

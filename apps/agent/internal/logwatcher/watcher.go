@@ -209,18 +209,77 @@ func readLastLines(path string, maxLines int) ([]string, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	lines := make([]string, 0, maxLines)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-		if len(lines) > maxLines {
-			lines = lines[1:]
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
+	// Seek to end of file to calculate size
+	info, err := f.Stat()
+	if err != nil {
 		return nil, err
 	}
+
+	fileSize := info.Size()
+	if fileSize == 0 {
+		return nil, nil
+	}
+
+	// Use a ring buffer approach - read from end, count lines
+	// Start from a reasonable chunk size estimate (avg 200 bytes per line)
+	chunkSize := int64(maxLines * 200)
+	if chunkSize < 4096 {
+		chunkSize = 4096
+	}
+	if chunkSize > fileSize {
+		chunkSize = fileSize
+	}
+
+	lines := make([]string, 0, maxLines)
+	offset := fileSize - chunkSize
+
+	for offset >= 0 && len(lines) < maxLines {
+		_, err := f.Seek(offset, io.SeekStart)
+		if err != nil {
+			return nil, err
+		}
+
+		// Read a chunk
+		data := make([]byte, chunkSize)
+		n, err := f.Read(data)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		data = data[:n]
+
+		// Count newlines
+		count := 0
+		for _, b := range data {
+			if b == '\n' {
+				count++
+			}
+		}
+
+		// If we have enough lines, extract them
+		if len(lines)+count >= maxLines {
+			// Split and keep only what we need
+			allLines := strings.Split(string(data), "\n")
+			keep := maxLines - len(lines)
+			if keep > 0 && keep <= len(allLines) {
+				lines = append(lines, allLines[len(allLines)-keep:]...)
+			}
+			break
+		}
+
+		// Otherwise, add all lines and move back
+		allLines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		lines = append(allLines, lines...)
+		offset -= chunkSize
+	}
+
+	// Trim to maxLines
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+
 	return lines, nil
 }
 

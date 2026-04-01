@@ -79,7 +79,7 @@ export async function runNasScript(config: NasConfig, script: string, timeoutMs 
         "-o",
         "ServerAliveCountMax=1",
         "-o",
-        "StrictHostKeyChecking=no",
+        "StrictHostKeyChecking=accept-new",
         "-o",
         "UserKnownHostsFile=/dev/null",
         `${config.user}@${config.host}`,

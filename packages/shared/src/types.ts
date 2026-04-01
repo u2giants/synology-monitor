@@ -80,7 +80,7 @@ export interface SmartAttribute {
 // === Logs ===
 
 export type LogSeverity = "info" | "warning" | "error" | "critical";
-export type LogSource = "system" | "security" | "connection" | "package" | "docker";
+export type LogSource = "system" | "security" | "connection" | "package" | "docker" | "drive" | "drive_server" | "drive_sharesync" | "smb";
 
 export interface LogEntry {
   id: string;

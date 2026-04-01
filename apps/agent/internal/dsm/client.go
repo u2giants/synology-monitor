@@ -102,18 +102,19 @@ func (c *Client) Logout() {
 
 // request makes an authenticated API call
 func (c *Client) request(api string, version int, method string, extra url.Values) (json.RawMessage, error) {
+	// Hold mutex for entire login check and login operation to prevent race condition
 	c.mu.Lock()
 	sid := c.sid
-	c.mu.Unlock()
-
 	if sid == "" {
+		// Release lock temporarily while logging in (Login() acquires its own lock)
+		c.mu.Unlock()
 		if err := c.Login(); err != nil {
 			return nil, err
 		}
 		c.mu.Lock()
 		sid = c.sid
-		c.mu.Unlock()
 	}
+	c.mu.Unlock()
 
 	params := url.Values{
 		"api":     {api},

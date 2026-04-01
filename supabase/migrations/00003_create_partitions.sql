@@ -47,7 +47,7 @@ set retention = '84 days',
     retention_keep_index = false
 where parent_table = 'public.smon_storage_snapshots';
 
--- Create initial partitions for smon_container_status (weekly, 4 weeks retention)
+-- Create initial partitions for smon_container_status (weekly, 6 months retention)
 select public.create_parent(
   p_parent_table := 'public.smon_container_status',
   p_control := 'recorded_at',
@@ -57,7 +57,7 @@ select public.create_parent(
 );
 
 update public.part_config
-set retention = '28 days',
+set retention = '180 days',  -- 6 months for better pattern analysis
     retention_keep_table = false,
     retention_keep_index = false
 where parent_table = 'public.smon_container_status';

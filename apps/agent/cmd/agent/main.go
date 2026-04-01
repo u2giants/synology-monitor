@@ -4,8 +4,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
-	"time"
 
 	"github.com/synology-monitor/agent/internal/collector"
 	"github.com/synology-monitor/agent/internal/config"
@@ -61,29 +61,54 @@ func main() {
 		s.SendHeartbeat(cfg.NasID, cfg.NasName, sysInfo.Model, sysInfo.FirmwareVer)
 	}
 
-	// Stop channel for graceful shutdown
+	// Stop channel and wait group for graceful shutdown
 	stop := make(chan struct{})
+	var wg sync.WaitGroup
 
 	// Start sender loop
-	go s.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.Run(stop)
+	}()
 
 	// Start collectors
 	systemCollector := collector.NewSystemCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
-	go systemCollector.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		systemCollector.Run(stop)
+	}()
 
 	storageCollector := collector.NewStorageCollector(dsmClient, s, cfg.NasID, cfg.StorageInterval)
-	go storageCollector.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		storageCollector.Run(stop)
+	}()
 
 	dockerCollector := collector.NewDockerCollector(dsmClient, s, cfg.NasID, cfg.DockerInterval)
-	go dockerCollector.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dockerCollector.Run(stop)
+	}()
 
 	// Start Drive Admin collector (team folders, user activity, stats)
 	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
-	go driveCollector.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		driveCollector.Run(stop)
+	}()
 
 	// Start log watcher
 	logW := logwatcher.New(s, cfg.NasID, cfg.LogDir, cfg.WatchPaths, cfg.ExtraLogFiles, cfg.LogInterval)
-	go logW.Run(stop)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logW.Run(stop)
+	}()
 
 	// Start security watcher
 	secW, err := security.NewWatcher(s, cfg.NasID, cfg.WatchPaths, cfg.MaxInotifyDirs, cfg.DataDir)
@@ -91,28 +116,12 @@ func main() {
 		log.Printf("Warning: security watcher failed to initialize: %v", err)
 	} else {
 		defer secW.Close()
-		go secW.Run(stop)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			secW.Run(stop)
+		}()
 	}
-
-	// Periodic heartbeat
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				model := "DS1621xs+"
-				dsmVer := ""
-				if sysInfo != nil {
-					model = sysInfo.Model
-					dsmVer = sysInfo.FirmwareVer
-				}
-				s.SendHeartbeat(cfg.NasID, cfg.NasName, model, dsmVer)
-			case <-stop:
-				return
-			}
-		}
-	}()
 
 	log.Printf("Agent running for NAS: %s (%s)", cfg.NasName, cfg.NasID)
 
@@ -124,7 +133,7 @@ func main() {
 	log.Println("Shutting down...")
 	close(stop)
 
-	// Give goroutines time to flush
-	time.Sleep(2 * time.Second)
+	// Wait for all goroutines to finish
+	wg.Wait()
 	log.Println("Agent stopped")
 }

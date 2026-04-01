@@ -15,7 +15,41 @@ import { createClient } from "@/lib/supabase/server";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Simple in-memory rate limiter: 20 requests per minute per IP
+const rateLimiter = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMIT = 20;
+const WINDOW_MS = 60_000;
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimiter.get(ip);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimiter.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    return true;
+  }
+
+  if (entry.count >= RATE_LIMIT) {
+    return false;
+  }
+
+  entry.count++;
+  return true;
+}
+
 export async function POST(request: Request) {
+  // Get client IP for rate limiting
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const clientIp = forwardedFor?.split(",")[0]?.trim() || "unknown";
+
+  // Check rate limit
+  if (!checkRateLimit(clientIp)) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded. Please wait before sending more requests." },
+      { status: 429 }
+    );
+  }
+
   try {
     const supabase = await createClient();
     const {

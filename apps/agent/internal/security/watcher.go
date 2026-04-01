@@ -31,6 +31,9 @@ type Watcher struct {
 	recentEvents   []fileEvent
 	eventWindowSec int
 	massThreshold  int
+
+	// Worker pool for entropy checks to prevent unbounded goroutine spawning
+	entropySemaphore chan struct{}
 }
 
 type fileEvent struct {
@@ -59,13 +62,14 @@ func NewWatcher(s *sender.Sender, nasID string, watchPaths []string, maxDirs int
 	}
 
 	return &Watcher{
-		sender:         s,
-		nasID:          nasID,
-		watchPaths:     watchPaths,
-		maxDirs:        maxDirs,
-		db:             db,
-		eventWindowSec: 60,
-		massThreshold:  50,
+		sender:           s,
+		nasID:            nasID,
+		watchPaths:       watchPaths,
+		maxDirs:          maxDirs,
+		db:               db,
+		eventWindowSec:   60,
+		massThreshold:    50,
+		entropySemaphore: make(chan struct{}, 50), // Limit concurrent entropy checks to prevent OOM
 	}, nil
 }
 
@@ -177,10 +181,10 @@ func (w *Watcher) handleFileEvent(event fsnotify.Event) {
 				Title:       "Mass file rename detected — possible ransomware",
 				Description: "More than 50 file rename/create events detected within 60 seconds",
 				Details: map[string]interface{}{
-					"event_count":   eventCount,
-					"window_sec":    w.eventWindowSec,
-					"latest_file":   event.Name,
-					"operation":     event.Op.String(),
+					"event_count": eventCount,
+					"window_sec":  w.eventWindowSec,
+					"latest_file": event.Name,
+					"operation":   event.Op.String(),
 				},
 				FilePath:   event.Name,
 				DetectedAt: now,
@@ -196,9 +200,13 @@ func (w *Watcher) handleFileEvent(event fsnotify.Event) {
 		}
 	}
 
-	// Check entropy on modified files
+	// Check entropy on modified files - use semaphore to limit concurrent goroutines
 	if event.Op&fsnotify.Write != 0 {
-		go w.checkFileEntropy(event.Name, now)
+		go func(path string, t time.Time) {
+			w.entropySemaphore <- struct{}{}        // Acquire semaphore
+			defer func() { <-w.entropySemaphore }() // Release semaphore
+			w.checkFileEntropy(path, t)
+		}(event.Name, now)
 	}
 }
 

@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import OpenAI from "openai";
 import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
@@ -58,15 +58,16 @@ function randomId() {
   return randomUUID();
 }
 
-function getActionSigningKey() {
-  return process.env.COPILOT_ACTION_SIGNING_KEY ?? process.env.OPENAI_API_KEY ?? "";
+function getActionSigningKey(): string {
+  const signingKey = process.env.COPILOT_ACTION_SIGNING_KEY ?? process.env.OPENAI_API_KEY ?? "";
+  if (!signingKey) {
+    throw new Error("COPILOT_ACTION_SIGNING_KEY or OPENAI_API_KEY environment variable must be set.");
+  }
+  return signingKey;
 }
 
 function signAction(target: NasTarget, commandPreview: string, expiresAt: string) {
   const signingKey = getActionSigningKey();
-  if (!signingKey) {
-    throw new Error("COPILOT_ACTION_SIGNING_KEY or OPENAI_API_KEY is not configured.");
-  }
 
   return createHmac("sha256", signingKey)
     .update(`${target}\n${commandPreview}\n${expiresAt}`)
@@ -102,7 +103,9 @@ function verifyApprovalToken(target: NasTarget, commandPreview: string, token: s
   }
 
   const expectedSignature = signAction(parsed.target, parsed.commandPreview, parsed.expiresAt);
-  if (expectedSignature !== parsed.signature) {
+  const expectedBuf = Buffer.from(expectedSignature, "hex");
+  const actualBuf = Buffer.from(parsed.signature, "hex");
+  if (expectedBuf.length !== actualBuf.length || !timingSafeEqual(expectedBuf, actualBuf)) {
     throw new Error("Approval token signature is invalid.");
   }
 }

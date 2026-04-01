@@ -155,8 +155,14 @@ func (s *Sender) flush() {
 	var tables []string
 	for rows.Next() {
 		var t string
-		rows.Scan(&t)
+		if err := rows.Scan(&t); err != nil {
+			log.Printf("[sender] error scanning table name: %v", err)
+			continue
+		}
 		tables = append(tables, t)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[sender] error iterating tables: %v", err)
 	}
 	rows.Close()
 
@@ -182,9 +188,15 @@ func (s *Sender) flushTable(table string) {
 	for rows.Next() {
 		var id int64
 		var payload string
-		rows.Scan(&id, &payload)
+		if err := rows.Scan(&id, &payload); err != nil {
+			log.Printf("[sender] error scanning row in %s: %v", table, err)
+			continue
+		}
 		ids = append(ids, id)
 		payloads = append(payloads, json.RawMessage(payload))
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[sender] error iterating rows in %s: %v", table, err)
 	}
 	rows.Close()
 
@@ -231,21 +243,44 @@ func (s *Sender) flushTable(table string) {
 }
 
 func (s *Sender) deleteEntries(ids []int64) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("[sender] error starting transaction for delete: %v", err)
+		return
+	}
 	for _, id := range ids {
-		s.db.Exec("DELETE FROM wal_entries WHERE id = ?", id)
+		if _, err := tx.Exec("DELETE FROM wal_entries WHERE id = ?", id); err != nil {
+			log.Printf("[sender] error deleting entry %d: %v", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[sender] error committing delete transaction: %v", err)
 	}
 }
 
 func (s *Sender) incrementAttempts(ids []int64, errMsg string) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		log.Printf("[sender] error starting transaction for increment: %v", err)
+		return
+	}
 	for _, id := range ids {
-		s.db.Exec("UPDATE wal_entries SET attempts = attempts + 1, last_error = ? WHERE id = ?", errMsg, id)
+		if _, err := tx.Exec("UPDATE wal_entries SET attempts = attempts + 1, last_error = ? WHERE id = ?", errMsg, id); err != nil {
+			log.Printf("[sender] error incrementing attempts for %d: %v", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[sender] error committing increment transaction: %v", err)
 	}
 }
 
 func (s *Sender) enforceWALLimit() {
 	// Check WAL size
 	var count int64
-	s.db.QueryRow("SELECT COUNT(*) FROM wal_entries").Scan(&count)
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM wal_entries").Scan(&count); err != nil {
+		log.Printf("[sender] error checking WAL size: %v", err)
+		return
+	}
 
 	// Rough estimate: 500 bytes per entry
 	estimatedSize := count * 500
