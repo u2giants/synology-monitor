@@ -76,11 +76,15 @@ docker compose -f docker-compose.agent.yml up -d
   that are usually self-signed.
 - The example env files now use fixed UUIDs for `NAS_ID`. Keep each NAS on its
   own UUID consistently.
-- The default compose file mounts only `/volume1`. If a NAS has additional data
-  volumes, add the extra bind mounts explicitly and keep `WATCH_PATHS` and
-  `CHECKSUM_PATHS` aligned with the actual mounted paths.
-- The default compose file also mounts `/var/packages` read-only so package
-  logs can be added through `EXTRA_LOG_FILES` without another image change.
+- **Container Manager Compatibility**: The compose file mounts specific shares instead
+  of `/volume1` because Synology Container Manager's web UI cannot parse `/volume1`
+  as a valid "share name". Attempting to start a container with `/volume1` as a bind
+  mount via the web UI results in the error:
+  `Fail to parse share name from [/volume1]` / `Failed to get c2 share list from volume binds`.
+  The Docker socket works fine, but the web UI's path validation is stricter.
+  If a NAS has shares not listed in the compose file, add them explicitly.
+- The compose file also mounts `/var/packages` read-only so package logs can be
+  added through `EXTRA_LOG_FILES` without another image change.
 - The compose file reads `AGENT_IMAGE_TAG` from `.env`, so each NAS can pin a
   specific published GHCR image revision during rollout without editing the
   compose file itself.

@@ -11,7 +11,21 @@ services:
     volumes:
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
-      - /volume1:/host/volume1:ro
+      # Mount specific shares instead of /volume1 for Container Manager compatibility
+      # Container Manager rejects /volume1 as it can't parse it as a share name
+      - /volume1/files:/host/volume1/files:ro
+      - /volume1/styleguides:/host/volume1/styleguides:ro
+      - /volume1/users:/host/volume1/users:ro
+      - /volume1/homes:/host/volume1/homes:ro
+      - /volume1/Coldlion:/host/volume1/Coldlion:ro
+      - /volume1/Photography:/host/volume1/Photography:ro
+      - /volume1/freelancers:/host/volume1/freelancers:ro
+      - /volume1/mgmt:/host/volume1/mgmt:ro
+      - /volume1/mac:/host/volume1/mac:ro
+      - /volume1/oldStyleguides:/host/volume1/oldStyleguides:ro
+      # System folders for ShareSync monitoring
+      - /volume1/@synologydrive:/host/volume1/@synologydrive:ro
+      - /volume1/@SynologyDriveShareSync:/host/volume1/@SynologyDriveShareSync:ro
       - agent-data:/app/data
     healthcheck:
       test: ["CMD", "test", "-f", "/app/data/wal.db"]
