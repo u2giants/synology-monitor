@@ -173,9 +173,9 @@ func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
 // === System Utilization ===
 
 type SystemUtilization struct {
-	CPU     CPUInfo     `json:"cpu"`
-	Memory  MemoryInfo  `json:"memory"`
-	Network []NetInfo   `json:"network"`
+	CPU     CPUInfo    `json:"cpu"`
+	Memory  MemoryInfo `json:"memory"`
+	Network []NetInfo  `json:"network"`
 }
 
 type CPUInfo struct {
@@ -187,11 +187,11 @@ type CPUInfo struct {
 }
 
 type MemoryInfo struct {
-	AvailReal  int `json:"avail_real"`
-	AvailSwap  int `json:"avail_swap"`
-	TotalReal  int `json:"total_real"`
-	TotalSwap  int `json:"total_swap"`
-	RealUsage  int `json:"real_usage"`
+	AvailReal int `json:"avail_real"`
+	AvailSwap int `json:"avail_swap"`
+	TotalReal int `json:"total_real"`
+	TotalSwap int `json:"total_swap"`
+	RealUsage int `json:"real_usage"`
 }
 
 type NetInfo struct {
@@ -221,14 +221,14 @@ type StorageInfo struct {
 }
 
 type VolumeInfo struct {
-	ID        string     `json:"id"`
-	VolPath   string     `json:"vol_path"`
-	Status    string     `json:"status"`
-	TotalSize int64      `json:"total_size"`
-	UsedSize  int64      `json:"used_size"`
-	FsType    string     `json:"fs_type"`
-	RaidType  string     `json:"raid_type"`
-	Container string     `json:"container"`
+	ID        string `json:"id"`
+	VolPath   string `json:"vol_path"`
+	Status    string `json:"status"`
+	TotalSize int64  `json:"total_size"`
+	UsedSize  int64  `json:"used_size"`
+	FsType    string `json:"fs_type"`
+	RaidType  string `json:"raid_type"`
+	Container string `json:"container"`
 }
 
 type DiskInfo struct {
@@ -300,15 +300,15 @@ type DockerContainerList struct {
 }
 
 type DockerContainer struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Image     string `json:"image"`
-	Status    string `json:"status"`
-	State     string `json:"state"`
-	UpTime    int64  `json:"up_time"`
-	CPUUsage  float64
-	MemUsage  int64
-	MemLimit  int64
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Status   string `json:"status"`
+	State    string `json:"state"`
+	UpTime   int64  `json:"up_time"`
+	CPUUsage float64
+	MemUsage int64
+	MemLimit int64
 }
 
 func (d *DockerContainer) UnmarshalJSON(data []byte) error {
@@ -480,12 +480,91 @@ func firstNonEmpty(values ...string) string {
 // === System Info ===
 
 type SystemInfo struct {
-	Model      string `json:"model"`
-	RAMSize    int    `json:"ram_size"`
-	Serial     string `json:"serial"`
-	Temperature int   `json:"temperature"`
-	Uptime     int64  `json:"uptime"`
+	Model       string `json:"model"`
+	RAMSize     int    `json:"ram_size"`
+	Serial      string `json:"serial"`
+	Temperature int    `json:"temperature"`
+	Uptime      int64  `json:"uptime"`
 	FirmwareVer string `json:"firmware_ver"`
+}
+
+// === Drive Admin API ===
+
+// DriveTeamFolder represents a Synology Drive team folder
+type DriveTeamFolder struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Encoding    string `json:"encoding"`
+	IsExternal  bool   `json:"is_external"`
+	Priority    string `json:"priority"`
+	QuotaLimit  int64  `json:"quota_limit"`
+	QuotaUsed   int64  `json:"quota_used"`
+	MemberCount int    `json:"member_count"`
+	SyncCount   int    `json:"sync_count"`
+	Status      string `json:"status"`
+}
+
+// DriveUserActivity represents a user's activity in Drive
+type DriveUserActivity struct {
+	User      string `json:"user"`
+	LoginTime string `json:"login_time"`
+	IP        string `json:"ip"`
+	Device    string `json:"device"`
+	Action    string `json:"action"`
+	FilePath  string `json:"file_path"`
+	Timestamp string `json:"timestamp"`
+}
+
+// DriveAdminTeamFolders returns list of team folders
+func (c *Client) DriveAdminTeamFolders() ([]DriveTeamFolder, error) {
+	data, err := c.request("SYNO.Drive.TeamFolder", 1, "list", url.Values{
+		"sort_by":    {"name"},
+		"sort_order": {"ASC"},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		TeamFolders []DriveTeamFolder `json:"items"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing team folders: %w", err)
+	}
+	return response.TeamFolders, nil
+}
+
+// DriveAdminUserActivity returns recent user activity
+func (c *Client) DriveAdminUserActivity(limit int) ([]DriveUserActivity, error) {
+	data, err := c.request("SYNO.Drive.Activity", 1, "list", url.Values{
+		"limit": {fmt.Sprintf("%d", limit)},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Activities []DriveUserActivity `json:"activities"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing user activity: %w", err)
+	}
+	return response.Activities, nil
+}
+
+// DriveAdminStats returns Drive statistics
+func (c *Client) DriveAdminStats() (map[string]interface{}, error) {
+	data, err := c.request("SYNO.Drive.Admin", 1, "stats", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var stats map[string]interface{}
+	if err := json.Unmarshal(data, &stats); err != nil {
+		return nil, fmt.Errorf("parsing drive stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (c *Client) GetSystemInfo() (*SystemInfo, error) {
