@@ -1,0 +1,135 @@
+-- Setup Drive tables and sync anomaly detection
+-- Run this file with: supabase db query --linked -f setup.sql
+
+-- Create smon_drive_activities table
+CREATE TABLE IF NOT EXISTS smon_drive_activities (
+  id UUID DEFAULT gen_random_uuid(),
+  nas_id UUID NOT NULL,
+  "user" TEXT NOT NULL,
+  login_time TIMESTAMPTZ,
+  ip TEXT,
+  device TEXT,
+  action TEXT NOT NULL,
+  file_path TEXT,
+  timestamp TIMESTAMPTZ,
+  recorded_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (nas_id, "user", action, timestamp, recorded_at)
+);
+
+-- Create indexes
+CREATE INDEX IF NOT EXISTS smon_drive_activities_user ON smon_drive_activities (nas_id, "user", recorded_at DESC);
+CREATE INDEX IF NOT EXISTS smon_drive_activities_action ON smon_drive_activities (nas_id, action, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS smon_drive_team_folders_folder ON smon_drive_team_folders (nas_id, folder_id, recorded_at DESC);
+
+-- Enable RLS
+ALTER TABLE smon_drive_team_folders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE smon_drive_activities ENABLE ROW LEVEL SECURITY;
+
+-- RLS policies
+DROP POLICY IF EXISTS "smon_drive_team_folders_read" ON smon_drive_team_folders;
+CREATE POLICY "smon_drive_team_folders_read" ON smon_drive_team_folders FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "smon_drive_activities_read" ON smon_drive_activities;
+CREATE POLICY "smon_drive_activities_read" ON smon_drive_activities FOR SELECT TO authenticated USING (true);
+
+-- Create sync anomaly detection function
+CREATE OR REPLACE FUNCTION smon_detect_sync_anomalies()
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  conflict_count INT;
+  empty_folder_count INT;
+  sync_error_count INT;
+  rapid_delete_count INT;
+  nas RECORD;
+BEGIN
+  FOR nas IN SELECT id, name FROM smon_nas_units WHERE status != 'offline'
+  LOOP
+    SELECT count(*) INTO conflict_count
+    FROM smon_logs
+    WHERE nas_id = nas.id
+      AND source IN ('drive', 'drive_sharesync')
+      AND message ILIKE '%conflict%'
+      AND ingested_at > now() - interval '1 hour';
+
+    SELECT count(*) INTO empty_folder_count
+    FROM smon_logs
+    WHERE nas_id = nas.id
+      AND source IN ('drive', 'drive_sharesync')
+      AND (message ILIKE '%mkdir%' OR message ILIKE '%create%folder%')
+      AND message NOT ILIKE '%file%'
+      AND ingested_at > now() - interval '1 hour';
+
+    SELECT count(*) INTO sync_error_count
+    FROM smon_logs
+    WHERE nas_id = nas.id
+      AND source IN ('drive', 'drive_sharesync', 'drive_server')
+      AND severity IN ('error', 'critical')
+      AND ingested_at > now() - interval '1 hour';
+
+    SELECT count(*) INTO rapid_delete_count
+    FROM smon_logs
+    WHERE nas_id = nas.id
+      AND source IN ('drive', 'drive_sharesync')
+      AND (message ILIKE '%delete%' OR message ILIKE '%remove%')
+      AND ingested_at > now() - interval '5 minutes';
+
+    IF conflict_count > 3 THEN
+      INSERT INTO smon_alerts (nas_id, severity, status, source, title, message, details)
+      VALUES (
+        nas.id,
+        'warning',
+        'active',
+        'ai',
+        'High Sync Conflict Rate Detected',
+        format('%s sync conflicts detected in the last hour on NAS %s. This may indicate concurrent edits or sync configuration issues.', conflict_count, nas.name),
+        jsonb_build_object('conflict_count', conflict_count, 'time_window', '1 hour', 'suggestion', 'Review recent activity to identify conflicting files.')
+      );
+    END IF;
+
+    IF empty_folder_count > 5 THEN
+      INSERT INTO smon_alerts (nas_id, severity, status, source, title, message, details)
+      VALUES (
+        nas.id,
+        'info',
+        'active',
+        'ai',
+        'Potential Empty Folder Creation',
+        format('%s potential empty folder operations detected in the last hour on NAS %s.', empty_folder_count, nas.name),
+        jsonb_build_object('empty_folder_count', empty_folder_count, 'time_window', '1 hour')
+      );
+    END IF;
+
+    IF sync_error_count > 0 THEN
+      INSERT INTO smon_alerts (nas_id, severity, status, source, title, message, details)
+      VALUES (
+        nas.id,
+        'error',
+        'active',
+        'ai',
+        'Sync Errors Detected',
+        format('%s sync errors detected in the last hour on NAS %s.', sync_error_count, nas.name),
+        jsonb_build_object('error_count', sync_error_count)
+      );
+    END IF;
+
+    IF rapid_delete_count > 5 THEN
+      INSERT INTO smon_alerts (nas_id, severity, status, source, title, message, details)
+      VALUES (
+        nas.id,
+        'warning',
+        'active',
+        'ai',
+        'Rapid Delete Activity',
+        format('%s delete operations in 5 minutes on NAS %s. This could indicate automated cleanup or potential data loss.', rapid_delete_count, nas.name),
+        jsonb_build_object('delete_count', rapid_delete_count)
+      );
+    END IF;
+  END LOOP;
+END;
+$$;
+
+-- Schedule sync anomaly detection (every 15 minutes)
+SELECT cron.schedule('smon-sync-anomaly-detection', '*/15 * * * *', $$SELECT smon_detect_sync_anomalies()$$);
