@@ -29,8 +29,10 @@ interface SyncRemediation {
 
 const sourceOptions = [
   { value: "all", label: "All Sync Sources" },
+  { value: "drive", label: "Drive" },
   { value: "drive_sharesync", label: "ShareSync" },
   { value: "drive_server", label: "Drive Admin" },
+  { value: "smb", label: "SMB" },
 ];
 
 const actionOptions = [
@@ -69,11 +71,12 @@ export default function SyncTriagePage() {
   const fetchData = useCallback(async () => {
     const supabase = createClient();
     
-    // Fetch logs
+    // Fetch logs - include all sync-related sources
     let logsQuery = supabase
       .from("smon_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
-      .in("source", ["drive_server", "drive_sharesync"])
+      .in("source", ["drive", "drive_server", "drive_sharesync", "smb"])
+      .in("severity", ["error", "warning", "critical"])
       .order("ingested_at", { ascending: false })
       .limit(200);
 
