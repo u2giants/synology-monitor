@@ -11,21 +11,22 @@ services:
     volumes:
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
-      # Mount specific shares instead of /volume1 for Container Manager compatibility
-      # Container Manager rejects /volume1 as it can't parse it as a share name
-      - /volume1/files:/host/volume1/files:ro
-      - /volume1/styleguides:/host/volume1/styleguides:ro
-      - /volume1/users:/host/volume1/users:ro
-      - /volume1/homes:/host/volume1/homes:ro
-      - /volume1/Coldlion:/host/volume1/Coldlion:ro
-      - /volume1/Photography:/host/volume1/Photography:ro
-      - /volume1/freelancers:/host/volume1/freelancers:ro
-      - /volume1/mgmt:/host/volume1/mgmt:ro
-      - /volume1/mac:/host/volume1/mac:ro
-      - /volume1/oldStyleguides:/host/volume1/oldStyleguides:ro
+      # Synology Container Manager rejects top-level volume binds such as
+      # /volume1 during compose/UI recreates. Mount explicit shared folders.
+      # Set SHARED_*_PATH env vars or use defaults.
+      - ${SHARE_FILES_PATH:-/volume1/files}:/host/shares/files:ro
+      - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/host/shares/styleguides:ro
+      - ${SHARE_USERS_PATH:-/volume1/users}:/host/shares/users:ro
+      - ${SHARE_HOMES_PATH:-/volume1/homes}:/host/shares/homes:ro
+      - ${SHARE_COLDLION_PATH:-/volume1/Coldlion}:/host/shares/Coldlion:ro
+      - ${SHARE_PHOTOGRAPHY_PATH:-/volume1/Photography}:/host/shares/Photography:ro
+      - ${SHARE_FREELANCERS_PATH:-/volume1/freelancers}:/host/shares/freelancers:ro
+      - ${SHARE_MGMT_PATH:-/volume1/mgmt}:/host/shares/mgmt:ro
+      - ${SHARE_MAC_PATH:-/volume1/mac}:/host/shares/mac:ro
+      - ${SHARE_OLDSTYLEGUIDES_PATH:-/volume1/oldStyleguides}:/host/shares/oldStyleguides:ro
       # System folders for ShareSync monitoring
-      - /volume1/@synologydrive:/host/volume1/@synologydrive:ro
-      - /volume1/@SynologyDriveShareSync:/host/volume1/@SynologyDriveShareSync:ro
+      - ${SHARE_SYNO_DRIVE_PATH:-/volume1/@synologydrive}:/host/shares/@synologydrive:ro
+      - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/host/shares/@SynologyDriveShareSync:ro
       - agent-data:/app/data
     healthcheck:
       test: ["CMD", "test", "-f", "/app/data/wal.db"]
