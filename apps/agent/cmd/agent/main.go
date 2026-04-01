@@ -77,6 +77,10 @@ func main() {
 	dockerCollector := collector.NewDockerCollector(dsmClient, s, cfg.NasID, cfg.DockerInterval)
 	go dockerCollector.Run(stop)
 
+	// Start Drive Admin collector (team folders, user activity, stats)
+	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
+	go driveCollector.Run(stop)
+
 	// Start log watcher
 	logW := logwatcher.New(s, cfg.NasID, cfg.LogDir, cfg.WatchPaths, cfg.ExtraLogFiles, cfg.LogInterval)
 	go logW.Run(stop)

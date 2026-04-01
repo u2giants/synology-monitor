@@ -91,6 +91,14 @@ func (s *Sender) QueueAlert(p AlertPayload) {
 	s.queue("smon_alerts", p)
 }
 
+func (s *Sender) QueueDriveTeamFolder(p DriveTeamFolderPayload) {
+	s.queue("smon_drive_team_folders", p)
+}
+
+func (s *Sender) QueueDriveActivity(p DriveActivityPayload) {
+	s.queue("smon_drive_activities", p)
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
