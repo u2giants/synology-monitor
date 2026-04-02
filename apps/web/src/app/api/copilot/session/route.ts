@@ -1,44 +1,36 @@
-import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { getCopilotRole, listSessions, loadSession } from "@/lib/server/copilot-store";
+import { NextRequest, NextResponse } from "next/server";
+import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { deleteSession } from "@/lib/server/copilot-store";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-export async function GET(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = await createSupabaseServerClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { searchParams } = new URL(request.url);
-    const sessionId = searchParams.get("sessionId");
+    const body = await request.json();
+    const { sessionId } = body;
 
-    const [roleInfo, sessionInfo, sessionsInfo] = await Promise.all([
-      getCopilotRole(supabase, user),
-      loadSession(supabase, user.id, sessionId),
-      listSessions(supabase, user.id),
-    ]);
+    if (!sessionId) {
+      return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+    }
 
-    return NextResponse.json({
-      role: roleInfo.role,
-      persistenceEnabled:
-        roleInfo.persistenceEnabled &&
-        sessionInfo.persistenceEnabled &&
-        sessionsInfo.persistenceEnabled,
-      session: sessionInfo.session,
-      sessions: sessionsInfo.sessions,
-    });
+    const result = await deleteSession(supabase, user.id, sessionId);
+
+    if (!result.success) {
+      return NextResponse.json({ error: result.error }, { status: 500 });
+    }
+
+    return NextResponse.json({ success: true });
   } catch (error) {
+    console.error("[DELETE /api/copilot/session] Error:", error);
     return NextResponse.json(
-      {
-        error: error instanceof Error ? error.message : "Failed to load copilot session.",
-      },
+      { error: "Internal server error" },
       { status: 500 }
     );
   }

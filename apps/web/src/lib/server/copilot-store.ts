@@ -357,6 +357,54 @@ export async function persistTurn(
   return { persistenceEnabled: true };
 }
 
+/**
+ * Delete a chat session and all associated messages and actions
+ * Must delete in order due to FK constraints
+ */
+export async function deleteSession(
+  supabase: SupabaseClient,
+  userId: string,
+  sessionId: string
+): Promise<{ success: boolean; error?: string }> {
+  // Delete actions first (FK to messages)
+  const { error: actionsError } = await supabase
+    .from("smon_copilot_actions")
+    .delete()
+    .eq("session_id", sessionId)
+    .eq("user_id", userId);
+
+  if (actionsError) {
+    console.error("[deleteSession] Failed to delete actions:", actionsError);
+    return { success: false, error: actionsError.message };
+  }
+
+  // Delete messages
+  const { error: messagesError } = await supabase
+    .from("smon_copilot_messages")
+    .delete()
+    .eq("session_id", sessionId)
+    .eq("user_id", userId);
+
+  if (messagesError) {
+    console.error("[deleteSession] Failed to delete messages:", messagesError);
+    return { success: false, error: messagesError.message };
+  }
+
+  // Delete session
+  const { error: sessionError } = await supabase
+    .from("smon_copilot_sessions")
+    .delete()
+    .eq("id", sessionId)
+    .eq("user_id", userId);
+
+  if (sessionError) {
+    console.error("[deleteSession] Failed to delete session:", sessionError);
+    return { success: false, error: sessionError.message };
+  }
+
+  return { success: true };
+}
+
 export async function updateActionStatus(
   supabase: SupabaseClient,
   userId: string,
