@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, List, LayoutGrid } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, timeAgoET } from "@/lib/utils";
+import { ProblemsSection } from "@/components/dashboard/problems-section";
 import type { Alert } from "@synology-monitor/shared";
 
 interface LogEntry {
@@ -191,6 +192,9 @@ export default function SyncTriagePage() {
         </div>
       </div>
 
+      {/* AI-Analyzed Problems - showing only sync-related */}
+      <ProblemsSection />
+
       {/* Alert Banner */}
       {showAlerts && syncAlerts.length > 0 && (
         <div className="rounded-lg border border-warning/30 bg-warning/5 p-4 space-y-3">
@@ -229,7 +233,7 @@ export default function SyncTriagePage() {
                   )}>
                     {alert.severity}
                   </span>
-                  <span>{timeAgo(alert.created_at)}</span>
+                  <span>{timeAgoET(alert.created_at)}</span>
                 </div>
               </div>
             ))}
@@ -424,7 +428,7 @@ export default function SyncTriagePage() {
 
                   <div className="text-right text-xs text-muted-foreground">
                     <div>{new Date(log.logged_at).toLocaleString()}</div>
-                    <div className="mt-1">{timeAgo(log.logged_at)}</div>
+                    <div className="mt-1">{timeAgoET(log.logged_at)}</div>
                   </div>
                 </div>
               </article>
