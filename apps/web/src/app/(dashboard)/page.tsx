@@ -1,14 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNasUnits } from "@/hooks/use-nas-units";
 import { useRealtimeAlerts } from "@/hooks/use-realtime-alerts";
 import { useMetrics } from "@/hooks/use-metrics";
+import { useAnalysis } from "@/hooks/use-analysis";
 import { NasStatusCard } from "@/components/dashboard/nas-status-card";
 import { AlertList, AlertDetailModal } from "@/components/dashboard/alert-list";
 import { MetricGauge } from "@/components/dashboard/metric-gauge";
-import { Activity, AlertTriangle, HardDrive, Shield } from "lucide-react";
+import { ProblemsSection } from "@/components/dashboard/problems-section";
+import { Activity, AlertTriangle, HardDrive, Shield, Sparkles } from "lucide-react";
 import Link from "next/link";
+import { formatET } from "@/lib/utils";
 import type { Alert } from "@synology-monitor/shared";
 
 export default function OverviewPage() {
@@ -81,6 +84,9 @@ export default function OverviewPage() {
           </div>
         )}
       </section>
+
+      {/* AI-Analyzed Problems */}
+      <ProblemsSection />
 
       <div className="grid grid-cols-2 gap-6">
         {/* Metrics */}
