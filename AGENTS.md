@@ -32,7 +32,7 @@ This repository monitors two Synology DS1621xs+ NAS devices. The core business p
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Next.js Web App (Coolify)      NAS Copilot (GPT-4o)        │
+│  Next.js Web App (Coolify)      NAS Copilot (GPT-5.4)      │
 │  https://mon.designflow.app     SSH diagnostics over        │
 │  - Dashboard                   Tailscale                    │
 │  - /sync-triage                                                  │
@@ -180,7 +180,7 @@ AI-powered assistant using **two-model architecture**:
    - Recommends which tools to use
    - Returns diagnosis in milliseconds
 
-2. **GPT-4o** - Detailed remediation
+2. **GPT-5.4** - Detailed remediation
    - Uses MiniMax diagnosis as context
    - Proposes specific repair actions
    - Cites relevant evidence IDs
@@ -203,7 +203,7 @@ AI-powered assistant using **two-model architecture**:
 ### Required Environment Variables
 ```
 OPENAI_API_KEY
-OPENAI_CHAT_MODEL=gpt-4o
+OPENAI_CHAT_MODEL=gpt-5.4
 MINIMAX_API_KEY=...        # MiniMax M2.7 API key
 NAS_EDGE1_HOST=100.107.131.35
 NAS_EDGE1_PORT=22
