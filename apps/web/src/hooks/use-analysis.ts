@@ -58,15 +58,30 @@ export function useAnalysis() {
     }
   }, []);
 
+  // Helper to add timeout to fetch
+  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number = 120000) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
   const triggerAnalysis = useCallback(async (lookbackMinutes: number = 60) => {
     setAnalyzing(true);
     setError(null);
     try {
-      const response = await fetch("/api/analysis", {
+      const response = await fetchWithTimeout("/api/analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lookbackMinutes }),
-      });
+      }, 120000); // 2 minute timeout
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || "Analysis failed");
@@ -76,7 +91,11 @@ export function useAnalysis() {
         result: data.result,
       };
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Analysis failed");
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError("Analysis timed out after 2 minutes. The AI service may be slow or unavailable.");
+      } else {
+        setError(err instanceof Error ? err.message : "Analysis failed");
+      }
       return { runId: null, result: null };
     } finally {
       setAnalyzing(false);
