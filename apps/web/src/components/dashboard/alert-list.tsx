@@ -1,15 +1,36 @@
 "use client";
 
-import { useState } from "react";
-import { cn, timeAgo } from "@/lib/utils";
-import { AlertTriangle, AlertCircle, Info, ExternalLink, Wrench } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { cn, timeAgo, formatET } from "@/lib/utils";
+import { AlertTriangle, AlertCircle, Info, ExternalLink, Wrench, Loader2, XCircle, FolderSync, User, Clock } from "lucide-react";
 import type { Alert } from "@synology-monitor/shared";
 import Link from "next/link";
+import { createClient } from "@/lib/supabase/client";
 
 interface AlertListProps {
   alerts: Alert[];
   limit?: number;
   onAlertClick?: (alert: Alert) => void;
+}
+
+// AI-analyzed problem type
+interface AnalyzedProblem {
+  id: string;
+  slug: string;
+  title: string;
+  explanation: string;
+  severity: "critical" | "warning" | "info";
+  affected_nas: string[];
+  affected_shares: string[];
+  affected_users: string[];
+  affected_files: { path: string; detail: string }[];
+  raw_event_count: number;
+  raw_event_ids: string[];
+  technical_diagnosis: string;
+  first_seen: string;
+  last_seen: string;
+  status: "open" | "investigating" | "resolved";
+  resolution?: string;
 }
 
 const severityConfig = {
@@ -177,7 +198,7 @@ export function AlertDetailModal({ alert, onClose }: AlertDetailModalProps) {
 
           <div className="flex gap-3 pt-4 border-t">
             <Link
-              href="/assistant"
+              href={`/assistant?alert_id=${alert.id}&title=${encodeURIComponent(alert.title)}&message=${encodeURIComponent(alert.message || "")}&severity=${alert.severity}`}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
             >
               <Wrench className="h-4 w-4" />

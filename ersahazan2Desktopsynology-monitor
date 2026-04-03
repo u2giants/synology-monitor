@@ -1,0 +1,24 @@
+[33mcommit 65aaf6c74dca67d8a4fdd1df03e678860ac3fd8e[m
+Author: u2giants <55610577+u2giants@users.noreply.github.com>
+Date:   Wed Apr 1 18:15:42 2026 -0400
+
+    Fix 18 bugs + Add Sync Triage feature with batch AI analysis
+
+ apps/agent/cmd/agent/main.go                       |  71 [32m++[m[31m--[m
+ apps/agent/internal/dsm/client.go                  |   7 [32m+[m[31m-[m
+ apps/agent/internal/logwatcher/watcher.go          |  73 [32m++++[m[31m-[m
+ apps/agent/internal/security/watcher.go            |  34 [32m+[m[31m-[m
+ apps/agent/internal/sender/sender.go               |  45 [32m++[m[31m-[m
+ apps/web/src/app/api/copilot/chat/route.ts         |  34 [32m++[m
+ apps/web/src/app/api/sync-triage/analyze/route.ts  | 294 [32m+++++++++++++++++[m
+ apps/web/src/app/sync-triage/page.tsx              |   7 [32m+[m
+ .../src/components/sync-triage/SyncErrorsCard.tsx  | 119 [32m+++++++[m
+ .../src/components/sync-triage/SyncTriagePage.tsx  | 358 [32m+++++++++++++++++++++[m
+ apps/web/src/hooks/use-metrics.ts                  |  19 [32m+[m[31m-[m
+ apps/web/src/hooks/use-sync-errors.ts              | 192 [32m+++++++++++[m
+ apps/web/src/lib/server/copilot.ts                 |  17 [32m+[m[31m-[m
+ apps/web/src/lib/server/nas.ts                     |   2 [32m+[m[31m-[m
+ packages/shared/src/types.ts                       |   2 [32m+[m[31m-[m
+ supabase/migrations/00003_create_partitions.sql    |   4 [32m+[m[31m-[m
+ .../00012_add_missing_indexes_and_defaults.sql     |  15 [32m+[m
+ 17 files changed, 1213 insertions(+), 80 deletions(-)

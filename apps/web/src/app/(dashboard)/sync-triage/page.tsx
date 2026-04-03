@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, List, LayoutGrid } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, List, LayoutGrid, Globe, CheckSquare, Square, Loader2, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn, timeAgoET } from "@/lib/utils";
 import { ProblemsSection } from "@/components/dashboard/problems-section";
@@ -57,6 +57,29 @@ function toneClass(source: string) {
     : "bg-sky-500/10 text-sky-700 dark:text-sky-300";
 }
 
+// Message translations for common Synology log patterns
+const messageTranslations: Record<string, string> = {
+  "sharesync service is not responding": "ShareSync service is not responding - sync operations are paused",
+  "sync conflict detected": "Sync conflict detected - same file modified in multiple locations",
+  "file not found": "File not found - the referenced file may have been deleted or moved",
+  "permission denied": "Permission denied - user lacks access rights to this resource",
+  "connection timeout": "Connection timeout - network communication with remote server failed",
+  "quota exceeded": "Storage quota exceeded - user has reached their allocated space limit",
+  "disk write failed": "Disk write failed - storage write operation encountered an error",
+  "authentication failed": "Authentication failed - invalid credentials or session expired",
+  "service unavailable": "Service unavailable - the requested service is temporarily down",
+};
+
+function translateMessage(message: string): string {
+  const lowerMessage = message.toLowerCase();
+  for (const [pattern, translation] of Object.entries(messageTranslations)) {
+    if (lowerMessage.includes(pattern)) {
+      return translation;
+    }
+  }
+  return message;
+}
+
 export default function SyncTriagePage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [syncAlerts, setSyncAlerts] = useState<Alert[]>([]);
@@ -68,6 +91,14 @@ export default function SyncTriagePage() {
   const [userFilter, setUserFilter] = useState("");
   const [showAlerts, setShowAlerts] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
+  
+  // Issue 2: Batch analysis state
+  const [selectedLogIds, setSelectedLogIds] = useState<Set<string>>(new Set());
+  const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+  const [showBatchActions, setShowBatchActions] = useState(false);
+  
+  // Issue 3: English translation toggle
+  const [showEnglish, setShowEnglish] = useState(false);
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
@@ -119,6 +150,42 @@ export default function SyncTriagePage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Issue 2: Batch selection handlers
+  const toggleSelectAll = () => {
+    if (selectedLogIds.size === filteredLogs.length) {
+      setSelectedLogIds(new Set());
+    } else {
+      setSelectedLogIds(new Set(filteredLogs.map((log) => log.id)));
+    }
+  };
+
+  const toggleSelectLog = (logId: string) => {
+    const newSelected = new Set(selectedLogIds);
+    if (newSelected.has(logId)) {
+      newSelected.delete(logId);
+    } else {
+      newSelected.add(logId);
+    }
+    setSelectedLogIds(newSelected);
+  };
+
+  const handleBatchAnalyze = async () => {
+    if (selectedLogIds.size === 0) return;
+    
+    setIsBatchAnalyzing(true);
+    const selectedLogs = logs.filter((log) => selectedLogIds.has(log.id));
+    
+    // Build query params for assistant with multiple log IDs
+    const params = new URLSearchParams({
+      batch_mode: "true",
+      log_ids: Array.from(selectedLogIds).join(","),
+      count: String(selectedLogIds.size),
+    });
+    
+    // Navigate to assistant with batch data
+    window.location.href = `/assistant?${params.toString()}`;
+  };
 
   const filteredLogs = useMemo(() => {
     return logs.filter((log) => {
@@ -282,54 +349,124 @@ export default function SyncTriagePage() {
         <StatCard label="User Tagged" value={summary.withUsers} tone="default" />
       </div>
 
-      {/* Filters */}
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.6fr)_180px_180px]">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Search message, share, path..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full rounded-md border border-border bg-card py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none"
-          />
+      {/* Issue 2 & 3: Batch Actions Bar and Translation Toggle */}
+      <div className="flex items-center justify-between gap-4">
+        {/* Filters */}
+        <div className="flex items-center gap-3 flex-1">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search message, share, path..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full rounded-md border border-border bg-card py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          <div className="relative">
+            <UserRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Filter by user"
+              value={userFilter}
+              onChange={(e) => setUserFilter(e.target.value)}
+              className="w-full rounded-md border border-border bg-card py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          <select
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm"
+          >
+            {sourceOptions.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={action}
+            onChange={(e) => setAction(e.target.value)}
+            className="rounded-md border border-border bg-card px-3 py-2 text-sm"
+          >
+            {actionOptions.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div className="relative">
-          <UserRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            placeholder="Filter by user"
-            value={userFilter}
-            onChange={(e) => setUserFilter(e.target.value)}
-            className="w-full rounded-md border border-border bg-card py-2 pl-9 pr-3 text-sm focus:border-primary focus:outline-none"
-          />
-        </div>
-
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value)}
-          className="rounded-md border border-border bg-card px-3 py-2 text-sm"
+        {/* Issue 3: English Translation Toggle */}
+        <button
+          onClick={() => setShowEnglish(!showEnglish)}
+          className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-md border text-sm transition-colors",
+            showEnglish
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-card text-muted-foreground hover:text-foreground"
+          )}
         >
-          {sourceOptions.map((item) => (
-            <option key={item.value} value={item.value}>
-              {item.label}
-            </option>
-          ))}
-        </select>
+          <Globe className="h-4 w-4" />
+          {showEnglish ? "Showing English" : "Translate to English"}
+        </button>
 
-        <select
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-          className="rounded-md border border-border bg-card px-3 py-2 text-sm"
+        {/* Issue 2: Batch Selection Toggle */}
+        <button
+          onClick={() => {
+            setShowBatchActions(!showBatchActions);
+            if (showBatchActions) {
+              setSelectedLogIds(new Set());
+            }
+          }}
+          className={cn(
+            "flex items-center gap-2 px-3 py-2 rounded-md border text-sm transition-colors",
+            showBatchActions
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-card text-muted-foreground hover:text-foreground"
+          )}
         >
-          {actionOptions.map((item) => (
-            <option key={item.value} value={item.value}>
-              {item.label}
-            </option>
-          ))}
-        </select>
+          <CheckSquare className="h-4 w-4" />
+          {showBatchActions ? "Selecting" : "Batch Select"}
+        </button>
       </div>
+
+      {/* Issue 2: Batch Actions Bar */}
+      {showBatchActions && selectedLogIds.size > 0 && (
+        <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/5 p-3">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium">
+              {selectedLogIds.size} selected
+            </span>
+            <button
+              onClick={toggleSelectAll}
+              className="text-xs text-primary hover:underline"
+            >
+              {selectedLogIds.size === filteredLogs.length ? "Deselect all" : "Select all"}
+            </button>
+          </div>
+          <button
+            onClick={handleBatchAnalyze}
+            disabled={isBatchAnalyzing}
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+          >
+            {isBatchAnalyzing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Analyzing...
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4" />
+                Analyze {selectedLogIds.size} with Copilot
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Log Entries */}
       {loading ? (
@@ -353,17 +490,33 @@ export default function SyncTriagePage() {
               actionValue === "delete" ||
               actionValue === "move" ||
               actionValue === "rename";
+            const isSelected = selectedLogIds.has(log.id);
 
             return (
               <article
                 key={log.id}
                 className={cn(
                   "rounded-xl border bg-card p-4 shadow-sm",
-                  incident ? "border-amber-500/40" : "border-border"
+                  incident ? "border-amber-500/40" : "border-border",
+                  isSelected && "ring-2 ring-primary ring-offset-2 dark:ring-offset-card"
                 )}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="flex items-start gap-3">
+                    {/* Issue 2: Selection checkbox */}
+                    {showBatchActions && (
+                      <button
+                        onClick={() => toggleSelectLog(log.id)}
+                        className="mt-1 text-muted-foreground hover:text-primary transition-colors"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="h-5 w-5 text-primary" />
+                        ) : (
+                          <Square className="h-5 w-5" />
+                        )}
+                      </button>
+                    )}
+
                     <div
                       className={cn(
                         "rounded-lg p-2",
@@ -396,7 +549,7 @@ export default function SyncTriagePage() {
                       </div>
 
                       <p className="max-w-4xl text-sm leading-6 text-foreground">
-                        {log.message}
+                        {showEnglish ? translateMessage(log.message) : log.message}
                       </p>
 
                       <div className="grid gap-2 text-xs text-muted-foreground md:grid-cols-2">
@@ -484,7 +637,7 @@ export default function SyncTriagePage() {
 
               <div className="flex gap-3 pt-4 border-t">
                 <a
-                  href="/assistant"
+                  href={`/assistant?alert_id=${selectedAlert.id}&title=${encodeURIComponent(selectedAlert.title)}&message=${encodeURIComponent(selectedAlert.message || "")}&severity=${selectedAlert.severity}`}
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                 >
                   <Wrench className="h-4 w-4" />
