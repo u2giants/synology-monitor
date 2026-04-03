@@ -126,7 +126,9 @@ All tables are prefixed `smon_` (shared Supabase project).
 | `smon_container_status` | Docker container state |
 | `smon_security_events` | Ransomware/entropy alerts |
 | `smon_alerts` | Active system alerts |
-| `smon_ai_analyses` | AI-generated insights |
+| `smon_ai_analyses` | AI-generated insights (legacy) |
+| `smon_analysis_runs` | AI analysis runs (Minimax M2.7) |
+| `smon_analyzed_problems` | Root cause problems from AI analysis |
 
 ### Log Sources (smon_logs.source)
 
@@ -169,25 +171,40 @@ Located at `apps/web/src/app/(dashboard)/sync-triage/page.tsx`.
 
 ## NAS Copilot (`/assistant`)
 
-AI-powered assistant using GPT-4o for NAS diagnostics.
+AI-powered assistant using **two-model architecture**:
 
-**Capabilities:**
+### Two-Model Architecture
+1. **MiniMax M2.7** - Fast root cause diagnosis
+   - Identifies affected NAS, users, files, shares
+   - Determines severity (critical/warning/info)
+   - Recommends which tools to use
+   - Returns diagnosis in milliseconds
+
+2. **GPT-4o** - Detailed remediation
+   - Uses MiniMax diagnosis as context
+   - Proposes specific repair actions
+   - Cites relevant evidence IDs
+   - Generates server-signed action tokens
+
+### Capabilities
 - Answer questions about current NAS state
 - Live SSH diagnostics over Tailscale
 - Summarize recent logs, alerts, Drive activity
 - Propose repair commands with explicit approval
 - Multiple chat sessions with history persistence
+- Automatic chat session deletion
 
-**Safety Model:**
+### Safety Model
 - Server-signed action proposals
 - Destructive commands blocked in `nas.ts`
 - Structured tool catalog (not raw shell)
 - Short expiration window for approved actions
 
-**Required Environment Variables:**
+### Required Environment Variables
 ```
 OPENAI_API_KEY
 OPENAI_CHAT_MODEL=gpt-4o
+MINIMAX_API_KEY=...        # MiniMax M2.7 API key
 NAS_EDGE1_HOST=100.107.131.35
 NAS_EDGE1_PORT=22
 NAS_EDGE1_USER=popdam
@@ -199,6 +216,25 @@ NAS_EDGE2_USER=popdam
 NAS_EDGE2_PASSWORD=...
 NAS_EDGE2_SUDO_PASSWORD=...
 ```
+
+## AI Analysis Pipeline
+
+Automatic root cause analysis using MiniMax M2.7.
+
+### Tables
+- `smon_analysis_runs` - Stores each AI analysis run
+- `smon_analyzed_problems` - Root cause problems with affected files/users/shares
+
+### API Endpoints
+- `POST /api/analysis` - Trigger new analysis
+- `GET /api/analysis` - Get latest or specific analysis
+
+### Features
+- Groups alerts by root cause
+- Identifies affected NAS, users, shares, files
+- Provides technical diagnosis for repair AI
+- Auto-resolves problems when no longer detected
+- Results displayed on Dashboard and Sync Triage pages
 
 ## Agent Capabilities
 
