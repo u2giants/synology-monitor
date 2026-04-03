@@ -477,7 +477,7 @@ export async function generateCopilotResponse(
 
   // Step 3: Use GPT for detailed remediation response
   const client = getOpenAIClient();
-  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-4o";
+  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-5.4";
 
   const aiDiagnosisContext = `
 ## AI Diagnosis (from MiniMax-M2.7)
