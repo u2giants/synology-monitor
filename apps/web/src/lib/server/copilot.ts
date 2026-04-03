@@ -2,6 +2,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import OpenAI from "openai";
 import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { callMinimax, callMinimaxJSON } from "./minimax";
 import type { CopilotRole, StoredEvidenceItem, StoredAction } from "@/lib/server/copilot-store";
 
 export type ReasoningEffort = "high" | "xhigh";
@@ -302,6 +303,71 @@ function coerceLookbackHours(value: number | undefined, fallback: LookbackHours)
   return fallback;
 }
 
+// Two-model architecture: Minimax for fast diagnosis, GPT for detailed remediation
+const MINIMAX_DIAGNOSIS_SYSTEM = `You are a Synology NAS diagnostic assistant. Analyze the user's question and the available system data to identify the root cause and affected components.
+
+Respond ONLY with valid JSON:
+{
+  "diagnosis": "Brief diagnosis of what's happening (1-2 sentences)",
+  "affected_nas": ["list of affected NAS names"],
+  "affected_users": ["list of affected users"],
+  "affected_files": ["list of affected file paths"],
+  "affected_shares": ["list of affected shares"],
+  "severity": "critical|warning|info",
+  "recommended_tools": ["list of tool names that would help investigate/fix this"],
+  "key_evidence": ["list of relevant evidence IDs that support this diagnosis"]
+}`;
+
+async function generateMinimaxDiagnosis(
+  userQuestion: string,
+  context: {
+    nas_units: Array<{ id: string; name: string; status: string }>;
+    active_alerts: Array<{ severity: string; title: string; message: string }>;
+    recent_drive_logs: Array<Record<string, unknown>>;
+    recent_security_events: Array<{ severity: string; title: string; user?: string }>;
+    ssh_diagnostics: Array<{ target: string; ok: boolean; stdout: string }>;
+    evidence_catalog: Array<{ id: string; kind: string; title: string; detail: string }>;
+  }
+): Promise<{
+  diagnosis: string;
+  affected_nas: string[];
+  affected_users: string[];
+  affected_files: string[];
+  affected_shares: string[];
+  severity: "critical" | "warning" | "info";
+  recommended_tools: string[];
+  key_evidence: string[];
+}> {
+  const { data, error } = await callMinimaxJSON<{
+    diagnosis: string;
+    affected_nas: string[];
+    affected_users: string[];
+    affected_files: string[];
+    affected_shares: string[];
+    severity: "critical" | "warning" | "info";
+    recommended_tools: string[];
+    key_evidence: string[];
+  }>(
+    MINIMAX_DIAGNOSIS_SYSTEM,
+    `User question: ${userQuestion}\n\nAvailable data:\n${JSON.stringify(context, null, 2)}`
+  );
+
+  if (error || !data) {
+    return {
+      diagnosis: "Unable to generate diagnosis.",
+      affected_nas: [],
+      affected_users: [],
+      affected_files: [],
+      affected_shares: [],
+      severity: "info",
+      recommended_tools: [],
+      key_evidence: [],
+    };
+  }
+
+  return data;
+}
+
 function materializeAction(proposal: ToolProposal, defaultLookbackHours: LookbackHours): ProposedAction {
   const tool = TOOL_DEFINITIONS[proposal.tool_name];
   const preview = tool.buildPreview(proposal.target, {
@@ -377,9 +443,6 @@ export async function generateCopilotResponse(
     diagnostics,
   });
 
-  const client = getOpenAIClient();
-  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-5.4";
-
   const context = {
     authenticated_user: user.email,
     copilot_role: role,
@@ -392,6 +455,41 @@ export async function generateCopilotResponse(
     evidence_catalog: evidenceCatalog,
     allowed_tools: toolCatalogText(),
   };
+
+  // Step 1: Get user's latest question
+  const userMessage = [...messages].reverse().find((m) => m.role === "user");
+
+  // Step 2: Use Minimax for fast diagnosis (parallel call for speed)
+  const [minimaxDiagnosis] = await Promise.all([
+    userMessage
+      ? generateMinimaxDiagnosis(userMessage.content, context)
+      : Promise.resolve({
+          diagnosis: "No question detected.",
+          affected_nas: [],
+          affected_users: [],
+          affected_files: [],
+          affected_shares: [],
+          severity: "info" as const,
+          recommended_tools: [],
+          key_evidence: [],
+        }),
+  ]);
+
+  // Step 3: Use GPT for detailed remediation response
+  const client = getOpenAIClient();
+  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-5.4";
+
+  const aiDiagnosisContext = `
+## AI Diagnosis (from MiniMax-M2.7)
+**Diagnosis:** ${minimaxDiagnosis.diagnosis}
+**Severity:** ${minimaxDiagnosis.severity}
+**Affected NAS:** ${minimaxDiagnosis.affected_nas.join(", ") || "None"}
+**Affected Users:** ${minimaxDiagnosis.affected_users.join(", ") || "None"}
+**Affected Files:** ${minimaxDiagnosis.affected_files.join(", ") || "None"}
+**Affected Shares:** ${minimaxDiagnosis.affected_shares.join(", ") || "None"}
+**Recommended Tools:** ${minimaxDiagnosis.recommended_tools.join(", ") || "None"}
+**Key Evidence IDs:** ${minimaxDiagnosis.key_evidence.join(", ") || "None"}
+`;
 
   const input = [
     {
@@ -415,6 +513,16 @@ export async function generateCopilotResponse(
         {
           type: "input_text" as const,
           text: `Current system context:\n${JSON.stringify(context, null, 2)}`,
+        },
+      ],
+    },
+    {
+      type: "message" as const,
+      role: "system" as const,
+      content: [
+        {
+          type: "input_text" as const,
+          text: aiDiagnosisContext,
         },
       ],
     },
@@ -453,6 +561,11 @@ export async function generateCopilotResponse(
     proposed_actions: ToolProposal[];
   };
 
+  // Combine Minimax diagnosis with GPT answer
+  const combinedAnswer = minimaxDiagnosis.diagnosis !== "No question detected."
+    ? `**Quick Diagnosis:** ${minimaxDiagnosis.diagnosis}\n\n${parsed.answer}`
+    : parsed.answer;
+
   const evidence = evidenceCatalog.filter((item) => parsed.evidence_ids.includes(item.id));
   const proposedActions =
     role === "viewer"
@@ -460,7 +573,7 @@ export async function generateCopilotResponse(
       : parsed.proposed_actions.map((proposal) => materializeAction(proposal, lookbackHours));
 
   return {
-    answer: parsed.answer,
+    answer: combinedAnswer,
     evidence,
     proposedActions,
   };
