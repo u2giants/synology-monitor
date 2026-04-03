@@ -1,14 +1,11 @@
-import { Sidebar } from "@/components/dashboard/sidebar";
+// Force dynamic rendering for all dashboard pages
+// These pages use real-time Supabase data that changes frequently
+export const dynamic = "force-dynamic";
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <div className="flex min-h-screen">
-      <Sidebar />
-      <main className="ml-64 flex-1 p-6">{children}</main>
-    </div>
-  );
+  return children;
 }
