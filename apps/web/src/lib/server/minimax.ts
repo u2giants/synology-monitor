@@ -102,7 +102,7 @@ export async function callMinimaxJSON<T>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<{ data: T | null; error?: string }> {
-  const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 8000 });
+  const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 32000 });
 
   if (!result.content) {
     return { data: null, error: result.error };
