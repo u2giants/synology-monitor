@@ -372,6 +372,10 @@ Total: ${totalItems} events to analyze. Identify distinct root causes and group 
     // Store in database
     const runId = await storeAnalysisResult(result, lookbackMinutes, 0);
 
+    if (!runId) {
+      console.error("[log-analyzer] Storage failed — returning result without runId");
+    }
+
     return { runId, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

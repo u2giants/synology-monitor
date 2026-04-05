@@ -61,10 +61,17 @@ export function ProblemsSection({ initialProblems = [], initialRun = null }: Pro
 
   const handleAnalyze = async () => {
     const result = await triggerAnalysis(lookbackMinutes);
-    if (result.runId && result.result) {
+    if (result.result) {
+      // Always refresh from DB after analysis, even if runId is null (storage may have failed)
       const refreshed = await fetchLatestAnalysis();
-      setProblems(refreshed.problems);
-      setRun(refreshed.run);
+      if (refreshed.problems.length > 0 || refreshed.run) {
+        setProblems(refreshed.problems);
+        setRun(refreshed.run);
+      } else if (result.result.problems.length === 0) {
+        // Analysis succeeded but found no problems — clear stale data
+        setProblems([]);
+        setRun(null);
+      }
     }
   };
 
