@@ -117,7 +117,7 @@ export function AlertList({ alerts, limit, onAlertClick }: AlertListProps) {
           href="/sync-triage"
           className="flex items-center justify-center gap-2 py-2 text-sm text-primary hover:underline"
         >
-          View all {alerts.length} alerts
+          View sync events in Sync Triage
           <ExternalLink className="h-4 w-4" />
         </Link>
       )}

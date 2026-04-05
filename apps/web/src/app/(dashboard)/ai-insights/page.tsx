@@ -5,17 +5,15 @@ import { createClient } from "@/lib/supabase/client";
 import { cn, timeAgo } from "@/lib/utils";
 import { Brain, Lightbulb, AlertTriangle, CheckCircle, Activity, Clock, FileText, TrendingUp } from "lucide-react";
 
-// Types for the analysis tables
+// Types matching actual smon_analysis_runs schema
 interface AnalysisRun {
   id: string;
-  nas_id: string;
+  summary: string;
+  problem_count: number;
   model: string;
-  status: string;
-  started_at: string;
-  completed_at: string | null;
-  logs_processed: number;
-  alerts_generated: number;
-  errors: string[];
+  tokens_used: number;
+  lookback_minutes: number;
+  created_at: string;
 }
 
 interface AnalyzedProblem {
@@ -52,7 +50,7 @@ export default function AiInsightsPage() {
       const runsResult = await supabase
         .from("smon_analysis_runs")
         .select("*")
-        .order("started_at", { ascending: false })
+        .order("created_at", { ascending: false })
         .limit(20);
 
       if (!runsResult.error && runsResult.data) {
@@ -131,50 +129,29 @@ export default function AiInsightsPage() {
                 {analysisRuns.map((run) => (
                   <div
                     key={run.id}
-                    className={cn(
-                      "rounded-lg border bg-card p-4",
-                      run.status === "completed" ? "border-border" : "border-warning/30"
-                    )}
+                    className="rounded-lg border border-border bg-card p-4"
                   >
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
                         <Clock className="h-4 w-4 text-muted-foreground" />
                         <span className="text-sm font-medium">
-                          {new Date(run.started_at).toLocaleDateString()}
+                          {timeAgo(run.created_at)}
                         </span>
                       </div>
-                      <span className={cn(
-                        "px-2 py-0.5 rounded-full text-xs font-medium",
-                        run.status === "completed" 
-                          ? "bg-success/10 text-success" 
-                          : "bg-warning/10 text-warning"
-                      )}>
-                        {run.status}
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success">
+                        {run.problem_count} problems found
                       </span>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <FileText className="h-3 w-3" />
-                        <span>{run.logs_processed} logs</span>
-                      </div>
-                      <div className="flex items-center gap-1 text-muted-foreground">
-                        <AlertTriangle className="h-3 w-3" />
-                        <span>{run.alerts_generated} alerts</span>
-                      </div>
+
+                    {run.summary && (
+                      <p className="text-sm text-muted-foreground line-clamp-3">{run.summary}</p>
+                    )}
+
+                    <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                      <span>Model: {run.model}</span>
+                      <span>{run.tokens_used} tokens</span>
+                      <span>{run.lookback_minutes}m lookback</span>
                     </div>
-
-                    {run.model && (
-                      <div className="mt-2 text-xs text-muted-foreground">
-                        Model: {run.model}
-                      </div>
-                    )}
-
-                    {run.errors && run.errors.length > 0 && (
-                      <div className="mt-2 text-xs text-critical">
-                        {run.errors.length} error(s)
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>

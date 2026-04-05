@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Bot,
   Database,
@@ -87,6 +88,9 @@ function roleIcon(role: MessageRole) {
 }
 
 export default function AssistantPage() {
+  const searchParams = useSearchParams();
+  const autoSubmitDone = useRef(false);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [prompt, setPrompt] = useState("");
@@ -154,6 +158,58 @@ export default function AssistantPage() {
       JSON.stringify({ messages, reasoningEffort, lookbackHours })
     );
   }, [messages, reasoningEffort, lookbackHours]);
+
+  // Auto-submit when arriving from "Analyze with Copilot" on an alert
+  useEffect(() => {
+    if (autoSubmitDone.current || loading) return;
+
+    const alertTitle = searchParams.get("title");
+    const alertMessage = searchParams.get("message");
+    const alertSeverity = searchParams.get("severity");
+    const problemId = searchParams.get("problemId");
+
+    if (!alertTitle && !problemId) return;
+    autoSubmitDone.current = true;
+
+    let autoPrompt = "";
+    if (problemId) {
+      // Coming from "Fix with Copilot" on a diagnosed problem
+      fetch(`/api/copilot/problem-prompt?problemId=${encodeURIComponent(problemId)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.prompt) {
+            setMessages([]);
+            setSessionId(null);
+            setPrompt(data.prompt);
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // Coming from "Analyze with Copilot" on a raw alert
+    autoPrompt =
+      `I have a ${alertSeverity ?? "warning"} alert: "${alertTitle}"\n` +
+      (alertMessage ? `Details: ${alertMessage}\n\n` : "\n") +
+      `What is causing this? Explain in plain English what the problem is, what's affected, and what I should do to fix it.`;
+
+    setMessages([]);
+    setSessionId(null);
+    setPrompt(autoPrompt);
+  }, [searchParams, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // When prompt is auto-set from URL params, trigger send
+  const pendingAutoSend = useRef(false);
+  useEffect(() => {
+    if (prompt && autoSubmitDone.current && !loading && !pendingAutoSend.current && messages.length === 0) {
+      pendingAutoSend.current = true;
+      // Small delay to let state settle after setPrompt
+      const timer = setTimeout(() => {
+        handleSend();
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [prompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasActions = useMemo(
     () => messages.some((message) => (message.actions ?? []).length > 0),

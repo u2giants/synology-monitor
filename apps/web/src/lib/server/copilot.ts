@@ -604,3 +604,37 @@ export async function runApprovedAction(
     exitCode: result.exitCode,
   };
 }
+
+/**
+ * Load an analyzed problem by ID and build a copilot prompt from it.
+ */
+export async function buildProblemPrompt(problemId: string): Promise<string | null> {
+  const supabase = await createSupabaseServerClient();
+
+  const { data: problem } = await supabase
+    .from("smon_analyzed_problems")
+    .select("title, explanation, severity, affected_nas, affected_shares, affected_users, affected_files, raw_event_count, technical_diagnosis, first_seen, last_seen")
+    .eq("id", problemId)
+    .maybeSingle();
+
+  if (!problem) return null;
+
+  const files = Array.isArray(problem.affected_files)
+    ? (problem.affected_files as { path: string; detail: string }[])
+        .map((f) => `  - ${f.path}: ${f.detail}`)
+        .join("\n")
+    : "";
+
+  return (
+    `I need help fixing this diagnosed problem:\n\n` +
+    `**${problem.title}** (${problem.severity})\n\n` +
+    `${problem.explanation}\n\n` +
+    `Affected NAS: ${(problem.affected_nas as string[]).join(", ") || "unknown"}\n` +
+    `Affected shares: ${(problem.affected_shares as string[]).join(", ") || "none"}\n` +
+    `Affected users: ${(problem.affected_users as string[]).join(", ") || "none"}\n` +
+    (files ? `Affected files:\n${files}\n` : "") +
+    `${problem.raw_event_count} related events\n\n` +
+    `**Technical diagnosis from the analysis AI:**\n${problem.technical_diagnosis}\n\n` +
+    `What specific steps should I take to fix this? Propose the exact commands if applicable.`
+  );
+}

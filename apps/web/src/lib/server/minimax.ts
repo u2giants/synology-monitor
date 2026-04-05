@@ -47,12 +47,18 @@ export async function callMinimax(
       requestBody.response_format = { type: "json_object" };
     }
 
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+    const groupId = process.env.MINIMAX_GROUP_ID;
+    if (groupId) {
+      headers["X-Minimax-Group-Id"] = groupId;
+    }
+
     const response = await fetch(apiUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers,
       body: JSON.stringify(requestBody),
     });
 
