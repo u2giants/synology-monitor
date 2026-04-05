@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { callMinimax, callMinimaxJSON } from "./minimax";
+import { getRemediationModel } from "./ai-settings";
 import type { CopilotRole, StoredEvidenceItem, StoredAction } from "@/lib/server/copilot-store";
 
 export type ReasoningEffort = "high" | "xhigh";
@@ -480,7 +481,7 @@ export async function generateCopilotResponse(
 
   // Step 3: Use GPT for detailed remediation response
   const client = getOpenAIClient();
-  const model = process.env.OPENAI_CHAT_MODEL ?? "openai/gpt-5.4";
+  const model = await getRemediationModel();
 
   const aiDiagnosisContext = `
 ## AI Diagnosis (from MiniMax-M2.7)

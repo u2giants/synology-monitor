@@ -1,0 +1,42 @@
+/**
+ * Load AI model settings from smon_ai_settings table.
+ * Falls back to env vars, then hardcoded defaults.
+ */
+
+import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+
+let cachedSettings: Record<string, string> | null = null;
+let cacheTime = 0;
+const CACHE_TTL = 60_000; // 1 minute
+
+async function loadSettings(): Promise<Record<string, string>> {
+  if (cachedSettings && Date.now() - cacheTime < CACHE_TTL) {
+    return cachedSettings;
+  }
+
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data } = await supabase.from("smon_ai_settings").select("key, value");
+
+    const settings: Record<string, string> = {};
+    for (const row of data ?? []) {
+      settings[row.key] = row.value;
+    }
+
+    cachedSettings = settings;
+    cacheTime = Date.now();
+    return settings;
+  } catch {
+    return cachedSettings ?? {};
+  }
+}
+
+export async function getDiagnosisModel(): Promise<string> {
+  const settings = await loadSettings();
+  return settings.diagnosis_model || process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
+}
+
+export async function getRemediationModel(): Promise<string> {
+  const settings = await loadSettings();
+  return settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
+}

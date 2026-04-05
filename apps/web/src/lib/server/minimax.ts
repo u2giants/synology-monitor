@@ -1,7 +1,10 @@
 /**
- * Minimax M2.7 client for bulk log analysis and diagnostics.
+ * Diagnosis model client for bulk log analysis.
  * Routed through OpenRouter (https://openrouter.ai).
+ * Model is configurable in Settings > AI Models.
  */
+
+import { getDiagnosisModel } from "./ai-settings";
 
 interface MinimaxOptions {
   json?: boolean;
@@ -24,7 +27,7 @@ export async function callMinimax(
 ): Promise<MinimaxResponse> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   const apiUrl = "https://openrouter.ai/api/v1/chat/completions";
-  const model = process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
+  const model = await getDiagnosisModel();
   const maxTokens = options.maxTokens || 4000;
 
   if (!apiKey) {

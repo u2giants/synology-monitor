@@ -3,18 +3,32 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useNasUnits } from "@/hooks/use-nas-units";
-import { Settings, Bell, LogOut } from "lucide-react";
+import { Settings, Bell, Brain, LogOut, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function SettingsPage() {
   const { units } = useNasUnits();
   const [pushEnabled, setPushEnabled] = useState(false);
+  const [diagnosisModel, setDiagnosisModel] = useState("");
+  const [remediationModel, setRemediationModel] = useState("");
+  const [modelsSaving, setModelsSaving] = useState(false);
+  const [modelsSaved, setModelsSaved] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     if ("Notification" in window) {
       setPushEnabled(Notification.permission === "granted");
     }
+    // Load AI model settings
+    fetch("/api/settings")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.settings) {
+          setDiagnosisModel(data.settings.diagnosis_model ?? "minimax/minimax-m2.7");
+          setRemediationModel(data.settings.remediation_model ?? "openai/gpt-5.4");
+        }
+      })
+      .catch(() => {});
   }, []);
 
   async function enableNotifications() {
@@ -88,6 +102,82 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
+      </section>
+
+      {/* AI Models */}
+      <section className="rounded-lg border border-border bg-card p-5">
+        <h2 className="font-semibold mb-1 flex items-center gap-2">
+          <Brain className="h-4 w-4" />
+          AI Models
+        </h2>
+        <p className="text-xs text-muted-foreground mb-4">
+          Choose which models to use through OpenRouter. Use the model ID format from{" "}
+          <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" className="text-primary underline">
+            openrouter.ai/models
+          </a>{" "}
+          (e.g. &quot;minimax/minimax-m2.7&quot;, &quot;openai/gpt-4.1&quot;, &quot;anthropic/claude-sonnet-4&quot;).
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Diagnosis Model
+              <span className="font-normal text-muted-foreground ml-1">(reads logs, analyzes errors, groups by root cause)</span>
+            </label>
+            <input
+              type="text"
+              value={diagnosisModel}
+              onChange={(e) => { setDiagnosisModel(e.target.value); setModelsSaved(false); }}
+              placeholder="minimax/minimax-m2.7"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Remediation Model
+              <span className="font-normal text-muted-foreground ml-1">(proposes fixes, runs in NAS Copilot)</span>
+            </label>
+            <input
+              type="text"
+              value={remediationModel}
+              onChange={(e) => { setRemediationModel(e.target.value); setModelsSaved(false); }}
+              placeholder="openai/gpt-5.4"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+            />
+          </div>
+
+          <button
+            disabled={modelsSaving}
+            onClick={async () => {
+              setModelsSaving(true);
+              setModelsSaved(false);
+              try {
+                await Promise.all([
+                  fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key: "diagnosis_model", value: diagnosisModel }),
+                  }),
+                  fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key: "remediation_model", value: remediationModel }),
+                  }),
+                ]);
+                setModelsSaved(true);
+              } catch {
+                alert("Failed to save model settings.");
+              } finally {
+                setModelsSaving(false);
+              }
+            }}
+            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            {modelsSaved ? <Check className="h-4 w-4" /> : null}
+            {modelsSaving ? "Saving..." : modelsSaved ? "Saved" : "Save Models"}
+          </button>
+        </div>
       </section>
 
       {/* Notifications */}
