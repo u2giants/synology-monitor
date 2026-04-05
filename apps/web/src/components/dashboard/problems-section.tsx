@@ -35,11 +35,20 @@ interface ProblemsSectionProps {
   } | null;
 }
 
+const LOOKBACK_OPTIONS = [
+  { value: 60, label: "Last 1 hour" },
+  { value: 360, label: "Last 6 hours" },
+  { value: 1440, label: "Last 24 hours" },
+  { value: 4320, label: "Last 3 days" },
+  { value: 7200, label: "Last 5 days" },
+];
+
 export function ProblemsSection({ initialProblems = [], initialRun = null }: ProblemsSectionProps) {
-  const { loading, analyzing, fetchLatestAnalysis, triggerAnalysis } = useAnalysis();
+  const { loading, analyzing, error: analysisError, fetchLatestAnalysis, triggerAnalysis } = useAnalysis();
   const [problems, setProblems] = useState<AnalyzedProblem[]>(initialProblems);
   const [run, setRun] = useState(initialRun);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [lookbackMinutes, setLookbackMinutes] = useState(60);
 
   useEffect(() => {
     fetchLatestAnalysis().then((data) => {
@@ -51,9 +60,11 @@ export function ProblemsSection({ initialProblems = [], initialRun = null }: Pro
   }, [fetchLatestAnalysis]);
 
   const handleAnalyze = async () => {
-    const result = await triggerAnalysis(60);
+    const result = await triggerAnalysis(lookbackMinutes);
     if (result.runId && result.result) {
-      await fetchLatestAnalysis();
+      const refreshed = await fetchLatestAnalysis();
+      setProblems(refreshed.problems);
+      setRun(refreshed.run);
     }
   };
 
@@ -71,19 +82,37 @@ export function ProblemsSection({ initialProblems = [], initialRun = null }: Pro
             </span>
           )}
         </div>
-        <button
-          onClick={handleAnalyze}
-          disabled={analyzing}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
-        >
-          {analyzing ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RefreshCw className="h-4 w-4" />
-          )}
-          {analyzing ? "Analyzing..." : "Run Analysis Now"}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={lookbackMinutes}
+            onChange={(e) => setLookbackMinutes(Number(e.target.value))}
+            disabled={analyzing}
+            className="rounded-md border border-border bg-card px-2 py-1.5 text-sm disabled:opacity-50"
+          >
+            {LOOKBACK_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <button
+            onClick={handleAnalyze}
+            disabled={analyzing}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
+          >
+            {analyzing ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            {analyzing ? "Analyzing..." : "Run Analysis"}
+          </button>
+        </div>
       </div>
+
+      {analysisError && (
+        <div className="rounded-lg border border-critical/30 bg-critical/5 p-3 text-sm text-critical">
+          Analysis error: {analysisError}
+        </div>
+      )}
 
       {loading && problems.length === 0 ? (
         <div className="rounded-lg border border-border p-6 text-center text-muted-foreground">

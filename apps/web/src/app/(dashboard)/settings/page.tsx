@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useNasUnits } from "@/hooks/use-nas-units";
-import { Settings, Bell, Brain, LogOut, Check } from "lucide-react";
+import { Settings, Bell, Brain, LogOut, Check, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function SettingsPage() {
@@ -13,6 +13,8 @@ export default function SettingsPage() {
   const [remediationModel, setRemediationModel] = useState("");
   const [modelsSaving, setModelsSaving] = useState(false);
   const [modelsSaved, setModelsSaved] = useState(false);
+  const [availableModels, setAvailableModels] = useState<{ id: string; name: string }[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
@@ -29,6 +31,18 @@ export default function SettingsPage() {
         }
       })
       .catch(() => {});
+
+    // Load available models from OpenRouter
+    fetch("https://openrouter.ai/api/v1/models")
+      .then((res) => res.json())
+      .then((data) => {
+        const models = (data.data ?? [])
+          .map((m: { id: string; name: string }) => ({ id: m.id, name: m.name }))
+          .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+        setAvailableModels(models);
+      })
+      .catch(() => {})
+      .finally(() => setModelsLoading(false));
   }, []);
 
   async function enableNotifications() {
@@ -118,18 +132,22 @@ export default function SettingsPage() {
           (e.g. &quot;minimax/minimax-m2.7&quot;, &quot;openai/gpt-4.1&quot;, &quot;anthropic/claude-sonnet-4&quot;).
         </p>
 
+        {modelsLoading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Loading available models from OpenRouter...
+          </div>
+        ) : (
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium mb-1">
               Diagnosis Model
               <span className="font-normal text-muted-foreground ml-1">(reads logs, analyzes errors, groups by root cause)</span>
             </label>
-            <input
-              type="text"
+            <ModelSelect
               value={diagnosisModel}
-              onChange={(e) => { setDiagnosisModel(e.target.value); setModelsSaved(false); }}
-              placeholder="minimax/minimax-m2.7"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+              models={availableModels}
+              onChange={(v) => { setDiagnosisModel(v); setModelsSaved(false); }}
             />
           </div>
 
@@ -138,12 +156,10 @@ export default function SettingsPage() {
               Remediation Model
               <span className="font-normal text-muted-foreground ml-1">(proposes fixes, runs in NAS Copilot)</span>
             </label>
-            <input
-              type="text"
+            <ModelSelect
               value={remediationModel}
-              onChange={(e) => { setRemediationModel(e.target.value); setModelsSaved(false); }}
-              placeholder="openai/gpt-5.4"
-              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+              models={availableModels}
+              onChange={(v) => { setRemediationModel(v); setModelsSaved(false); }}
             />
           </div>
 
@@ -178,6 +194,7 @@ export default function SettingsPage() {
             {modelsSaving ? "Saving..." : modelsSaved ? "Saved" : "Save Models"}
           </button>
         </div>
+        )}
       </section>
 
       {/* Notifications */}
@@ -213,6 +230,88 @@ export default function SettingsPage() {
           Sign Out
         </button>
       </section>
+    </div>
+  );
+}
+
+function ModelSelect({
+  value,
+  models,
+  onChange,
+}: {
+  value: string;
+  models: { id: string; name: string }[];
+  onChange: (value: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const filtered = search
+    ? models.filter(
+        (m) =>
+          m.id.toLowerCase().includes(search.toLowerCase()) ||
+          m.name.toLowerCase().includes(search.toLowerCase())
+      )
+    : models;
+
+  const selectedName = models.find((m) => m.id === value)?.name;
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-left text-sm focus:border-primary focus:outline-none"
+      >
+        <span className="block truncate">
+          {selectedName ? (
+            <>
+              <span className="font-medium">{selectedName}</span>
+              <span className="text-muted-foreground ml-2 text-xs">{value}</span>
+            </>
+          ) : (
+            <span className="text-muted-foreground">{value || "Select a model..."}</span>
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-card shadow-lg">
+          <div className="p-2">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search models..."
+              autoFocus
+              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-sm text-muted-foreground">No models found</div>
+            ) : (
+              filtered.slice(0, 100).map((model) => (
+                <button
+                  key={model.id}
+                  type="button"
+                  onClick={() => {
+                    onChange(model.id);
+                    setOpen(false);
+                    setSearch("");
+                  }}
+                  className={`w-full text-left px-3 py-2 text-sm hover:bg-muted/50 ${
+                    model.id === value ? "bg-primary/10 font-medium" : ""
+                  }`}
+                >
+                  <div className="truncate font-medium">{model.name}</div>
+                  <div className="truncate text-xs text-muted-foreground">{model.id}</div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

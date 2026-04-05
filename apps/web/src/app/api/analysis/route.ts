@@ -5,7 +5,8 @@ import { analyzeRecentLogs, getLatestAnalysis, getAnalysisById } from "@/lib/ser
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const lookbackMinutes = body.lookbackMinutes || 60;
+    const requested = Number(body.lookbackMinutes) || 60;
+    const lookbackMinutes = Math.min(Math.max(requested, 15), 7200); // 15 min to 5 days
 
     const result = await analyzeRecentLogs(lookbackMinutes);
 

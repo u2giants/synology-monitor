@@ -111,20 +111,22 @@ async function fetchAnalysisData(lookbackMinutes: number) {
       .eq("status", "active")
       .gte("created_at", since),
 
-    // Recent error/warning logs
+    // Recent error/warning logs (scale limit with lookback window)
     supabase
       .from("smon_logs")
       .select("*")
       .in("severity", ["error", "warning", "critical"])
       .gte("ingested_at", since)
-      .limit(200),
+      .order("ingested_at", { ascending: false })
+      .limit(Math.min(1000, lookbackMinutes * 2)),
 
     // Recent security events
     supabase
       .from("smon_security_events")
       .select("*")
       .gte("created_at", since)
-      .limit(50),
+      .order("created_at", { ascending: false })
+      .limit(Math.min(500, lookbackMinutes)),
 
     // Drive/sync logs
     supabase
@@ -132,7 +134,8 @@ async function fetchAnalysisData(lookbackMinutes: number) {
       .select("*")
       .in("source", ["drive", "drive_server", "drive_sharesync", "smb"])
       .gte("ingested_at", since)
-      .limit(200),
+      .order("ingested_at", { ascending: false })
+      .limit(Math.min(1000, lookbackMinutes * 2)),
   ]);
 
   return {
