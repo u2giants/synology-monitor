@@ -23,11 +23,14 @@ type Config struct {
 	SupabaseServiceKey string
 
 	// Collection intervals
-	MetricsInterval  time.Duration
-	StorageInterval  time.Duration
-	LogInterval      time.Duration
-	DockerInterval   time.Duration
-	SecurityInterval time.Duration
+	MetricsInterval     time.Duration
+	StorageInterval     time.Duration
+	LogInterval         time.Duration
+	DockerInterval      time.Duration
+	SecurityInterval    time.Duration
+	ProcessInterval     time.Duration // per-process CPU/mem/IO sampling
+	DiskStatsInterval   time.Duration // per-disk IOPS/latency sampling
+	ConnectionsInterval time.Duration // active network connection enumeration
 
 	// File system monitoring
 	WatchPaths     []string
@@ -58,11 +61,14 @@ func Load() (*Config, error) {
 		SupabaseURL:        getEnv("SUPABASE_URL", ""),
 		SupabaseServiceKey: getEnv("SUPABASE_SERVICE_KEY", ""),
 
-		MetricsInterval:  getEnvDuration("METRICS_INTERVAL", 30*time.Second),
-		StorageInterval:  getEnvDuration("STORAGE_INTERVAL", 60*time.Second),
-		LogInterval:      getEnvDuration("LOG_INTERVAL", 10*time.Second),
-		DockerInterval:   getEnvDuration("DOCKER_INTERVAL", 30*time.Second),
-		SecurityInterval: getEnvDuration("SECURITY_INTERVAL", 15*time.Minute),
+		MetricsInterval:     getEnvDuration("METRICS_INTERVAL", 30*time.Second),
+		StorageInterval:     getEnvDuration("STORAGE_INTERVAL", 60*time.Second),
+		LogInterval:         getEnvDuration("LOG_INTERVAL", 10*time.Second),
+		DockerInterval:      getEnvDuration("DOCKER_INTERVAL", 30*time.Second),
+		SecurityInterval:    getEnvDuration("SECURITY_INTERVAL", 15*time.Minute),
+		ProcessInterval:     getEnvDuration("PROCESS_INTERVAL", 15*time.Second),
+		DiskStatsInterval:   getEnvDuration("DISKSTATS_INTERVAL", 15*time.Second),
+		ConnectionsInterval: getEnvDuration("CONNECTIONS_INTERVAL", 30*time.Second),
 
 		WatchPaths:     getEnvList("WATCH_PATHS", []string{"/host/volume1"}),
 		ChecksumPaths:  getEnvList("CHECKSUM_PATHS", []string{"/host/volume1"}),

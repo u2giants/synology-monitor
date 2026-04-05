@@ -582,3 +582,109 @@ func (c *Client) GetSystemInfo() (*SystemInfo, error) {
 	}
 	return &info, nil
 }
+
+// === ShareSync Task API ===
+
+// ShareSyncTask represents a Synology Drive ShareSync task.
+type ShareSyncTask struct {
+	ID               string `json:"task_id"`
+	Name             string `json:"task_name"`
+	Status           string `json:"status"`
+	BacklogCount     int    `json:"backlog_count"`
+	BacklogBytes     int64  `json:"backlog_bytes"`
+	CurrentFile      string `json:"current_file"`
+	CurrentFolder    string `json:"current_folder"`
+	RetryCount       int    `json:"retry_count"`
+	LastError        string `json:"last_error"`
+	TransferredFiles int    `json:"transferred_files"`
+	TransferredBytes int64  `json:"transferred_bytes"`
+	SpeedBPS         int64  `json:"speed"`
+	IndexingQueue    int    `json:"indexing_queue"`
+}
+
+// GetShareSyncTasks attempts to query ShareSync task list via DSM API.
+// Returns an empty slice (not an error) if the API is not available on this
+// DSM version, so the caller can fall back to log parsing.
+func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
+	// Try the v1 admin endpoint first; fall back to v2 if it fails.
+	for _, apiSpec := range []struct {
+		api     string
+		version int
+		method  string
+	}{
+		{"SYNO.SynologyDrive.Admin.ShareSync", 1, "list"},
+		{"SYNO.SynologyDrive.ShareSync", 1, "list"},
+		{"SYNO.SynologyDrive.Admin", 1, "sharesync_list"},
+	} {
+		data, err := c.request(apiSpec.api, apiSpec.version, apiSpec.method, url.Values{
+			"limit":  {"-1"},
+			"offset": {"0"},
+		})
+		if err != nil {
+			continue
+		}
+
+		// The response structure varies; try multiple known shapes.
+		var wrapped struct {
+			Tasks []ShareSyncTask `json:"tasks"`
+			Items []ShareSyncTask `json:"items"`
+			List  []ShareSyncTask `json:"list"`
+		}
+		if err := json.Unmarshal(data, &wrapped); err != nil {
+			continue
+		}
+		tasks := wrapped.Tasks
+		if len(tasks) == 0 {
+			tasks = wrapped.Items
+		}
+		if len(tasks) == 0 {
+			tasks = wrapped.List
+		}
+		return tasks, nil
+	}
+
+	// API not available on this DSM version – caller uses log-based fallback.
+	return nil, nil
+}
+
+// === Scheduled Tasks API ===
+
+// ScheduledTask represents a DSM task scheduler entry.
+type ScheduledTask struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Enable   bool   `json:"enable"`
+	NextTime string `json:"next_trigger_time"`
+	LastRun  string `json:"last_run_time"`
+	Status   string `json:"status"`
+}
+
+// GetRunningScheduledTasks returns task scheduler entries that are currently
+// running. Returns nil (no error) when the API is unavailable.
+func (c *Client) GetRunningScheduledTasks() ([]ScheduledTask, error) {
+	data, err := c.request("SYNO.Core.TaskScheduler", 4, "list", url.Values{
+		"sort_by":    {"next_trigger_time"},
+		"sort_order": {"ASC"},
+		"limit":      {"50"},
+		"offset":     {"0"},
+	})
+	if err != nil {
+		return nil, nil // not fatal
+	}
+
+	var response struct {
+		Tasks []ScheduledTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, nil
+	}
+
+	var running []ScheduledTask
+	for _, t := range response.Tasks {
+		if t.Status == "running" {
+			running = append(running, t)
+		}
+	}
+	return running, nil
+}

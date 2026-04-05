@@ -47,8 +47,8 @@ This repository monitors two Synology DS1621xs+ NAS devices. The core business p
 | Web UI | https://mon.designflow.app |
 | GitHub Repo | https://github.com/u2giants/synology-monitor |
 | Coolify App UUID | `lrddgp8im0276gllujfu7wm3` |
-| Supabase Project | `ryltkzzernhwnojzouyb` |
-| Supabase URL | `https://ryltkzzernhwnojzouyb.supabase.co` |
+| Supabase Project | `qnjimovrsaacneqkggsn` |
+| Supabase URL | `https://qnjimovrsaacneqkggsn.supabase.co` |
 | Agent Image | `ghcr.io/u2giants/synology-monitor-agent` |
 
 ## NAS Endpoints (Tailscale)
@@ -112,6 +112,79 @@ synology-monitor/
     └── workflows/         # CI/CD pipelines
 ```
 
+## Deploying This Update (Plain English)
+
+This section explains exactly what needs to happen when you (or the AI) has changed agent code or added new database tables.
+
+### Step 1 — Create the new database tables in Supabase
+
+New tables were added for I/O and process tracking. They don't exist yet until you create them.
+
+1. Go to **https://supabase.com** and sign in
+2. Open the **`qnjimovrsaacneqkggsn`** project
+3. In the left sidebar click **SQL Editor**
+4. Click **New query**
+5. Open the file `resource-snapshot-migration.sql` (in the root of this repo), copy the entire contents, and paste it into the SQL editor
+6. Click **Run** (or press Ctrl+Enter)
+7. You should see "Success. No rows returned." — that means the tables were created
+
+You only need to do this once. If you run it again it won't break anything (the SQL uses `IF NOT EXISTS`).
+
+### Step 2 — Push the code so GitHub rebuilds the agent
+
+The agent running on the NAS is a container image built automatically from the code in GitHub. Pushing the code triggers a rebuild.
+
+1. Commit and push the changed files to the `master` branch on GitHub
+2. Go to the GitHub repo → **Actions** tab
+3. Wait for the workflow called `agent-image` to go green (usually 3–5 minutes)
+4. When it's done, the new image is published and ready to be pulled
+
+The web dashboard (Coolify) will also redeploy automatically from the push — you don't need to do anything for that.
+
+### Step 3 — Update the compose file on both NAS units and restart
+
+The agent container needs two new read-only mounts added so it can see the host's process list. This requires updating the compose file on each NAS and recreating the container.
+
+On **edgesynology1** (`100.107.131.35`, SSH port 22):
+
+```sh
+# 1. Open the compose file on the NAS and add the two new volume lines
+#    (or ask the AI to do this via the copilot execute tool)
+ssh popdam@100.107.131.35
+
+# 2. Once you're in, navigate to the agent folder
+cd /volume1/docker/synology-monitor-agent
+
+# 3. Open compose.yaml in a text editor and add these two lines
+#    under the "volumes:" section, before "- /var/log:/host/log:ro"
+#      - /proc:/host/proc:ro
+#      - /etc/passwd:/host/etc/passwd:ro
+
+# 4. Pull the new image and recreate the container
+/var/packages/ContainerManager/target/usr/bin/docker compose -f compose.yaml pull
+/var/packages/ContainerManager/target/usr/bin/docker compose -f compose.yaml up -d
+
+# 5. Confirm it's running
+/var/packages/ContainerManager/target/usr/bin/docker ps | grep synology-monitor-agent
+```
+
+Repeat the same steps on **edgesynology2** (`100.107.131.36`, SSH port 1904):
+```sh
+ssh -p 1904 popdam@100.107.131.36
+```
+
+If you're not comfortable with SSH, you can ask the AI copilot to do steps 3–5 using the execute tool (the copilot has SSH access to both NAS units via Tailscale).
+
+### What each step does (in plain English)
+
+| Step | What it does | Has to be done |
+|------|-------------|----------------|
+| Run the SQL file | Creates 4 new tables in the database where the agent will store process/disk/network snapshots | Once, ever |
+| Push to GitHub | Triggers an automatic rebuild of the agent software | Every time code changes |
+| Update compose + restart | Gives the agent permission to read the host's process list, then loads the new software | Once per NAS, whenever compose.yaml changes |
+
+---
+
 ## Database Schema (Supabase)
 
 All tables are prefixed `smon_` (shared Supabase project).
@@ -129,6 +202,19 @@ All tables are prefixed `smon_` (shared Supabase project).
 | `smon_ai_analyses` | AI-generated insights (legacy) |
 | `smon_analysis_runs` | AI analysis runs (Minimax M2.7) |
 | `smon_analyzed_problems` | Root cause problems from AI analysis |
+
+### Resource Attribution Tables (added for I/O spike diagnosis)
+
+These are populated by the three new collectors and queried by the copilot automatically.
+
+| Table | What it stores | How often |
+|-------|---------------|-----------|
+| `smon_process_snapshots` | Top processes by CPU / memory / disk write at that moment | Every 15 s |
+| `smon_disk_io_stats` | Per-disk read/write speed, I/O wait time, queue depth | Every 15 s |
+| `smon_sync_task_snapshots` | ShareSync task state — current file, backlog, errors | Every 30 s |
+| `smon_net_connections` | Top remote IP addresses currently connected, grouped by service | Every 30 s |
+
+Migration file: `resource-snapshot-migration.sql` (repo root).
 
 ### Log Sources (smon_logs.source)
 
@@ -246,6 +332,10 @@ The Go agent running on each NAS:
   - `/var/log/synologydrive.log` → `source=drive_server`
   - `@synologydrive/log/*.log` → `source=drive`
   - `@synologydrive/log/syncfolder.log` → `source=drive_sharesync`
+- **Process Collector** (new): Top processes by CPU / memory / disk I/O every 15 s — reads `/proc` directly from the host, maps process names to known Synology services
+- **Disk Stats Collector** (new): Per-disk IOPS, throughput, I/O wait, utilisation, queue depth every 15 s — from `/proc/diskstats`
+- **Connections Collector** (new): Top remote IP addresses connected to SMB / NFS / Drive / SSH every 30 s — from `/proc/net/tcp`
+- **ShareSync Deep Collector** (new): Tries DSM API first; falls back to parsing `@SynologyDriveShareSync/*/log/syncfolder.log` — captures current file, backlog, retry count, last error
 - **Security Watcher:**
   - Entropy-based ransomware detection
   - Mass-rename detection
@@ -295,6 +385,8 @@ The Go agent running on each NAS:
 - Complete Drive Admin Console API coverage
 - Guaranteed per-user attribution for all file operations
 - Batch AI analysis for multiple sync errors at once
+- Per-session bandwidth accounting (connection count only, not bytes transferred per session)
+- Automatic data retention cleanup for high-frequency tables (see retention comment in `resource-snapshot-migration.sql`)
 
 ## Operational Notes
 
@@ -337,7 +429,9 @@ ssh popdam@100.107.131.35 docker images | grep synology-monitor-agent
 
 ## Immediate Next Steps (If Continuing)
 
-1. Verify Coolify deployment succeeded for commit `501a6d9`
-2. Test `/sync-triage` page with real data
-3. Monitor for any remaining build errors
-4. Consider batch AI analysis feature for sync errors
+1. Run `resource-snapshot-migration.sql` in the Supabase SQL editor (see "Deploying This Update" above)
+2. Push all changed files to GitHub and wait for the agent image build to complete
+3. Update both NAS units: add `/proc:/host/proc:ro` and `/etc/passwd:/host/etc/passwd:ro` to their `compose.yaml`, then pull + restart
+4. Confirm new tables are receiving data: in Supabase SQL editor run `SELECT * FROM smon_process_snapshots ORDER BY captured_at DESC LIMIT 5;`
+5. Test the copilot with "what's causing high I/O on edgesynology2?" — it should now automatically show process and disk data without needing an SSH tool call
+6. Consider scheduling the pg_cron retention cleanup from the comment at the bottom of `resource-snapshot-migration.sql` once data volume is confirmed (tables keep 24h by default; without cleanup they grow indefinitely)

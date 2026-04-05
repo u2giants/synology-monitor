@@ -9,6 +9,8 @@ services:
     environment:
       TZ: ${TZ:-UTC}
     volumes:
+      - /proc:/host/proc:ro          # per-process CPU/mem/IO and disk stats
+      - /etc/passwd:/host/etc/passwd:ro  # UID→username resolution
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
       # Synology Container Manager rejects top-level volume binds such as

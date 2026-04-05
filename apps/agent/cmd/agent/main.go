@@ -94,12 +94,36 @@ func main() {
 		dockerCollector.Run(stop)
 	}()
 
-	// Start Drive Admin collector (team folders, user activity, stats)
+	// Start Drive Admin collector (team folders, user activity, stats, ShareSync tasks)
 	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		driveCollector.Run(stop)
+	}()
+
+	// Start per-process CPU / memory / disk I/O collector
+	processCollector := collector.NewProcessCollector(s, cfg.NasID, cfg.ProcessInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		processCollector.Run(stop)
+	}()
+
+	// Start per-disk IOPS / latency / utilisation collector
+	diskStatsCollector := collector.NewDiskStatsCollector(s, cfg.NasID, cfg.DiskStatsInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		diskStatsCollector.Run(stop)
+	}()
+
+	// Start active network connection enumerator
+	connectionsCollector := collector.NewConnectionsCollector(s, cfg.NasID, cfg.ConnectionsInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		connectionsCollector.Run(stop)
 	}()
 
 	// Start log watcher

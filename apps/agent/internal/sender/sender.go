@@ -99,6 +99,22 @@ func (s *Sender) QueueDriveActivity(p DriveActivityPayload) {
 	s.queue("smon_drive_activities", p)
 }
 
+func (s *Sender) QueueProcessSnapshot(p ProcessSnapshotPayload) {
+	s.queue("smon_process_snapshots", p)
+}
+
+func (s *Sender) QueueDiskIOStat(p DiskIOStatPayload) {
+	s.queue("smon_disk_io_stats", p)
+}
+
+func (s *Sender) QueueSyncTaskSnapshot(p SyncTaskSnapshotPayload) {
+	s.queue("smon_sync_task_snapshots", p)
+}
+
+func (s *Sender) QueueNetConnection(p NetConnectionPayload) {
+	s.queue("smon_net_connections", p)
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
