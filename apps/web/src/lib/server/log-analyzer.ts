@@ -147,7 +147,8 @@ async function fetchAnalysisData(lookbackMinutes: number) {
 }
 
 /**
- * Format data for the AI prompt
+ * Format data for the AI prompt — compact format, one line per event.
+ * Full JSON dumps are too large for the model context window.
  */
 function formatDataForPrompt(
   alerts: unknown[],
@@ -158,22 +159,40 @@ function formatDataForPrompt(
   const sections: string[] = [];
 
   if (alerts.length > 0) {
-    sections.push(`## ACTIVE ALERTS (${alerts.length})\n${JSON.stringify(alerts, null, 2)}`);
+    const lines = (alerts as Record<string, unknown>[]).map(
+      (a) => `- [${a.severity}] ${a.title} | ${a.message || ""} | details=${JSON.stringify(a.details ?? {})} | ${a.created_at} | id=${a.id}`
+    );
+    sections.push(`## ACTIVE ALERTS (${alerts.length})\n${lines.join("\n")}`);
   }
 
   if (logs.length > 0) {
-    sections.push(`## ERROR/WARNING LOGS (${logs.length})\n${JSON.stringify(logs, null, 2)}`);
+    const lines = (logs as Record<string, unknown>[]).map(
+      (l) => `- [${l.severity}/${l.source}] ${l.message} | meta=${JSON.stringify(l.metadata ?? {})} | ${l.ingested_at} | id=${l.id}`
+    );
+    sections.push(`## ERROR/WARNING LOGS (${logs.length})\n${lines.join("\n")}`);
   }
 
   if (securityEvents.length > 0) {
-    sections.push(`## SECURITY EVENTS (${securityEvents.length})\n${JSON.stringify(securityEvents, null, 2)}`);
+    const lines = (securityEvents as Record<string, unknown>[]).map(
+      (e) => `- [${e.severity}/${e.type}] ${e.title} | ${e.description ?? ""} | file=${e.file_path ?? "N/A"} user=${e.user ?? "N/A"} | ${e.created_at} | id=${e.id}`
+    );
+    sections.push(`## SECURITY EVENTS (${securityEvents.length})\n${lines.join("\n")}`);
   }
 
   if (driveLogs.length > 0) {
-    sections.push(`## DRIVE/SYNC LOGS (${driveLogs.length})\n${JSON.stringify(driveLogs, null, 2)}`);
+    const lines = (driveLogs as Record<string, unknown>[]).map(
+      (l) => `- [${l.severity}/${l.source}] ${l.message} | meta=${JSON.stringify(l.metadata ?? {})} | ${l.ingested_at} | id=${l.id}`
+    );
+    sections.push(`## DRIVE/SYNC LOGS (${driveLogs.length})\n${lines.join("\n")}`);
   }
 
-  return sections.join("\n\n");
+  // Truncate if still too large (Minimax M2.7 has 200K context but keep prompt reasonable)
+  let result = sections.join("\n\n");
+  if (result.length > 150000) {
+    result = result.slice(0, 150000) + "\n\n[TRUNCATED — too many events to fit in one analysis]";
+  }
+
+  return result;
 }
 
 /**

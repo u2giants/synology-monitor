@@ -61,7 +61,15 @@ export async function callMinimax(
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[Minimax] API error ${response.status}: ${errorText}`);
-      return { content: null, error: `API error ${response.status}` };
+      // Parse OpenRouter error for a readable message
+      let detail = `API error ${response.status}`;
+      try {
+        const errJson = JSON.parse(errorText);
+        detail = errJson.error?.message || errJson.error?.code || detail;
+      } catch {
+        if (errorText.length < 200) detail = errorText;
+      }
+      return { content: null, error: detail };
     }
 
     const data = await response.json();
@@ -88,7 +96,7 @@ export async function callMinimaxJSON<T>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<{ data: T | null; error?: string }> {
-  const result = await callMinimax(systemPrompt, userPrompt, { json: true });
+  const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 8000 });
 
   if (!result.content) {
     return { data: null, error: result.error };
