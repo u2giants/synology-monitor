@@ -1,6 +1,6 @@
 /**
- * Minimax M2.7 client for bulk log analysis and diagnostics
- * Uses OpenAI-compatible chat completions endpoint
+ * Minimax M2.7 client for bulk log analysis and diagnostics.
+ * Routed through OpenRouter (https://openrouter.ai).
  */
 
 interface MinimaxOptions {
@@ -14,22 +14,22 @@ interface MinimaxResponse {
 }
 
 /**
- * Call Minimax M2.7 with a system prompt and user prompt
- * Returns the response text or null on error
+ * Call Minimax M2.7 via OpenRouter with a system prompt and user prompt.
+ * Returns the response text or null on error.
  */
 export async function callMinimax(
   systemPrompt: string,
   userPrompt: string,
   options: MinimaxOptions = {}
 ): Promise<MinimaxResponse> {
-  const apiKey = process.env.MINIMAX_API_KEY;
-  const apiUrl = process.env.MINIMAX_API_URL || "https://api.minimax.io/v1/chat/completions";
-  const model = process.env.MINIMAX_MODEL || "MiniMax-M2.7";
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  const apiUrl = "https://openrouter.ai/api/v1/chat/completions";
+  const model = process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
   const maxTokens = options.maxTokens || 4000;
 
   if (!apiKey) {
-    console.error("[Minimax] MINIMAX_API_KEY not configured");
-    return { content: null, error: "MINIMAX_API_KEY not configured" };
+    console.error("[Minimax] OPENROUTER_API_KEY not configured");
+    return { content: null, error: "OPENROUTER_API_KEY not configured" };
   }
 
   try {
@@ -42,23 +42,16 @@ export async function callMinimax(
       max_tokens: maxTokens,
     };
 
-    // Add response format for JSON output when requested
     if (options.json) {
       requestBody.response_format = { type: "json_object" };
     }
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    };
-    const groupId = process.env.MINIMAX_GROUP_ID;
-    if (groupId) {
-      headers["X-Minimax-Group-Id"] = groupId;
-    }
-
     const response = await fetch(apiUrl, {
       method: "POST",
-      headers,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       body: JSON.stringify(requestBody),
     });
 

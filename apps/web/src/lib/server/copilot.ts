@@ -48,11 +48,14 @@ interface ToolDefinition {
 }
 
 function getOpenAIClient() {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not configured.");
+    throw new Error("OPENROUTER_API_KEY or OPENAI_API_KEY is not configured.");
   }
-  return new OpenAI({ apiKey });
+  return new OpenAI({
+    apiKey,
+    baseURL: "https://openrouter.ai/api/v1",
+  });
 }
 
 function randomId() {
@@ -60,9 +63,9 @@ function randomId() {
 }
 
 function getActionSigningKey(): string {
-  const signingKey = process.env.COPILOT_ACTION_SIGNING_KEY ?? process.env.OPENAI_API_KEY ?? "";
+  const signingKey = process.env.COPILOT_ACTION_SIGNING_KEY ?? process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
   if (!signingKey) {
-    throw new Error("COPILOT_ACTION_SIGNING_KEY or OPENAI_API_KEY environment variable must be set.");
+    throw new Error("COPILOT_ACTION_SIGNING_KEY or OPENROUTER_API_KEY must be set.");
   }
   return signingKey;
 }
@@ -477,7 +480,7 @@ export async function generateCopilotResponse(
 
   // Step 3: Use GPT for detailed remediation response
   const client = getOpenAIClient();
-  const model = process.env.OPENAI_CHAT_MODEL ?? "gpt-5.4";
+  const model = process.env.OPENAI_CHAT_MODEL ?? "openai/gpt-5.4";
 
   const aiDiagnosisContext = `
 ## AI Diagnosis (from MiniMax-M2.7)
