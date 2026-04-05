@@ -73,14 +73,20 @@ export async function callMinimax(
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
+    let content = data.choices?.[0]?.message?.content ?? "";
 
     if (!content) {
-      console.error("[Minimax] No content in response");
+      console.error("[Minimax] No content in response:", JSON.stringify(data).slice(0, 300));
       return { content: null, error: "No content in response" };
     }
 
-    return { content: content.trim() };
+    // Clean content: strip markdown code blocks, BOM, leading/trailing whitespace
+    content = content.trim();
+    content = content.replace(/^\uFEFF/, "");
+    content = content.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/, "");
+    content = content.trim();
+
+    return { content };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error(`[Minimax] Request failed: ${message}`);
@@ -106,7 +112,18 @@ export async function callMinimaxJSON<T>(
     const data = JSON.parse(result.content) as T;
     return { data };
   } catch {
-    console.error("[Minimax] Failed to parse JSON response:", result.content);
-    return { data: null, error: "Failed to parse JSON response" };
+    // Try to extract JSON from markdown code blocks or mixed content
+    const jsonMatch = result.content.match(/```(?:json)?\s*([\s\S]*?)```/) ||
+                      result.content.match(/(\{[\s\S]*\})/);
+    if (jsonMatch?.[1]) {
+      try {
+        const data = JSON.parse(jsonMatch[1].trim()) as T;
+        return { data };
+      } catch {
+        // fall through
+      }
+    }
+    console.error("[Minimax] Failed to parse JSON response:", result.content.slice(0, 500));
+    return { data: null, error: `Failed to parse JSON response. Model returned: ${result.content.slice(0, 200)}...` };
   }
 }
