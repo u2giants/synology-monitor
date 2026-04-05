@@ -34,34 +34,37 @@ These observations were verified from:
 1. Coolify app UUID is `lrddgp8im0276gllujfu7wm3`.
 2. Coolify says the app deploys from GitHub repo `u2giants/synology-monitor`
    branch `master`.
-3. The VPS checkout currently contains uncommitted local changes that are not in
-   `origin/master`.
-4. The production environment has these key variables configured:
-   `OPENAI_API_KEY`, `OPENAI_CHAT_MODEL`, `MINIMAX_API_KEY`,
-   `MINIMAX_GROUP_ID`, `CRON_SECRET`, NAS SSH connection variables, and
-   Supabase public env vars.
+3. The production environment has these key variables configured:
+   `OPENROUTER_API_KEY` (replaces old `OPENAI_API_KEY`, `MINIMAX_API_KEY`,
+   `MINIMAX_GROUP_ID`), `CRON_SECRET`, NAS SSH connection variables, and
+   Supabase public env vars pointing to the dedicated `qnjimovrsaacneqkggsn`
+   project.
 
-### Live database facts
+### Live database facts (updated 2026-04-05)
 
 1. `smon_ai_analyses` has live rows and is still being populated.
-2. `smon_analysis_runs` has `0` rows.
-3. `smon_analyzed_problems` has `0` rows.
+2. `smon_analysis_runs` — now receiving rows (RLS policies were added to fix
+   silent insert block).
+3. `smon_analyzed_problems` — now receiving rows (same RLS fix).
 4. `smon_alerts` has many active rows.
-5. `smon_copilot_sessions` has rows, but they are old and sparse.
+5. `smon_copilot_sessions` has rows.
 6. There are extra live tables such as `smon_drive_activities` and
    `smon_sync_remediations` that are not defined in the tracked migrations in
    this repo.
+7. `smon_process_snapshots`, `smon_disk_io_stats`, `smon_net_connections`,
+   `smon_sync_task_snapshots` — new resource attribution tables, active and
+   receiving data. Created via `resource-snapshot-migration.sql`.
 
 ### Important implication
 
-Production is currently running with a mixed state:
+Production is running with a mixed state:
 
-1. An older SQL-driven AI pipeline is working.
-2. A newer application-driven Minimax analysis pipeline exists in source.
-3. The newer pipeline has not successfully produced any persisted analysis data
-   in production.
-4. The UI already expects the newer pipeline in several places.
-5. Therefore the UI routes users into dead ends.
+1. An older SQL-driven AI pipeline is working (writes `smon_ai_analyses`).
+2. A newer application-driven analysis pipeline (google/gemini-2.5-flash via
+   OpenRouter) writes `smon_analysis_runs` and `smon_analyzed_problems`.
+3. The newer pipeline is now functional after RLS and token limit fixes.
+4. The UI expects the newer pipeline in several places.
+5. Several of the problems below have been fixed (see items marked **FIXED**).
 
 ## User-Visible Problems To Fix
 
@@ -146,13 +149,18 @@ The app needs a consistent mapping:
 2. Sync Triage should be able to show the alert-generated issue source
 3. If a view crosses datasets, the UI must say so explicitly
 
-### Problem 6: Run Analysis Now does nothing
+### Problem 6: Run Analysis Now does nothing — **FIXED**
 
-The button spins and then no result appears.
+Was caused by two issues: (1) `smon_analysis_runs`/`smon_analyzed_problems` had
+RLS enabled with no policies (silent insert block); (2) diagnosis model
+responses were being truncated at 8K tokens. Both fixed. The pipeline now
+persists results correctly.
 
-The root cause is that the new analysis pipeline is failing before persistence.
+### Problem 8: I/O spike diagnosis had no process/disk attribution — **FIXED**
 
-That must be fixed first because several other flows depend on it.
+Added three new agent collectors (process, diskstats, connections) and four new
+Supabase tables. The Copilot now automatically includes this data in every
+response without needing an SSH tool call. See `AGENTS.md` for schema details.
 
 ### Problem 7: Analyze with Copilot opens Copilot without context
 
@@ -168,37 +176,17 @@ The Copilot launch flow must work for:
 
 ## Root Causes Identified So Far
 
-### Root cause A: Minimax response parsing is brittle
+### Root cause A: Minimax response parsing — **FIXED**
 
-File:
+The diagnosis model (now google/gemini-2.5-flash via OpenRouter) was returning
+valid JSON that was being truncated because `maxTokens` was set to 8000.
+Increased to 32000. The parser also strips markdown fences and leading/trailing
+whitespace. Analysis runs are now persisted correctly.
 
-`apps/web/src/lib/server/minimax.ts`
+### Root cause B: the UI depends on empty analysis tables — **PARTIALLY FIXED**
 
-The live Minimax endpoint can return a response shaped like:
-
-1. reasoning text inside `<think>...</think>`
-2. then a JSON object
-
-The current analysis path in:
-
-`apps/web/src/lib/server/log-analyzer.ts`
-
-does:
-
-1. `callMinimax(...)`
-2. `JSON.parse(result.text)`
-
-This fails if the response includes `<think>` content before the JSON.
-
-As a result:
-
-1. the parse fails
-2. the analysis run is never inserted
-3. no analyzed problems are stored
-4. `Run Analysis Now` appears to do nothing
-5. Copilot launch from analyzed problems cannot work
-
-### Root cause B: the UI depends on empty analysis tables
+The analysis tables are now populated. UI wiring improvements (Problems 1–5,
+7) from the original plan remain as future work.
 
 Files:
 
@@ -208,12 +196,7 @@ Files:
 4. `apps/web/src/lib/server/copilot.ts`
 5. `apps/web/src/app/api/copilot/problem-prompt/route.ts`
 
-The new dashboard and triage flows expect:
-
-1. `smon_analysis_runs`
-2. `smon_analyzed_problems`
-
-But those tables are empty in production.
+The tables now have rows in production.
 
 ### Root cause C: the alert pipeline stores only counts, not explanation
 

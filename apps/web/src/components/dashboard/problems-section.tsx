@@ -309,7 +309,7 @@ function ProblemCard({
               className="flex items-center gap-1 px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
             >
               <Wrench className="h-3 w-3" />
-              Fix in Copilot
+              Fix This
             </Link>
           </div>
         </div>

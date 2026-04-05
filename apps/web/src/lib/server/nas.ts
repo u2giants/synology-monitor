@@ -186,5 +186,5 @@ export async function executeApprovedCommand(target: NasTarget, command: string)
     throw new Error(validationError);
   }
 
-  return runNasScript(config, command, 60_000);
+  return runNasScript(config, command, 90_000);
 }

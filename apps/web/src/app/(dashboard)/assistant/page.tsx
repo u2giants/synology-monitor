@@ -1,727 +1,428 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   Bot,
-  Database,
-  LoaderCircle,
-  MessageSquareText,
+  Loader2,
   Plus,
-  Search,
-  ShieldAlert,
-  Sparkles,
-  Terminal,
-  Wrench,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Send,
+  ToggleLeft,
+  ToggleRight,
 } from "lucide-react";
 import { cn, timeAgo } from "@/lib/utils";
+import {
+  useResolution,
+  type Resolution,
+  type ResolutionFull,
+} from "@/hooks/use-resolution";
+import { PhaseStepper } from "@/components/resolution/phase-stepper";
+import { PendingActions } from "@/components/resolution/pending-actions";
+import { ActivityLog } from "@/components/resolution/activity-log";
 
-type ReasoningEffort = "high" | "xhigh";
-type LookbackHours = 1 | 2 | 6 | 24;
-type Target = "edgesynology1" | "edgesynology2";
-type MessageRole = "user" | "assistant" | "tool";
-type ActionStatus = "proposed" | "approved" | "running" | "executed" | "failed" | "rejected";
-type CopilotRole = "viewer" | "operator" | "admin";
-
-interface EvidenceItem {
-  id: string;
-  kind: "alert" | "log" | "ssh";
-  title: string;
-  detail: string;
-  timestamp?: string;
-  target?: string;
-}
-
-interface ProposedAction {
-  id: string;
-  title: string;
-  target: Target;
-  toolName: string;
-  commandPreview: string;
-  reason: string;
-  risk: "low" | "medium" | "high";
-  approvalToken: string;
-  status?: ActionStatus;
-  result?: string;
-}
-
-interface ChatMessage {
-  id: string;
-  role: MessageRole;
-  content: string;
-  createdAt: string;
-  evidence?: EvidenceItem[];
-  actions?: ProposedAction[];
-}
-
-interface SessionSummary {
-  id: string;
-  title: string;
-  reasoningEffort: ReasoningEffort;
-  lookbackHours: LookbackHours;
-  updatedAt: string;
-  createdAt: string;
-}
-
-const STORAGE_KEY = "smon-copilot-chat-v2";
-
-function messageTone(role: MessageRole) {
-  switch (role) {
-    case "assistant":
-      return "border-primary/20 bg-primary/5";
-    case "tool":
-      return "border-amber-500/30 bg-amber-500/5";
-    default:
-      return "border-border bg-card";
-  }
-}
-
-function roleIcon(role: MessageRole) {
-  switch (role) {
-    case "assistant":
-      return Bot;
-    case "tool":
-      return Terminal;
-    default:
-      return MessageSquareText;
-  }
-}
+const severityConfig = {
+  critical: { icon: AlertTriangle, className: "text-critical" },
+  warning: { icon: AlertTriangle, className: "text-warning" },
+  info: { icon: CheckCircle2, className: "text-primary" },
+};
 
 export default function AssistantPage() {
   const searchParams = useSearchParams();
-  const autoSubmitDone = useRef(false);
+  const router = useRouter();
+  const autoCreateDone = useRef(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [loadingSession, setLoadingSession] = useState(false);
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("high");
-  const [lookbackHours, setLookbackHours] = useState<LookbackHours>(2);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [role, setRole] = useState<CopilotRole>("admin");
-  const [persistenceEnabled, setPersistenceEnabled] = useState(false);
-  const [activityMessage, setActivityMessage] = useState<string | null>(null);
-  const [activeActionId, setActiveActionId] = useState<string | null>(null);
+  const {
+    resolutions,
+    current,
+    loading,
+    error,
+    fetchList,
+    loadResolution,
+    createResolution,
+    approveSteps,
+    sendMessage,
+    cancelResolution,
+    toggleAutoApprove,
+  } = useResolution();
 
-  async function loadServerSession(targetSessionId?: string | null) {
-    const suffix = targetSessionId ? `?sessionId=${encodeURIComponent(targetSessionId)}` : "";
-    const response = await fetch(`/api/copilot/session${suffix}`);
-    if (!response.ok) throw new Error("session load failed");
-    const payload = await response.json();
-    setRole(payload.role ?? "admin");
-    setPersistenceEnabled(Boolean(payload.persistenceEnabled));
-    setSessions(payload.sessions ?? []);
-    if (payload.session) {
-      setSessionId(payload.session.id);
-      setReasoningEffort(payload.session.reasoningEffort ?? "high");
-      setLookbackHours(payload.session.lookbackHours ?? 2);
-      setMessages(payload.session.messages ?? []);
-    } else {
-      setSessionId(null);
-      setMessages([]);
-    }
-    return payload;
-  }
+  const [newTitle, setNewTitle] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [contextMessage, setContextMessage] = useState("");
+  const [showNewForm, setShowNewForm] = useState(false);
 
+  // Load list on mount
   useEffect(() => {
-    async function bootstrap() {
-      try {
-        await loadServerSession();
-        return;
-      } catch {
-        // fallback to local storage below
-      }
+    fetchList();
+  }, [fetchList]);
 
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      try {
-        const parsed = JSON.parse(raw) as {
-          messages: ChatMessage[];
-          reasoningEffort: ReasoningEffort;
-          lookbackHours: LookbackHours;
-        };
-        setMessages(parsed.messages ?? []);
-        setReasoningEffort(parsed.reasoningEffort ?? "high");
-        setLookbackHours(parsed.lookbackHours ?? 2);
-      } catch {
-        // ignore corrupt local storage
-      }
-    }
-
-    void bootstrap();
-  }, []);
-
+  // Handle URL params for auto-creation
   useEffect(() => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ messages, reasoningEffort, lookbackHours })
-    );
-  }, [messages, reasoningEffort, lookbackHours]);
+    if (autoCreateDone.current || loading) return;
 
-  // Auto-submit when arriving from "Analyze with Copilot" on an alert
-  useEffect(() => {
-    if (autoSubmitDone.current || loading) return;
-
-    const alertTitle = searchParams.get("title");
-    const alertMessage = searchParams.get("message");
-    const alertSeverity = searchParams.get("severity");
+    const resolutionId = searchParams.get("resolutionId");
     const problemId = searchParams.get("problemId");
+    const alertId = searchParams.get("alertId");
 
-    if (!alertTitle && !problemId) return;
-    autoSubmitDone.current = true;
-
-    let autoPrompt = "";
-    if (problemId) {
-      // Coming from "Fix with Copilot" on a diagnosed problem
-      fetch(`/api/copilot/problem-prompt?problemId=${encodeURIComponent(problemId)}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.prompt) {
-            setMessages([]);
-            setSessionId(null);
-            setPrompt(data.prompt);
-          }
-        })
-        .catch(() => {});
+    if (resolutionId) {
+      autoCreateDone.current = true;
+      loadResolution(resolutionId);
       return;
     }
 
-    // Coming from "Analyze with Copilot" on a raw alert
-    autoPrompt =
-      `I have a ${alertSeverity ?? "warning"} alert: "${alertTitle}"\n` +
-      (alertMessage ? `Details: ${alertMessage}\n\n` : "\n") +
-      `What is causing this? Explain in plain English what the problem is, what's affected, and what I should do to fix it.`;
+    if (problemId) {
+      autoCreateDone.current = true;
+      createResolution({ originType: "problem", originId: problemId }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+      return;
+    }
 
-    setMessages([]);
-    setSessionId(null);
-    setPrompt(autoPrompt);
+    if (alertId) {
+      autoCreateDone.current = true;
+      createResolution({ originType: "alert", originId: alertId }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+    }
   }, [searchParams, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When prompt is auto-set from URL params, trigger send
-  const pendingAutoSend = useRef(false);
-  useEffect(() => {
-    if (prompt && autoSubmitDone.current && !loading && !pendingAutoSend.current && messages.length === 0) {
-      pendingAutoSend.current = true;
-      // Small delay to let state settle after setPrompt
-      const timer = setTimeout(() => {
-        handleSend();
-      }, 200);
-      return () => clearTimeout(timer);
-    }
-  }, [prompt]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const hasActions = useMemo(
-    () => messages.some((message) => (message.actions ?? []).length > 0),
-    [messages]
-  );
-
-  async function handleSend() {
-    if (!prompt.trim() || loading) return;
-
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: prompt.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
-    setPrompt("");
-    setLoading(true);
-    setActivityMessage(`Thinking with GPT-5.4 (${reasoningEffort}) over the last ${lookbackHours} hour${lookbackHours > 1 ? "s" : ""}...`);
-
-    try {
-      const response = await fetch("/api/copilot/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          messages: nextMessages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-          })),
-          reasoningEffort,
-          lookbackHours,
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Copilot request failed.");
-      }
-
-      setRole(payload.role ?? role);
-      setPersistenceEnabled(Boolean(payload.persistenceEnabled));
-      setSessionId(payload.sessionId ?? sessionId);
-
-      const assistantMessage: ChatMessage = {
-        id: payload.assistantMessageId ?? crypto.randomUUID(),
-        role: "assistant",
-        content: payload.answer,
-        evidence: payload.evidence ?? [],
-        actions: (payload.proposedActions ?? []).map((action: ProposedAction) => ({
-          ...action,
-          status: "proposed",
-        })),
-        createdAt: new Date().toISOString(),
-      };
-
-      if (payload.persistenceEnabled && payload.sessionId) {
-        await loadServerSession(payload.sessionId);
-      } else {
-        setMessages((current) => [...current, assistantMessage]);
-      }
-      setActivityMessage(null);
-    } catch (error) {
-      setActivityMessage(null);
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "tool",
-          content: error instanceof Error ? error.message : "Failed to reach copilot.",
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setLoading(false);
+  async function handleCreate() {
+    if (!newTitle.trim()) return;
+    const id = await createResolution({
+      originType: "manual",
+      title: newTitle.trim(),
+      description: newDescription.trim() || newTitle.trim(),
+    });
+    if (id) {
+      setNewTitle("");
+      setNewDescription("");
+      setShowNewForm(false);
+      fetchList();
+      router.replace(`/assistant?resolutionId=${id}`);
     }
   }
 
-  async function handleAction(messageId: string, actionId: string, decision: "approve" | "reject") {
-    setMessages((current) =>
-      current.map((message) => {
-        if (message.id !== messageId) return message;
-        return {
-          ...message,
-          actions: message.actions?.map((action) =>
-            action.id === actionId
-              ? {
-                  ...action,
-                  status: (decision === "reject" ? "rejected" : "running") as ActionStatus,
-                }
-              : action
-          ),
-        };
-      })
-    );
-
-    const message = messages.find((item) => item.id === messageId);
-    const action = message?.actions?.find((item) => item.id === actionId);
-    if (!action) return;
-
-    if (decision === "reject") {
-      setActivityMessage(`Rejected ${action.title}.`);
-      await fetch("/api/copilot/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actionId: action.id,
-          target: action.target,
-          commandPreview: action.commandPreview,
-          approvalToken: action.approvalToken,
-          decision: "reject",
-        }),
-      });
-      if (persistenceEnabled && sessionId) {
-        await loadServerSession(sessionId);
-      }
-      return;
-    }
-
-    setActiveActionId(actionId);
-    setActivityMessage(`Running ${action.title} on ${action.target}...`);
-
-    try {
-      const response = await fetch("/api/copilot/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actionId: action.id,
-          target: action.target,
-          commandPreview: action.commandPreview,
-          approvalToken: action.approvalToken,
-          decision: "approve",
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? payload.content ?? "Action execution failed.");
-      }
-
-      if (persistenceEnabled && sessionId) {
-        await loadServerSession(sessionId);
-      } else {
-        setMessages((current) => {
-          const updated = current.map((item) => {
-            if (item.id !== messageId) return item;
-            return {
-              ...item,
-              actions: item.actions?.map((candidate) =>
-                candidate.id === actionId
-                  ? {
-                      ...candidate,
-                      status: "executed" as ActionStatus,
-                      result: payload.content,
-                    }
-                  : candidate
-              ),
-            };
-          });
-
-          return [
-            ...updated,
-            {
-              id: crypto.randomUUID(),
-              role: "tool",
-              content: `Approved action ran on ${action.target}.\n\n${payload.content}`,
-              createdAt: new Date().toISOString(),
-            },
-          ];
-        });
-      }
-      setActivityMessage(`${action.title} completed on ${action.target}.`);
-    } catch (error) {
-      const resultText = error instanceof Error ? error.message : "Unknown action failure.";
-      setActivityMessage(`${action.title} failed on ${action.target}.`);
-      setMessages((current) => {
-        const updated = current.map((item) => {
-          if (item.id !== messageId) return item;
-          return {
-            ...item,
-            actions: item.actions?.map((candidate) =>
-              candidate.id === actionId
-                ? {
-                    ...candidate,
-                    status: "failed" as ActionStatus,
-                    result: resultText,
-                  }
-                : candidate
-            ),
-          };
-        });
-
-        return [
-          ...updated,
-          {
-            id: crypto.randomUUID(),
-            role: "tool",
-            content: resultText,
-            createdAt: new Date().toISOString(),
-          },
-        ];
-      });
-    } finally {
-      setActiveActionId(null);
-    }
+  async function handleSendContext() {
+    if (!contextMessage.trim()) return;
+    await sendMessage(contextMessage.trim());
+    setContextMessage("");
   }
 
-  function startNewChat() {
-    setMessages([]);
-    setSessionId(null);
-    setActivityMessage("Started a new chat.");
-  }
+  // Derive step groups for the pending actions display
+  const pendingDiagnosticSteps = current?.steps.filter(
+    (s) => s.category === "diagnostic" && ["planned", "approved", "running", "completed", "failed"].includes(s.status)
+  ) ?? [];
 
-  async function openSession(targetSessionId: string) {
-    if (loading || loadingSession || targetSessionId === sessionId) return;
-    setLoadingSession(true);
-    setActivityMessage("Loading chat...");
-    try {
-      await loadServerSession(targetSessionId);
-      setActivityMessage(null);
-    } catch {
-      setActivityMessage("Failed to load that chat.");
-    } finally {
-      setLoadingSession(false);
-    }
-  }
+  const pendingFixSteps = current?.steps.filter(
+    (s) => s.category === "fix"
+  ) ?? [];
 
-  function clearLocalFallback() {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setActivityMessage("Cleared local fallback cache.");
-  }
+  const verificationSteps = current?.steps.filter(
+    (s) => s.category === "verification"
+  ) ?? [];
+
+  const phase = current?.resolution.phase ?? "";
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">NAS Copilot</h1>
+          <h1 className="text-2xl font-bold">NAS Issue Resolution</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            GPT-5.4 assistant for live NAS diagnostics, Drive/ShareSync investigation, historical context, and individually approved repair actions.
+            AI agent that diagnoses and fixes NAS problems end-to-end.
           </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-            <Sparkles className="h-3.5 w-3.5" />
-            {hasActions ? "Action approval enabled" : "Read-only until an action is proposed"}
-          </div>
-          <div className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-            role: {role}
-          </div>
         </div>
       </div>
 
-      {activityMessage ? (
-        <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-          {(loading || loadingSession || activeActionId) ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
-          )}
-          <span>{activityMessage}</span>
+      {error && (
+        <div className="rounded-lg border border-critical/30 bg-critical/5 p-3 text-sm text-critical">
+          {error}
         </div>
-      ) : null}
+      )}
 
-      <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px]">
-        <aside className="space-y-4">
+      <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
+        {/* Left sidebar — resolution list */}
+        <aside className="space-y-3">
           <div className="rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Chats</h2>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <h2 className="text-sm font-semibold">Issues</h2>
               <button
-                onClick={startNewChat}
+                onClick={() => setShowNewForm(!showNewForm)}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 <Plus className="h-3.5 w-3.5" />
                 New
               </button>
             </div>
-            <div className="mt-3 space-y-2">
-              {sessions.length === 0 ? (
-                <div className="text-xs text-muted-foreground">
-                  No saved chats yet. Your first question will create one.
-                </div>
-              ) : (
-                sessions.map((session) => (
-                  <button
-                    key={session.id}
-                    onClick={() => openSession(session.id)}
-                    className={cn(
-                      "w-full rounded-lg border px-3 py-2 text-left",
-                      session.id === sessionId
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-background hover:bg-muted/40"
-                    )}
-                  >
-                    <div className="line-clamp-2 text-sm font-medium">{session.title}</div>
-                    <div className="mt-1 text-[11px] text-muted-foreground">
-                      {timeAgo(session.updatedAt)} · {session.reasoningEffort} · {session.lookbackHours}h
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </aside>
 
-        <section className="rounded-xl border border-border bg-card p-4">
-          <div className="space-y-3">
-            {messages.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-                Ask what happened 2 hours ago, investigate Drive issues, or request a proposed fix.
+            {showNewForm && (
+              <div className="space-y-2 mb-3 p-3 rounded-lg border border-border bg-background">
+                <input
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="What's the problem?"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                />
+                <textarea
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                  placeholder="More details (optional)..."
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm min-h-16 focus:border-primary focus:outline-none"
+                />
+                <button
+                  onClick={handleCreate}
+                  disabled={loading || !newTitle.trim()}
+                  className="w-full rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin mx-auto" /> : "Start Resolution"}
+                </button>
+              </div>
+            )}
+
+            {resolutions.length === 0 ? (
+              <div className="text-xs text-muted-foreground">
+                No issues yet. Click New to report a problem, or use "Fix this" on the dashboard.
               </div>
             ) : (
-              messages.map((message) => {
-                const Icon = roleIcon(message.role);
-                return (
-                  <article
-                    key={message.id}
-                    className={cn("rounded-xl border p-4", messageTone(message.role))}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <div className="rounded-lg bg-background/70 p-2">
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <div className="space-y-3">
-                          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
-                            {message.content}
-                          </p>
-
-                          {message.evidence?.length ? (
-                            <div className="rounded-lg border border-border bg-background/40 p-3">
-                              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                <Search className="h-3.5 w-3.5" />
-                                Evidence
-                              </div>
-                              <div className="space-y-2">
-                                {message.evidence.map((item) => (
-                                  <div key={item.id} className="rounded-md border border-border/70 p-2">
-                                    <div className="text-xs font-medium text-foreground">
-                                      {item.title}
-                                    </div>
-                                    <div className="mt-1 break-words text-xs text-muted-foreground">
-                                      {item.detail}
-                                    </div>
-                                    <div className="mt-1 text-[11px] text-muted-foreground">
-                                      {item.target ? `${item.target} · ` : ""}
-                                      {item.timestamp ? timeAgo(item.timestamp) : item.kind}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
-
-                          {message.actions?.length ? (
-                            <div className="space-y-3">
-                              {message.actions.map((action) => (
-                                <div key={action.id} className="rounded-lg border border-border bg-background/60 p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <div className="flex items-center gap-2 text-sm font-medium">
-                                        <Wrench className="h-4 w-4 text-primary" />
-                                        <span>{action.title}</span>
-                                      </div>
-                                      <div className="mt-1 text-xs text-muted-foreground">
-                                        {action.target} · {action.toolName} · risk {action.risk}
-                                      </div>
-                                    </div>
-                                    <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                                      <span className="inline-flex items-center gap-1">
-                                        {action.status === "running" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
-                                        {action.status ?? "proposed"}
-                                      </span>
-                                    </span>
-                                  </div>
-                                  <p className="mt-2 text-sm text-muted-foreground">{action.reason}</p>
-                                  <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-black/80 p-3 text-xs text-white">
-                                    {action.commandPreview}
-                                  </pre>
-
-                                  {action.result && (
-                                    <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs text-foreground">
-                                      {action.result}
-                                    </pre>
-                                  )}
-
-                                  {action.status === "proposed" && role !== "viewer" && (
-                                    <div className="mt-3 flex gap-2">
-                                      <button
-                                        onClick={() => handleAction(message.id, action.id, "approve")}
-                                        disabled={Boolean(activeActionId)}
-                                        className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                                      >
-                                        Approve
-                                      </button>
-                                      <button
-                                        onClick={() => handleAction(message.id, action.id, "reject")}
-                                        disabled={Boolean(activeActionId)}
-                                        className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
-                                      >
-                                        Reject
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="text-right text-xs text-muted-foreground">
-                        {timeAgo(message.createdAt)}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })
+              <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
+                {resolutions.map((r) => (
+                  <ResolutionListItem
+                    key={r.id}
+                    resolution={r}
+                    active={current?.resolution.id === r.id}
+                    onClick={() => {
+                      loadResolution(r.id);
+                      router.replace(`/assistant?resolutionId=${r.id}`);
+                    }}
+                  />
+                ))}
+              </div>
             )}
           </div>
-
-          <div className="mt-4 space-y-3 border-t border-border pt-4">
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Ask what happened 2 hours ago, investigate Drive/ShareSync issues, or request a proposed fix..."
-              className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm focus:border-primary focus:outline-none"
-            />
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ShieldAlert className="h-4 w-4" />
-                Write actions require one-by-one approval and a valid server token.
-              </div>
-              <button
-                onClick={handleSend}
-                disabled={loading || !prompt.trim()}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-                Ask Copilot
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <aside className="space-y-4">
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">Reasoning</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              `high` is the normal default. `xhigh` is slower and usually more expensive.
-            </p>
-            <select
-              value={reasoningEffort}
-              onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
-              className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-            >
-              <option value="high">High</option>
-              <option value="xhigh">XHigh</option>
-            </select>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">History Window</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Controls how much recent Supabase and NAS log context the copilot uses.
-            </p>
-            <select
-              value={lookbackHours}
-              onChange={(event) => setLookbackHours(Number(event.target.value) as LookbackHours)}
-              className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-            >
-              <option value={1}>Last 1 hour</option>
-              <option value={2}>Last 2 hours</option>
-              <option value={6}>Last 6 hours</option>
-              <option value={24}>Last 24 hours</option>
-            </select>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">Persistence</h2>
-            <div className="mt-3 flex items-start gap-2 text-sm text-muted-foreground">
-              <Database className="mt-0.5 h-4 w-4" />
-              <div>
-                {persistenceEnabled
-                  ? "Chat sessions, evidence, and action history are persisted in Supabase."
-                  : "Running in fallback mode. Local browser history still works if the new copilot tables are not available yet."}
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">What It Can Do</h2>
-            <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-              <li>Inspect recent Drive and ShareSync issues from Supabase.</li>
-              <li>Run read-only diagnostics on both NASes over Tailscale SSH.</li>
-              <li>Search and tail bounded historical windows instead of only the latest lines.</li>
-              <li>Propose structured repair tools instead of unconstrained shell prompts.</li>
-            </ul>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <button
-              onClick={clearLocalFallback}
-              className="w-full rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              Clear Local Fallback Cache
-            </button>
-          </div>
         </aside>
+
+        {/* Main area */}
+        <section className="space-y-4">
+          {!current ? (
+            <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted-foreground">
+              <Bot className="h-10 w-10 mx-auto mb-3 opacity-40" />
+              <p className="text-sm">Select an issue from the sidebar, or create a new one.</p>
+              <p className="text-xs mt-1">You can also click "Fix this" on the dashboard problems list.</p>
+            </div>
+          ) : (
+            <>
+              {/* Header: title + severity + phase */}
+              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const sev = severityConfig[current.resolution.severity];
+                        const Icon = sev.icon;
+                        return <Icon className={cn("h-5 w-5", sev.className)} />;
+                      })()}
+                      <h2 className="text-lg font-semibold">{current.resolution.title}</h2>
+                    </div>
+                    {current.resolution.affected_nas.length > 0 && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Affects: {current.resolution.affected_nas.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => toggleAutoApprove(!current.resolution.auto_approve_reads)}
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      title="Auto-approve read-only diagnostics"
+                    >
+                      {current.resolution.auto_approve_reads ? (
+                        <ToggleRight className="h-4 w-4 text-primary" />
+                      ) : (
+                        <ToggleLeft className="h-4 w-4" />
+                      )}
+                      Auto-diag
+                    </button>
+                    {phase !== "resolved" && phase !== "cancelled" && (
+                      <button
+                        onClick={cancelResolution}
+                        className="text-xs text-muted-foreground hover:text-critical"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <PhaseStepper currentPhase={phase} />
+
+                {/* Status summary */}
+                {current.resolution.diagnosis_summary && (
+                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Diagnosis</p>
+                    <p className="text-sm">{current.resolution.diagnosis_summary}</p>
+                  </div>
+                )}
+
+                {current.resolution.fix_summary && phase !== "planning" && phase !== "diagnosing" && (
+                  <div className="rounded-lg border border-warning/20 bg-warning/5 p-3">
+                    <p className="text-xs font-medium text-muted-foreground mb-1">Proposed Fix</p>
+                    <p className="text-sm">{current.resolution.fix_summary}</p>
+                  </div>
+                )}
+
+                {current.resolution.verification_result && (
+                  <div className={cn(
+                    "rounded-lg border p-3",
+                    phase === "resolved" ? "border-primary/20 bg-primary/5" : "border-critical/20 bg-critical/5"
+                  )}>
+                    <p className="text-xs font-medium text-muted-foreground mb-1">
+                      {phase === "resolved" ? "Verified" : "Verification"}
+                    </p>
+                    <p className="text-sm">{current.resolution.verification_result}</p>
+                  </div>
+                )}
+
+                {current.resolution.stuck_reason && (
+                  <div className="rounded-lg border border-critical/30 bg-critical/5 p-3">
+                    <p className="text-xs font-medium text-critical mb-1">Stuck</p>
+                    <p className="text-sm">{current.resolution.stuck_reason}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Loading indicator for active phases */}
+              {loading && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Agent is working...
+                </div>
+              )}
+
+              {/* Pending actions — show relevant group based on phase */}
+              {(phase === "diagnosing" || phase === "analyzing") && pendingDiagnosticSteps.length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-sm font-semibold mb-3">Diagnostic Steps</h3>
+                  <PendingActions
+                    steps={pendingDiagnosticSteps}
+                    loading={loading}
+                    onApproveAll={(ids) => approveSteps(ids, "approve")}
+                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                  />
+                </div>
+              )}
+
+              {(phase === "awaiting_fix_approval" || phase === "applying_fix") && pendingFixSteps.length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-sm font-semibold mb-3">Fix Actions</h3>
+                  <PendingActions
+                    steps={pendingFixSteps}
+                    loading={loading}
+                    onApproveAll={(ids) => approveSteps(ids, "approve")}
+                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                  />
+                </div>
+              )}
+
+              {(phase === "verifying") && verificationSteps.length > 0 && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-sm font-semibold mb-3">Verification</h3>
+                  <PendingActions
+                    steps={verificationSteps}
+                    loading={loading}
+                    onApproveAll={(ids) => approveSteps(ids, "approve")}
+                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                  />
+                </div>
+              )}
+
+              {/* User context input — show when stuck or when user wants to add info */}
+              {(phase === "stuck" || phase === "diagnosing" || phase === "awaiting_fix_approval") && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-sm font-semibold mb-2">
+                    {phase === "stuck" ? "Help the agent try again" : "Add context"}
+                  </h3>
+                  <div className="flex gap-2">
+                    <input
+                      value={contextMessage}
+                      onChange={(e) => setContextMessage(e.target.value)}
+                      placeholder={
+                        phase === "stuck"
+                          ? "Provide additional info so the agent can try a different approach..."
+                          : "Add more context about the problem..."
+                      }
+                      className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendContext(); } }}
+                    />
+                    <button
+                      onClick={handleSendContext}
+                      disabled={loading || !contextMessage.trim()}
+                      className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      <Send className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Activity log */}
+              <div className="rounded-xl border border-border bg-card p-4">
+                <h3 className="text-sm font-semibold mb-3">Agent Activity</h3>
+                <ActivityLog entries={current.log} />
+              </div>
+            </>
+          )}
+        </section>
       </div>
     </div>
+  );
+}
+
+function ResolutionListItem({
+  resolution,
+  active,
+  onClick,
+}: {
+  resolution: Resolution;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const phase = resolution.phase;
+  const isTerminal = phase === "resolved" || phase === "cancelled";
+
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full rounded-lg border px-3 py-2 text-left transition-colors",
+        active
+          ? "border-primary bg-primary/5"
+          : "border-border bg-background hover:bg-muted/40",
+        isTerminal && "opacity-60"
+      )}
+    >
+      <div className="flex items-center gap-1.5">
+        {phase === "resolved" ? (
+          <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
+        ) : phase === "stuck" ? (
+          <AlertTriangle className="h-3.5 w-3.5 text-critical shrink-0" />
+        ) : phase === "cancelled" ? (
+          <XCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        ) : (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+        )}
+        <span className="text-sm font-medium truncate">{resolution.title}</span>
+      </div>
+      <div className="text-[11px] text-muted-foreground mt-1">
+        {phase} · {timeAgo(resolution.updated_at)}
+      </div>
+    </button>
   );
 }
