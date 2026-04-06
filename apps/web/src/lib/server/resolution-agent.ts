@@ -983,7 +983,10 @@ function fixProposalPrompt(res: ResolutionFull): string {
     ? `\nPREVIOUSLY REJECTED FIXES — DO NOT PROPOSE THESE AGAIN:\n${rejectedSteps.map(s => `- ${s.tool_name} on ${s.target}: ${s.title} (REJECTED BY USER)`).join("\n")}\n`
     : "";
 
-  const userContext = getUserContext(res);
+  const userInputs = res.log.filter(e => e.entry_type === "user_input").map(e => e.content);
+  const userConstraints = userInputs.length > 0
+    ? `\nUSER CONSTRAINTS — THESE ARE HARD RULES, NOT SUGGESTIONS:\n${userInputs.map(u => `- "${u}"`).join("\n")}\nIf the user said something does not work (e.g. "restarts don't help"), do NOT propose any action in that category, even if it is a different tool or service.\n`
+    : "";
 
   return `${SAFETY_PREAMBLE}
 
@@ -993,7 +996,7 @@ ISSUE: ${res.resolution.title}
 DESCRIPTION (includes all accumulated user context and rejection history): ${res.resolution.description}
 ROOT CAUSE: ${res.resolution.root_cause}
 DIAGNOSIS: ${res.resolution.diagnosis_summary}
-${userContext}
+${userConstraints}
 ${rejectedSection}
 AVAILABLE FIX TOOLS:
 ${writeTools}

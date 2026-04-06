@@ -2,6 +2,17 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { appendLog, updateResolution } from "@/lib/server/resolution-store";
 import { tick } from "@/lib/server/resolution-agent";
+import { SupabaseClient } from "@supabase/supabase-js";
+
+async function rejectPendingFixSteps(supabase: SupabaseClient, userId: string, resolutionId: string) {
+  await supabase
+    .from("smon_resolution_steps")
+    .update({ status: "rejected" })
+    .eq("resolution_id", resolutionId)
+    .eq("user_id", userId)
+    .eq("category", "fix")
+    .eq("status", "planned");
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,12 +60,15 @@ export async function POST(request: Request) {
       await appendLog(supabase, user.id, resolutionId, "analysis",
         `Got it. Incorporating your context and restarting the investigation: "${message.trim()}"`);
     } else if (res?.phase === "awaiting_fix_approval") {
-      // User typed context while reviewing a fix — treat as guidance for re-proposal
+      // User typed context while reviewing a fix — reject all pending fix steps so
+      // handleProposingFix doesn't see them as "pending" and bounce back immediately,
+      // then transition to proposing_fix so the AI creates a genuinely new proposal.
+      await rejectPendingFixSteps(supabase, user.id, resolutionId);
       await updateResolution(supabase, user.id, resolutionId, { phase: "proposing_fix" });
       await supabase
         .from("smon_issue_resolutions")
         .update({
-          description: `${res.description}\n\nUser guidance on fix: ${message.trim()}`,
+          description: `${res.description}\n\nUser constraint on fix: ${message.trim()}`,
           updated_at: new Date().toISOString(),
         })
         .eq("id", resolutionId)
