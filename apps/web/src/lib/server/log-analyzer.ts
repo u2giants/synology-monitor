@@ -186,10 +186,11 @@ function formatDataForPrompt(
     sections.push(`## DRIVE/SYNC LOGS (${driveLogs.length})\n${lines.join("\n")}`);
   }
 
-  // Truncate if still too large (Minimax M2.7 has 200K context but keep prompt reasonable)
+  // Truncate input to leave the model room to generate a full JSON response.
+  // Gemini Flash output is capped at ~8192 tokens (~32K chars). Keep input tight.
   let result = sections.join("\n\n");
-  if (result.length > 150000) {
-    result = result.slice(0, 150000) + "\n\n[TRUNCATED — too many events to fit in one analysis]";
+  if (result.length > 60000) {
+    result = result.slice(0, 60000) + "\n\n[TRUNCATED — too many events to fit in one analysis]";
   }
 
   return result;

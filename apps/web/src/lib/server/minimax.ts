@@ -95,6 +95,50 @@ export async function callMinimax(
 }
 
 /**
+ * Attempt to repair truncated JSON by closing unclosed structures.
+ * Handles the common case where the model response is cut off mid-object/array.
+ */
+function repairTruncatedJSON(text: string): string {
+  // Trim to last complete value boundary — find the last comma-separated item end
+  // Strategy: count open brackets/braces and close them
+  const stack: string[] = [];
+  let inString = false;
+  let escaped = false;
+  let lastSafePos = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (ch === "\\" && inString) { escaped = true; continue; }
+    if (ch === '"') {
+      inString = !inString;
+      if (!inString) lastSafePos = i + 1; // end of string literal
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === "{" || ch === "[") {
+      stack.push(ch === "{" ? "}" : "]");
+    } else if (ch === "}" || ch === "]") {
+      if (stack.length > 0) {
+        stack.pop();
+        lastSafePos = i + 1;
+      }
+    } else if ((ch === "," || ch === ":") && stack.length > 0) {
+      // don't update lastSafePos here — trailing comma before truncation is invalid
+    }
+  }
+
+  if (stack.length === 0) return text; // already complete
+
+  // Truncate back to the last safe boundary and close all open structures
+  let repaired = text.slice(0, lastSafePos);
+  // Close arrays/objects in reverse order
+  repaired += stack.reverse().join("");
+  return repaired;
+}
+
+/**
  * Call Minimax and parse JSON response
  * Returns parsed JSON or null on error
  */
@@ -102,28 +146,41 @@ export async function callMinimaxJSON<T>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<{ data: T | null; error?: string }> {
-  const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 32000 });
+  // 8192 is the safe output token limit for Gemini Flash via OpenRouter.
+  // Requesting more may cause silent truncation that breaks JSON parsing.
+  const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 8192 });
 
   if (!result.content) {
     return { data: null, error: result.error };
   }
 
+  // Attempt 1: direct parse
   try {
     const data = JSON.parse(result.content) as T;
     return { data };
-  } catch {
-    // Try to extract JSON from markdown code blocks or mixed content
-    const jsonMatch = result.content.match(/```(?:json)?\s*([\s\S]*?)```/) ||
-                      result.content.match(/(\{[\s\S]*\})/);
-    if (jsonMatch?.[1]) {
-      try {
-        const data = JSON.parse(jsonMatch[1].trim()) as T;
-        return { data };
-      } catch {
-        // fall through
-      }
-    }
-    console.error("[Minimax] Failed to parse JSON response:", result.content.slice(0, 500));
-    return { data: null, error: `Failed to parse JSON response. Model returned: ${result.content.slice(0, 200)}...` };
+  } catch { /* fall through */ }
+
+  // Attempt 2: extract from markdown fences or find first {...} block
+  const fenceMatch = result.content.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const braceMatch = result.content.match(/\{[\s\S]*/); // start of JSON even if truncated
+  const candidate = fenceMatch?.[1]?.trim() ?? braceMatch?.[0];
+
+  if (candidate) {
+    // Attempt 3: parse the candidate as-is
+    try {
+      const data = JSON.parse(candidate) as T;
+      return { data };
+    } catch { /* fall through */ }
+
+    // Attempt 4: repair truncated JSON then parse
+    try {
+      const repaired = repairTruncatedJSON(candidate);
+      const data = JSON.parse(repaired) as T;
+      console.warn("[Minimax] Parsed after JSON repair — response was likely truncated");
+      return { data };
+    } catch { /* fall through */ }
   }
+
+  console.error("[Minimax] Failed to parse JSON response:", result.content.slice(0, 500));
+  return { data: null, error: `Failed to parse JSON response. Model returned: ${result.content.slice(0, 200)}...` };
 }
