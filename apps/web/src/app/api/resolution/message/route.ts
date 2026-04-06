@@ -37,14 +37,22 @@ export async function POST(request: Request) {
       await updateResolution(supabase, user.id, resolutionId, {
         phase: "planning",
         stuck_reason: undefined as unknown as string,
-        // Append context to the description so the planner sees it
       });
-
-      // Also update description with the new context
       await supabase
         .from("smon_issue_resolutions")
         .update({
           description: `${res.description}\n\nAdditional context from user: ${message.trim()}`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", resolutionId)
+        .eq("user_id", user.id);
+    } else if (res?.phase === "awaiting_fix_approval") {
+      // User typed context while reviewing a fix — treat as rejection + guidance for re-proposal
+      await updateResolution(supabase, user.id, resolutionId, { phase: "proposing_fix" });
+      await supabase
+        .from("smon_issue_resolutions")
+        .update({
+          description: `${res.description}\n\nUser guidance on fix: ${message.trim()}`,
           updated_at: new Date().toISOString(),
         })
         .eq("id", resolutionId)

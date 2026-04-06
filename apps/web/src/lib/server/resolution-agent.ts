@@ -475,15 +475,9 @@ function checkStateConsistency(state: ResolutionFull): string[] {
   const issues: string[] = [];
   const { resolution, steps } = state;
 
-  // The only unrecoverable state: awaiting_fix_approval with nothing to approve.
-  // All other active phases have handlers that advance them naturally.
-  if (resolution.phase === "awaiting_fix_approval") {
-    const pendingFix = steps.filter(s => s.category === "fix" && (s.status === "planned" || s.status === "approved"));
-    if (pendingFix.length === 0) {
-      const fixSummary = steps.filter(s => s.category === "fix").map(s => `${s.title}[${s.status}]`).join(", ") || "none";
-      issues.push(`INCONSISTENT: Phase is "awaiting_fix_approval" but 0 fix steps are planned/approved. Fix steps: ${fixSummary}`);
-    }
-  }
+  // awaiting_fix_approval with all-rejected steps is handled by the tick handler
+  // (it transitions back to proposing_fix). Do NOT flag it as inconsistent here —
+  // the handler runs in the same tick and fixes it before it can cause problems.
 
   // Step marked running with no started_at — always a data integrity bug
   for (const step of steps) {
@@ -1601,6 +1595,57 @@ async function handleVerifying(
   }
 }
 
+// --- Handle rejected fix: transition back to proposing_fix with rejection context ---
+
+async function handleRejectedFix(
+  supabase: SupabaseClient,
+  userId: string,
+  state: ResolutionFull,
+) {
+  const fixSteps = state.steps.filter(s => s.category === "fix");
+  const pendingFix = fixSteps.filter(s => s.status === "planned" || s.status === "approved");
+
+  // If there are still pending fix steps, nothing to do yet — waiting for user decision
+  if (pendingFix.length > 0) return;
+
+  // All fix steps are rejected — go back to proposing_fix so the AI can try a different approach
+  const rejectedTitles = fixSteps.filter(s => s.status === "rejected").map(s => s.title);
+
+  const recentUserInput = state.log
+    .filter(e => e.entry_type === "user_input")
+    .slice(-3)
+    .map(e => e.content)
+    .join("\n");
+
+  const rejectionContext = [
+    rejectedTitles.length > 0 ? `Previously rejected fix(es): ${rejectedTitles.join("; ")}` : null,
+    recentUserInput ? `User feedback: ${recentUserInput}` : null,
+  ].filter(Boolean).join("\n");
+
+  await safeAppendLog(supabase, userId, state.resolution.id, "fix_proposal",
+    `Fix was rejected. Returning to fix proposal phase to try a different approach.\n\n${rejectionContext}`);
+
+  const { data: res } = await supabase
+    .from("smon_issue_resolutions")
+    .select("description")
+    .eq("id", state.resolution.id)
+    .eq("user_id", userId)
+    .single();
+
+  if (res && rejectionContext) {
+    await supabase
+      .from("smon_issue_resolutions")
+      .update({
+        description: `${res.description}\n\nFix rejection context: ${rejectionContext}`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", state.resolution.id)
+      .eq("user_id", userId);
+  }
+
+  await updateResolution(supabase, userId, state.resolution.id, { phase: "proposing_fix" });
+}
+
 // --- Main tick function ---
 
 export async function tick(
@@ -1666,6 +1711,8 @@ export async function tick(
         await handleVerifying(supabase, userId, state);
         break;
       case "awaiting_fix_approval":
+        await handleRejectedFix(supabase, userId, state);
+        break;
       case "resolved":
       case "stuck":
       case "cancelled":
