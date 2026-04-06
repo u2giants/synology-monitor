@@ -29,6 +29,7 @@ export type CopilotToolName =
   | "search_webapi_log"
   | "check_drive_database"
   | "search_all_logs"
+  | "find_problematic_files"
   | "check_filesystem_health";
 
 export interface ToolDefinition {
@@ -271,6 +272,26 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
         `  matches=$(grep -ciE ${quote(filter)} "$f" 2>/dev/null || true)`,
         `  [ "$matches" -gt 0 ] 2>/dev/null && echo "$f: $matches matches" && grep -iE ${quote(filter)} "$f" 2>/dev/null | tail -5 && echo ""`,
         `done`,
+      ].join("\n");
+    },
+  },
+  find_problematic_files: {
+    description: "Read-only. Search ShareSync-monitored folders for files whose names contain characters that break sync: colons, asterisks, question marks, backslashes, angle brackets, pipes, null bytes. Returns exact file paths that can then be renamed or removed with rename_file_to_old or remove_invalid_chars.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const folder = input.filter?.trim() || "/volume1";
+      return [
+        `echo '=== FILES WITH SYNC-BREAKING CHARACTERS IN ${folder} ==='`,
+        `find ${folder} -maxdepth 8 \\( -name '*:*' -o -name '*\\**' -o -name '*?*' -o -name '*"*' -o -name '*<*' -o -name '*>*' -o -name '*|*' \\) 2>/dev/null | grep -v '@eaDir' | grep -v '.SynologyWorkingDirectory' | head -50 || echo 'No files with special characters found'`,
+        `echo ''`,
+        `echo '=== SHARESYNC CONFLICT / ERROR FILES ==='`,
+        `find ${folder} -maxdepth 8 \\( -name '*conflicted*' -o -name '*.conflict' -o -name '*~conflict*' \\) 2>/dev/null | grep -v '@eaDir' | head -30 || echo 'No conflict files found'`,
+        `echo ''`,
+        `echo '=== VERY LONG FILENAMES (>200 chars) ==='`,
+        `find ${folder} -maxdepth 8 2>/dev/null | awk 'length($0)>200' | head -20 || echo 'No extremely long filenames'`,
+        `echo ''`,
+        `echo '=== SHARESYNC INTERNAL STATE FILES ==='`,
+        `find /volume1/@synologydrive /volume1/@SynologyDriveShareSync -maxdepth 4 -name '*.db' -o -name '*.conf' -o -name '*.json' 2>/dev/null | head -20 || echo 'No internal state files found'`,
       ].join("\n");
     },
   },

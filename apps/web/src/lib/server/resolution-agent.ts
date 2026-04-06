@@ -225,6 +225,14 @@ interface AnalysisResponse {
 interface FixProposalResponse {
   fix_summary: string;
   risk_assessment: string;
+  needs_more_diagnostics?: boolean;
+  additional_diagnostic_steps?: Array<{
+    title: string;
+    target: NasTarget;
+    tool_name: CopilotToolName;
+    reason: string;
+    filter?: string;
+  }>;
   fix_steps: Array<{
     title: string;
     target: NasTarget;
@@ -1025,13 +1033,24 @@ RULES — READ CAREFULLY:
 4. Explain the risk clearly. What service will be briefly interrupted? Will users notice?
 5. Propose 1-2 verification steps to run AFTER the fix to confirm it worked.
 6. Every step MUST have a "title" field.
-7. If no safe automated fix is possible, set fix_steps to [] and explain in fix_summary
-   what manual steps the user should take in DSM.
+7. IMPORTANT — if you want to rename or remove a specific file, you MUST have its EXACT full
+   path from diagnostic output. DO NOT invent or guess a filename. If you suspect a bad file
+   but don't have its exact path yet, use needs_more_diagnostics=true and add find_problematic_files
+   as an additional_diagnostic_step to locate it first.
+8. IMPORTANT — if you genuinely need more diagnostic information before you can propose a
+   concrete fix (e.g., you need to find the exact file path, check a specific DB table, etc.),
+   set needs_more_diagnostics=true and list the specific diagnostic steps needed in
+   additional_diagnostic_steps. The agent will run those and come back to you.
+   Use this instead of setting fix_steps=[] and saying "no automated fix available".
+9. Only set fix_steps=[] if there is TRULY no automated action possible AND you have already
+   gathered all the evidence you could. This will mark the issue as stuck.
 
 Respond ONLY with valid JSON:
 {
   "fix_summary": "Plain English: exactly what we will do, what the user should expect during the fix (e.g., 'Drive sync will pause for ~30 seconds'), and why this is the safest approach",
   "risk_assessment": "What could go wrong and how we would recover if it does",
+  "needs_more_diagnostics": false,
+  "additional_diagnostic_steps": [],
   "fix_steps": [
     { "title": "Restart Synology Drive ShareSync on edgesynology2", "target": "edgesynology2", "tool_name": "restart_synology_drive_sharesync", "reason": "Why this specific action addresses the root cause", "risk": "medium", "filter": null }
   ],
@@ -1487,6 +1506,26 @@ async function handleProposingFix(
   const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
   const fixBatch = maxBatch + 1;
 
+  // Escape hatch: if the AI says it needs more diagnostic data before it can propose
+  // a specific fix, create the diagnostic steps and loop back to diagnosing.
+  if (proposal.needs_more_diagnostics && (proposal.additional_diagnostic_steps ?? []).length > 0) {
+    const alreadyRun = new Set(fresh.steps.map(s => `${s.tool_name}:${s.target}`));
+    const diagInputs = (proposal.additional_diagnostic_steps ?? [])
+      .filter(s => !alreadyRun.has(`${s.tool_name}:${s.target}`))
+      .map(raw => materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours))
+      .filter((s): s is StepInput => s !== null);
+
+    if (diagInputs.length > 0) {
+      await createSteps(supabase, userId, fresh.resolution.id, fixBatch, diagInputs);
+      await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+        `Need more diagnostic information before proposing a fix: ${proposal.fix_summary}`);
+      await updateResolution(supabase, userId, fresh.resolution.id, { phase: "diagnosing" });
+      await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+        `Before I can propose a specific fix, I need to gather more information. ${proposal.fix_summary}`);
+      return;
+    }
+  }
+
   // Fix steps — always require approval
   const fixInputs = (proposal.fix_steps ?? [])
     .map(raw => materializeStepInput({ ...raw, lookback_hours: undefined }, "fix", false, fresh.resolution.lookback_hours))
@@ -1502,6 +1541,21 @@ async function handleProposingFix(
   }
   if (verifyInputs.length > 0) {
     await createSteps(supabase, userId, fresh.resolution.id, fixBatch + 1, verifyInputs);
+  }
+
+  // If the AI produced no actionable fix steps (said "no safe automated fix"), go stuck
+  // rather than looping forever in awaiting_fix_approval with an empty step list.
+  if (fixInputs.length === 0) {
+    await updateResolution(supabase, userId, fresh.resolution.id, {
+      phase: "stuck",
+      fix_summary: proposal.fix_summary,
+      stuck_reason: `No automated fix available: ${proposal.fix_summary} ${proposal.risk_assessment}`,
+    });
+    await appendLog(supabase, userId, fresh.resolution.id, "stuck",
+      `No automated fix available. ${proposal.fix_summary}`);
+    await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+      `I don't have an automated action I can take here. ${proposal.fix_summary} Please reply with more context or instructions and I'll try again.`);
+    return;
   }
 
   await updateResolution(supabase, userId, fresh.resolution.id, {
