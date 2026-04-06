@@ -461,55 +461,31 @@ async function detectStalls(
 // --- DB state consistency checks (no AI needed, catches impossible states) ---
 
 /**
- * Checks for impossible DB states that are always software bugs.
- * Returns a list of anomalies found. Cheap to run — no AI calls, just DB reads.
+ * Checks for impossible DB states that a phase handler cannot recover from on its own.
+ *
+ * IMPORTANT: Only flag states where the normal handler CANNOT advance the phase.
+ * Phases like "diagnosing" with all steps completed are VALID transitional states —
+ * handleDiagnosing moves them to "analyzing" on the very same tick. Flagging those
+ * creates false positives that incorrectly block normal operation.
+ *
+ * "awaiting_fix_approval" is the only truly unrecoverable state without user action,
+ * because its switch-case is a no-op — nothing advances it if there's nothing to approve.
  */
 function checkStateConsistency(state: ResolutionFull): string[] {
   const issues: string[] = [];
   const { resolution, steps } = state;
 
-  // awaiting_fix_approval with no pending fix steps → nothing to approve
+  // The only unrecoverable state: awaiting_fix_approval with nothing to approve.
+  // All other active phases have handlers that advance them naturally.
   if (resolution.phase === "awaiting_fix_approval") {
     const pendingFix = steps.filter(s => s.category === "fix" && (s.status === "planned" || s.status === "approved"));
     if (pendingFix.length === 0) {
-      issues.push(`INCONSISTENT: Phase is "awaiting_fix_approval" but 0 fix steps are planned/approved. Fix steps: ${steps.filter(s => s.category === "fix").map(s => `${s.title}[${s.status}]`).join(", ") || "none"}`);
+      const fixSummary = steps.filter(s => s.category === "fix").map(s => `${s.title}[${s.status}]`).join(", ") || "none";
+      issues.push(`INCONSISTENT: Phase is "awaiting_fix_approval" but 0 fix steps are planned/approved. Fix steps: ${fixSummary}`);
     }
   }
 
-  // diagnosing with no actionable diagnostic steps
-  if (resolution.phase === "diagnosing") {
-    const actionable = steps.filter(s => s.category === "diagnostic" && ["planned", "approved", "running"].includes(s.status));
-    if (actionable.length === 0) {
-      issues.push(`INCONSISTENT: Phase is "diagnosing" but 0 diagnostic steps are planned/approved/running.`);
-    }
-  }
-
-  // applying_fix with all fix steps already done
-  if (resolution.phase === "applying_fix") {
-    const approvedFix = steps.filter(s => s.category === "fix" && s.status === "approved");
-    if (approvedFix.length === 0) {
-      const allDone = steps.filter(s => s.category === "fix").every(s =>
-        ["completed", "failed", "rejected", "skipped"].includes(s.status));
-      if (allDone) {
-        issues.push(`INCONSISTENT: Phase is "applying_fix" but all fix steps are already terminal (${steps.filter(s => s.category === "fix").map(s => s.status).join(", ")}).`);
-      }
-    }
-  }
-
-  // verifying with no verification steps at all
-  if (resolution.phase === "verifying") {
-    const verifySteps = steps.filter(s => s.category === "verification");
-    if (verifySteps.length === 0) {
-      issues.push(`INCONSISTENT: Phase is "verifying" but 0 verification steps exist.`);
-    } else {
-      const active = verifySteps.filter(s => ["planned", "approved", "running"].includes(s.status));
-      if (active.length === 0) {
-        issues.push(`INCONSISTENT: Phase is "verifying" but all verification steps are already terminal.`);
-      }
-    }
-  }
-
-  // step marked running with no started_at
+  // Step marked running with no started_at — always a data integrity bug
   for (const step of steps) {
     if (step.status === "running" && !step.started_at) {
       issues.push(`INCONSISTENT: Step "${step.title}" is "running" but started_at is null.`);
