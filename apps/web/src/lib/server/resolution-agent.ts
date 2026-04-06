@@ -380,7 +380,17 @@ function getHistoryContext(res: ResolutionFull): string {
   const verNote = res.resolution.verification_result
     ? `\nVerification result: ${res.resolution.verification_result}`
     : "";
-  return `\nPREVIOUS ATTEMPT ${res.resolution.attempt_count} RESULT:\n${fixHistory}${verNote}`;
+  const diagHistory = res.steps
+    .filter(s => s.category === "diagnostic" && (s.status === "completed" || s.status === "failed"))
+    .map(s => `- ${s.tool_name} on ${s.target}: ${s.status}`)
+    .join("\n");
+  const diagNote = diagHistory
+    ? `\nDIAGNOSTICS ALREADY RUN (do NOT re-propose these):\n${diagHistory}`
+    : "";
+  const diagSummary = res.resolution.diagnosis_summary
+    ? `\nPrevious diagnosis: ${res.resolution.diagnosis_summary.slice(0, 500)}`
+    : "";
+  return `\nPREVIOUS ATTEMPT ${res.resolution.attempt_count} RESULT:${diagSummary}${diagNote}\nFix actions tried:\n${fixHistory}${verNote}`;
 }
 
 function planningPrompt(res: ResolutionFull, context: Record<string, unknown>): string {
@@ -648,7 +658,11 @@ async function handlePlanning(
   const maxBatch = state.steps.reduce((max, s) => Math.max(max, s.batch), -1);
   const batch = maxBatch + 1;
 
-  const stepInputs = plan.steps
+  // Deduplicate against already-run tools (important in round 2+ to avoid repeating diagnostics)
+  const alreadyRun = new Set(state.steps.filter(s => s.category === "diagnostic").map(s => `${s.tool_name}:${s.target}`));
+  const dedupedPlanSteps = plan.steps.filter(s => !alreadyRun.has(`${s.tool_name}:${s.target}`));
+
+  const stepInputs = dedupedPlanSteps
     .map(raw => materializeStepInput(raw, "diagnostic", state.resolution.auto_approve_reads, state.resolution.lookback_hours))
     .filter((s): s is StepInput => s !== null);
 
@@ -704,12 +718,12 @@ async function processMissingDataSuggestions(
 
   for (const s of suggestions) {
     if (s.collection_command && s.target) {
-      // Check if we already scheduled this exact command on this NAS
+      // Check if we already scheduled this command or this metric name on this NAS
       const { count } = await supabase
         .from("smon_custom_metric_schedules")
         .select("id", { count: "exact", head: true })
-        .eq("collection_command", s.collection_command)
-        .eq("nas_id", s.target);
+        .eq("nas_id", s.target)
+        .or(`collection_command.eq.${s.collection_command},name.eq.${s.metric_name}`);
 
       if (!count || count === 0) {
         await supabase.from("smon_custom_metric_schedules").insert({
