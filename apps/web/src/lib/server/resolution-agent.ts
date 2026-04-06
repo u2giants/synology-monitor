@@ -25,6 +25,7 @@ import {
   createSteps,
   updateStepStatus,
   appendLog,
+  safeAppendMessage,
   type SupabaseClient,
   type ResolutionFull,
   type ResolutionStep,
@@ -1135,6 +1136,9 @@ async function handlePlanning(
   await createSteps(supabase, userId, state.resolution.id, batch, stepInputs);
   await appendLog(supabase, userId, state.resolution.id, "plan", plan.plan_summary);
   await updateResolution(supabase, userId, state.resolution.id, { phase: "diagnosing" });
+  const roundLabel = state.resolution.attempt_count > 0 ? ` (round ${state.resolution.attempt_count + 1})` : "";
+  await safeAppendMessage(supabase, userId, state.resolution.id, "agent",
+    `Starting investigation${roundLabel}. ${plan.plan_summary}`);
 }
 
 async function handleDiagnosing(
@@ -1426,6 +1430,8 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
       });
       await appendLog(supabase, userId, fresh.resolution.id, "stuck",
         `${roundMsg} Here is what we know:\n\n${fullSummary}`);
+      await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+        `I've run ${diagnosticRoundCount} round(s) of diagnostics but don't have enough confidence to propose an automated fix. ${stuckActionItems[0] ?? "Please provide any additional context that might help."}  What can you tell me?`);
       return;
     }
   }
@@ -1445,6 +1451,9 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
   await appendLog(supabase, userId, fresh.resolution.id, "diagnosis",
     `${analysis.diagnosis_summary}\n\nConfidence: ${analysis.confidence}${confidenceNote}`,
     analysis.root_cause);
+  const diagShort = analysis.diagnosis_summary.split("\n")[0].slice(0, 300);
+  await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+    `Here's what I found: ${diagShort}${analysis.root_cause ? ` Root cause: ${analysis.root_cause}.` : ""} I'm going to propose a fix now.`);
 }
 
 async function handleProposingFix(
@@ -1492,6 +1501,8 @@ async function handleProposingFix(
   });
   await appendLog(supabase, userId, fresh.resolution.id, "fix_proposal",
     `${proposal.fix_summary}\n\nRisk: ${proposal.risk_assessment}`);
+  await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+    `Here's what I'd like to do: ${proposal.fix_summary} Please approve or reject the action below.`);
 }
 
 async function handleApplyingFix(
@@ -1562,6 +1573,8 @@ async function handleVerifying(
     });
     await appendLog(supabase, userId, fresh.resolution.id, "verification",
       `Issue resolved. ${verdict.verification_summary}`);
+    await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+      `Issue resolved. ${verdict.verification_summary}`);
 
     if (fresh.resolution.origin_type === "problem" && fresh.resolution.origin_id) {
       await supabase
@@ -1581,6 +1594,8 @@ async function handleVerifying(
       });
       await appendLog(supabase, userId, fresh.resolution.id, "stuck",
         `Fix did not fully work. ${verdict.verification_summary}. ${verdict.remaining_concerns}`);
+      await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+        `I'm stuck after ${newAttempt} attempt(s) — the fix didn't resolve the issue. ${verdict.remaining_concerns} Please give me more context or try a different approach.`);
     } else {
       // Reflect before re-entering the diagnosis loop — are we making real progress?
       const reflection = await reflectOnProgress(fresh, "medium");
@@ -1596,6 +1611,8 @@ async function handleVerifying(
         });
         await appendLog(supabase, userId, fresh.resolution.id, "stuck",
           `Fix did not resolve the issue and the quality reviewer flagged: ${reflection.notes}`);
+        await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+          `I'm stuck — the fix didn't work and the quality reviewer flagged: ${reflection.notes} I need your help to try a different approach.`);
       } else {
         if (reflection.quality_issues.length > 0) {
           await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
@@ -1609,6 +1626,8 @@ async function handleVerifying(
         });
         await appendLog(supabase, userId, fresh.resolution.id, "verification",
           `Partially fixed. Starting another round (attempt ${newAttempt + 1}). ${verdict.remaining_concerns}`);
+        await safeAppendMessage(supabase, userId, fresh.resolution.id, "agent",
+          `That fix helped but didn't fully resolve it. ${verdict.remaining_concerns} Starting another diagnostic round now.`);
       }
     }
   }
@@ -1653,6 +1672,9 @@ async function handleRejectedFix(
 
   await safeAppendLog(supabase, userId, state.resolution.id, "fix_proposal",
     `Fix was rejected. Returning to fix proposal phase to try a different approach.\n\n${rejectionContext}`);
+  const rejectedNames = rejectedTitles.length > 0 ? rejectedTitles.join(", ") : "that approach";
+  await safeAppendMessage(supabase, userId, state.resolution.id, "agent",
+    `Got it — "${rejectedNames}" is off the table. Looking for a different approach now.`);
 
   const { data: res } = await supabase
     .from("smon_issue_resolutions")

@@ -51,10 +51,19 @@ export interface ResolutionLogEntry {
   created_at: string;
 }
 
+export interface ResolutionMessage {
+  id: string;
+  resolution_id: string;
+  role: "user" | "agent";
+  content: string;
+  created_at: string;
+}
+
 export interface ResolutionFull {
   resolution: Resolution;
   steps: ResolutionStep[];
   log: ResolutionLogEntry[];
+  messages: ResolutionMessage[];
 }
 
 // Phases where the agent is actively working (should poll)

@@ -13,12 +13,15 @@ import {
   ToggleLeft,
   ToggleRight,
   Trash2,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { cn, timeAgo } from "@/lib/utils";
 import {
   useResolution,
   type Resolution,
   type ResolutionFull,
+  type ResolutionMessage,
 } from "@/hooks/use-resolution";
 import { PhaseStepper } from "@/components/resolution/phase-stepper";
 import { PendingActions } from "@/components/resolution/pending-actions";
@@ -54,6 +57,7 @@ export default function AssistantPage() {
   const [newDescription, setNewDescription] = useState("");
   const [contextMessage, setContextMessage] = useState("");
   const [showNewForm, setShowNewForm] = useState(false);
+  const [showActivityLog, setShowActivityLog] = useState(false);
 
   // Load list on mount
   useEffect(() => {
@@ -118,19 +122,12 @@ export default function AssistantPage() {
     setContextMessage("");
   }
 
-  // Derive step groups for the pending actions display
   const pendingDiagnosticSteps = current?.steps.filter(
     (s) => s.category === "diagnostic" && ["planned", "approved", "running", "completed", "failed"].includes(s.status)
   ) ?? [];
 
-  const pendingFixSteps = current?.steps.filter(
-    (s) => s.category === "fix"
-  ) ?? [];
-
-  const verificationSteps = current?.steps.filter(
-    (s) => s.category === "verification"
-  ) ?? [];
-
+  const pendingFixSteps = current?.steps.filter((s) => s.category === "fix") ?? [];
+  const verificationSteps = current?.steps.filter((s) => s.category === "verification") ?? [];
   const phase = current?.resolution.phase ?? "";
 
   return (
@@ -151,7 +148,7 @@ export default function AssistantPage() {
       )}
 
       <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-        {/* Left sidebar — resolution list */}
+        {/* Left sidebar */}
         <aside className="space-y-3">
           <div className="rounded-xl border border-border bg-card p-4">
             <div className="flex items-center justify-between gap-2 mb-3">
@@ -225,7 +222,7 @@ export default function AssistantPage() {
             </div>
           ) : (
             <>
-              {/* Header: title + severity + phase */}
+              {/* Header: title + controls */}
               <div className="rounded-xl border border-border bg-card p-4 space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -266,53 +263,20 @@ export default function AssistantPage() {
                     )}
                   </div>
                 </div>
-
                 <PhaseStepper currentPhase={phase} />
-
-                {/* Status summary */}
-                {current.resolution.diagnosis_summary && (
-                  <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                    <p className="text-xs font-medium text-muted-foreground mb-1">Diagnosis</p>
-                    <p className="text-sm">{current.resolution.diagnosis_summary}</p>
-                  </div>
-                )}
-
-                {current.resolution.fix_summary && phase !== "planning" && phase !== "diagnosing" && (
-                  <div className="rounded-lg border border-warning/20 bg-warning/5 p-3">
-                    <p className="text-xs font-medium text-muted-foreground mb-1">Proposed Fix</p>
-                    <p className="text-sm">{current.resolution.fix_summary}</p>
-                  </div>
-                )}
-
-                {current.resolution.verification_result && (
-                  <div className={cn(
-                    "rounded-lg border p-3",
-                    phase === "resolved" ? "border-primary/20 bg-primary/5" : "border-critical/20 bg-critical/5"
-                  )}>
-                    <p className="text-xs font-medium text-muted-foreground mb-1">
-                      {phase === "resolved" ? "Verified" : "Verification"}
-                    </p>
-                    <p className="text-sm">{current.resolution.verification_result}</p>
-                  </div>
-                )}
-
-                {current.resolution.stuck_reason && (
-                  <div className="rounded-lg border border-critical/30 bg-critical/5 p-3">
-                    <p className="text-xs font-medium text-critical mb-1">Stuck</p>
-                    <p className="text-sm">{current.resolution.stuck_reason}</p>
-                  </div>
-                )}
               </div>
 
-              {/* Loading indicator for active phases */}
-              {loading && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Agent is working...
-                </div>
-              )}
+              {/* Chat thread — the primary interface */}
+              <ChatThread
+                current={current}
+                loading={loading}
+                contextMessage={contextMessage}
+                onContextMessageChange={setContextMessage}
+                onSend={handleSendContext}
+                phase={phase}
+              />
 
-              {/* Pending actions — show relevant group based on phase */}
+              {/* Pending actions */}
               {(phase === "diagnosing" || phase === "analyzing") && pendingDiagnosticSteps.length > 0 && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h3 className="text-sm font-semibold mb-3">Diagnostic Steps</h3>
@@ -337,7 +301,7 @@ export default function AssistantPage() {
                 </div>
               )}
 
-              {(phase === "verifying") && verificationSteps.length > 0 && (
+              {phase === "verifying" && verificationSteps.length > 0 && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h3 className="text-sm font-semibold mb-3">Verification</h3>
                   <PendingActions
@@ -349,46 +313,133 @@ export default function AssistantPage() {
                 </div>
               )}
 
-              {/* User input — available at all active phases for questions or context */}
-              {phase !== "resolved" && phase !== "cancelled" && (
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-semibold mb-2">
-                    {phase === "stuck"
-                      ? "Help the agent try again"
-                      : "Ask a question or add context"}
-                  </h3>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {phase === "stuck"
-                      ? "Provide additional info so the agent can try a different approach."
-                      : "Ask about the findings, suggest a different approach, or add information the agent should know."}
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      value={contextMessage}
-                      onChange={(e) => setContextMessage(e.target.value)}
-                      placeholder="Type a question or provide additional context..."
-                      className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
-                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendContext(); } }}
-                    />
-                    <button
-                      onClick={handleSendContext}
-                      disabled={loading || !contextMessage.trim()}
-                      className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                    >
-                      <Send className="h-4 w-4" />
-                    </button>
+              {/* Activity log — collapsed by default */}
+              <div className="rounded-xl border border-border bg-card">
+                <button
+                  onClick={() => setShowActivityLog(!showActivityLog)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-muted/30 rounded-xl"
+                >
+                  <span>Technical Details</span>
+                  {showActivityLog ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                </button>
+                {showActivityLog && (
+                  <div className="px-4 pb-4">
+                    <ActivityLog entries={current.log} />
                   </div>
-                </div>
-              )}
-
-              {/* Activity log */}
-              <div className="rounded-xl border border-border bg-card p-4">
-                <h3 className="text-sm font-semibold mb-3">Agent Activity</h3>
-                <ActivityLog entries={current.log} />
+                )}
               </div>
             </>
           )}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function ChatThread({
+  current,
+  loading,
+  contextMessage,
+  onContextMessageChange,
+  onSend,
+  phase,
+}: {
+  current: ResolutionFull;
+  loading: boolean;
+  contextMessage: string;
+  onContextMessageChange: (v: string) => void;
+  onSend: () => void;
+  phase: string;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const messages = current.messages ?? [];
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  const isFinished = phase === "resolved" || phase === "cancelled";
+  const isWorking = ["planning", "diagnosing", "analyzing", "proposing_fix", "applying_fix", "verifying"].includes(phase);
+
+  return (
+    <div className="rounded-xl border border-border bg-card flex flex-col">
+      {/* Message list */}
+      <div className="flex flex-col gap-3 p-4 min-h-[200px] max-h-[520px] overflow-y-auto">
+        {messages.length === 0 ? (
+          <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
+            {isWorking ? (
+              <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Agent is working...</span>
+            ) : (
+              <span>Conversation will appear here as the agent works through the issue.</span>
+            )}
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <ChatBubble key={msg.id} message={msg} />
+          ))
+        )}
+        {/* Typing indicator when agent is actively working */}
+        {isWorking && messages.length > 0 && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Agent is working...</span>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Message input */}
+      {!isFinished && (
+        <div className="border-t border-border p-3 flex gap-2">
+          <input
+            value={contextMessage}
+            onChange={(e) => onContextMessageChange(e.target.value)}
+            placeholder={
+              phase === "stuck"
+                ? "Provide additional info to help the agent try again..."
+                : phase === "awaiting_fix_approval"
+                ? "Reject the fix above, or type to redirect the agent..."
+                : "Ask a question, push back, or add context..."
+            }
+            className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } }}
+            disabled={loading}
+          />
+          <button
+            onClick={onSend}
+            disabled={loading || !contextMessage.trim()}
+            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          >
+            <Send className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChatBubble({ message }: { message: ResolutionMessage }) {
+  const isUser = message.role === "user";
+  return (
+    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      {!isUser && (
+        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center mr-2 mt-0.5">
+          <Bot className="h-4 w-4 text-primary" />
+        </div>
+      )}
+      <div className={cn(
+        "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm",
+        isUser
+          ? "bg-primary text-primary-foreground rounded-tr-sm"
+          : "bg-muted text-foreground rounded-tl-sm"
+      )}>
+        <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
+        <p className={cn(
+          "text-[10px] mt-1",
+          isUser ? "text-primary-foreground/60 text-right" : "text-muted-foreground"
+        )}>
+          {timeAgo(message.created_at)}
+        </p>
       </div>
     </div>
   );

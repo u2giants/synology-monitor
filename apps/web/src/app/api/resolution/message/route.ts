@@ -1,10 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { appendLog, updateResolution } from "@/lib/server/resolution-store";
+import { appendLog, appendMessage, safeAppendMessage, updateResolution } from "@/lib/server/resolution-store";
 import { tick } from "@/lib/server/resolution-agent";
-import { SupabaseClient } from "@supabase/supabase-js";
+import { callMinimax } from "@/lib/server/minimax";
 
-async function rejectPendingFixSteps(supabase: SupabaseClient, userId: string, resolutionId: string) {
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
+
+async function rejectPendingFixSteps(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  resolutionId: string
+) {
   await supabase
     .from("smon_resolution_steps")
     .update({ status: "rejected" })
@@ -14,9 +22,42 @@ async function rejectPendingFixSteps(supabase: SupabaseClient, userId: string, r
     .eq("status", "planned");
 }
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+async function generateAgentAck(
+  phase: string,
+  title: string,
+  diagnosisSummary: string | null,
+  fixSummary: string | null,
+  stuckReason: string | null,
+  recentMessages: Array<{ role: string; content: string }>,
+  userMessage: string
+): Promise<string | null> {
+  const contextParts: string[] = [
+    `Issue: ${title}`,
+    `Current phase: ${phase}`,
+  ];
+  if (diagnosisSummary) contextParts.push(`Diagnosis: ${diagnosisSummary.slice(0, 300)}`);
+  if (fixSummary) contextParts.push(`Proposed fix: ${fixSummary.slice(0, 200)}`);
+  if (stuckReason) contextParts.push(`Stuck reason: ${stuckReason.slice(0, 200)}`);
+
+  const historyText = recentMessages.slice(-5).map(m =>
+    `${m.role === "user" ? "User" : "Agent"}: ${m.content}`
+  ).join("\n");
+
+  const userPrompt = `${contextParts.join("\n")}
+
+${historyText ? `Recent conversation:\n${historyText}\n` : ""}
+The user just said: "${userMessage}"
+
+Write a 1-3 sentence direct response. Acknowledge what they said and tell them what you will do next. Be a driver, not a passenger.`;
+
+  const result = await callMinimax(
+    "You are an AI assistant helping resolve a NAS infrastructure problem. Respond in plain conversational English. No markdown. 1-3 sentences max.",
+    userPrompt,
+    { maxTokens: 150 }
+  );
+
+  return result.content ?? null;
+}
 
 export async function POST(request: Request) {
   try {
@@ -33,17 +74,46 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "resolutionId and message required." }, { status: 400 });
     }
 
-    // Append user context to the log
-    await appendLog(supabase, user.id, resolutionId, "user_input", message.trim());
+    const trimmed = message.trim();
 
-    // If stuck, restart planning with the new context
-    const { data: res } = await supabase
-      .from("smon_issue_resolutions")
-      .select("phase, description")
-      .eq("id", resolutionId)
-      .eq("user_id", user.id)
-      .single();
+    // Write user message to conversation table
+    await appendMessage(supabase, user.id, resolutionId, "user", trimmed);
 
+    // Also keep the log entry for backward compat with prompts
+    await appendLog(supabase, user.id, resolutionId, "user_input", trimmed);
+
+    // Load current resolution state for context
+    const [resResult, messagesResult] = await Promise.all([
+      supabase
+        .from("smon_issue_resolutions")
+        .select("phase, description, title, diagnosis_summary, fix_summary, stuck_reason")
+        .eq("id", resolutionId)
+        .eq("user_id", user.id)
+        .single(),
+      supabase
+        .from("smon_resolution_messages")
+        .select("role, content")
+        .eq("resolution_id", resolutionId)
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: true })
+        .limit(10),
+    ]);
+
+    const res = resResult.data;
+    const recentMessages = (messagesResult.data ?? []) as Array<{ role: string; content: string }>;
+
+    // Generate an AI acknowledgment of the user's message
+    const ackPromise = res ? generateAgentAck(
+      res.phase,
+      res.title ?? "this issue",
+      res.diagnosis_summary,
+      res.fix_summary,
+      res.stuck_reason,
+      recentMessages,
+      trimmed
+    ) : Promise.resolve(null);
+
+    // Phase-specific state transitions
     if (res?.phase === "stuck") {
       await updateResolution(supabase, user.id, resolutionId, {
         phase: "planning",
@@ -52,33 +122,35 @@ export async function POST(request: Request) {
       await supabase
         .from("smon_issue_resolutions")
         .update({
-          description: `${res.description}\n\nAdditional context from user: ${message.trim()}`,
+          description: `${res.description}\n\nAdditional context from user: ${trimmed}`,
           updated_at: new Date().toISOString(),
         })
         .eq("id", resolutionId)
         .eq("user_id", user.id);
       await appendLog(supabase, user.id, resolutionId, "analysis",
-        `Got it. Incorporating your context and restarting the investigation: "${message.trim()}"`);
+        `Got it. Incorporating your context and restarting the investigation: "${trimmed}"`);
     } else if (res?.phase === "awaiting_fix_approval") {
-      // User typed context while reviewing a fix — reject all pending fix steps so
-      // handleProposingFix doesn't see them as "pending" and bounce back immediately,
-      // then transition to proposing_fix so the AI creates a genuinely new proposal.
       await rejectPendingFixSteps(supabase, user.id, resolutionId);
       await updateResolution(supabase, user.id, resolutionId, { phase: "proposing_fix" });
       await supabase
         .from("smon_issue_resolutions")
         .update({
-          description: `${res.description}\n\nUser constraint on fix: ${message.trim()}`,
+          description: `${res.description}\n\nUser constraint on fix: ${trimmed}`,
           updated_at: new Date().toISOString(),
         })
         .eq("id", resolutionId)
         .eq("user_id", user.id);
       await appendLog(supabase, user.id, resolutionId, "analysis",
-        `Got it. Will take that into account and propose a different fix: "${message.trim()}"`);
+        `Got it. Will take that into account and propose a different fix: "${trimmed}"`);
     } else {
-      // In any other active phase — acknowledge and the agent will incorporate it on next tick
       await appendLog(supabase, user.id, resolutionId, "analysis",
-        `Noted: "${message.trim()}" — will incorporate this into the current investigation.`);
+        `Noted: "${trimmed}" — will incorporate this into the current investigation.`);
+    }
+
+    // Write the AI acknowledgment to the conversation table
+    const ack = await ackPromise;
+    if (ack) {
+      await safeAppendMessage(supabase, user.id, resolutionId, "agent", ack);
     }
 
     const state = await tick(supabase, user.id, resolutionId);

@@ -70,10 +70,20 @@ export interface ResolutionLogEntry {
   created_at: string;
 }
 
+export interface ResolutionMessage {
+  id: string;
+  resolution_id: string;
+  user_id: string;
+  role: "user" | "agent";
+  content: string;
+  created_at: string;
+}
+
 export interface ResolutionFull {
   resolution: Resolution;
   steps: ResolutionStep[];
   log: ResolutionLogEntry[];
+  messages: ResolutionMessage[];
 }
 
 // --- Create ---
@@ -119,7 +129,7 @@ export async function loadResolution(
   userId: string,
   resolutionId: string
 ): Promise<ResolutionFull | null> {
-  const [resResult, stepsResult, logResult] = await Promise.all([
+  const [resResult, stepsResult, logResult, messagesResult] = await Promise.all([
     supabase
       .from("smon_issue_resolutions")
       .select("*")
@@ -138,6 +148,12 @@ export async function loadResolution(
       .eq("resolution_id", resolutionId)
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
+    supabase
+      .from("smon_resolution_messages")
+      .select("*")
+      .eq("resolution_id", resolutionId)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
   ]);
 
   if (resResult.error || !resResult.data) return null;
@@ -146,6 +162,7 @@ export async function loadResolution(
     resolution: resResult.data as Resolution,
     steps: (stepsResult.data ?? []) as ResolutionStep[],
     log: (logResult.data ?? []) as ResolutionLogEntry[],
+    messages: (messagesResult.data ?? []) as ResolutionMessage[],
   };
 }
 
@@ -345,4 +362,33 @@ export async function appendLog(
     });
 
   if (error) throw new Error(`Failed to append log: ${error.message}`);
+}
+
+// --- Conversation messages ---
+
+export async function appendMessage(
+  supabase: SupabaseClient,
+  userId: string,
+  resolutionId: string,
+  role: "user" | "agent",
+  content: string
+) {
+  const { error } = await supabase
+    .from("smon_resolution_messages")
+    .insert({ resolution_id: resolutionId, user_id: userId, role, content });
+  if (error) throw new Error(`Failed to append message: ${error.message}`);
+}
+
+export async function safeAppendMessage(
+  supabase: SupabaseClient,
+  userId: string,
+  resolutionId: string,
+  role: "user" | "agent",
+  content: string
+) {
+  try {
+    await appendMessage(supabase, userId, resolutionId, role, content);
+  } catch {
+    // Non-fatal — never let a conversation write block the agent
+  }
 }
