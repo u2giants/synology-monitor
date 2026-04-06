@@ -62,3 +62,9 @@ jobs:
           build-args: |
             NEXT_PUBLIC_SUPABASE_URL=${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+      - name: Trigger Coolify redeploy
+        run: |
+          curl -s -X GET \
+            "http://178.156.180.212:8000/api/v1/deploy?uuid=${{ secrets.COOLIFY_WEBHOOK_UUID }}&force=false" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
