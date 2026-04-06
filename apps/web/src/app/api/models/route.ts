@@ -56,7 +56,7 @@ export async function GET() {
   }
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/models", {
+    const res = await fetch("https://openrouter.ai/api/v1/models/user", {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
 
