@@ -974,6 +974,13 @@ function fixProposalPrompt(res: ResolutionFull): string {
     .map(([name, t]) => `- ${name}: ${t.description}`)
     .join("\n");
 
+  const rejectedSteps = res.steps.filter(s => s.category === "fix" && s.status === "rejected");
+  const rejectedSection = rejectedSteps.length > 0
+    ? `\nPREVIOUSLY REJECTED FIXES — DO NOT PROPOSE THESE AGAIN:\n${rejectedSteps.map(s => `- ${s.tool_name} on ${s.target}: ${s.title} (REJECTED BY USER)`).join("\n")}\n`
+    : "";
+
+  const userContext = getUserContext(res);
+
   return `${SAFETY_PREAMBLE}
 
 You are proposing a fix for a Synology NAS issue. This is a PRODUCTION file server.
@@ -981,8 +988,8 @@ You are proposing a fix for a Synology NAS issue. This is a PRODUCTION file serv
 ISSUE: ${res.resolution.title}
 ROOT CAUSE: ${res.resolution.root_cause}
 DIAGNOSIS: ${res.resolution.diagnosis_summary}
-${getUserContext(res)}
-
+${userContext}
+${rejectedSection}
 AVAILABLE FIX TOOLS:
 ${writeTools}
 
@@ -992,12 +999,16 @@ ${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) =>
 RULES — READ CAREFULLY:
 1. Propose exactly ONE fix action. Not two, not three. ONE.
    After it runs, we verify, and then decide on the next action if needed.
-2. Choose the SAFEST option. Prefer service restarts over file operations.
-   NEVER propose file renames/moves/deletes unless the user specifically asked for it.
-3. Explain the risk clearly. What service will be briefly interrupted? Will users notice?
-4. Propose 1-2 verification steps to run AFTER the fix to confirm it worked.
-5. Every step MUST have a "title" field.
-6. If the safest fix is "do nothing and monitor", say so.
+2. NEVER propose a fix from the "PREVIOUSLY REJECTED FIXES" list above. The user has already
+   tried or rejected those. Propose the NEXT most appropriate action given that those failed.
+3. Choose the SAFEST option that hasn't already been tried.
+   Prefer less-invasive options over more-invasive ones, but if restarts have already been
+   rejected, move to the next appropriate step (e.g., clearing state files, reinstalling).
+4. Explain the risk clearly. What service will be briefly interrupted? Will users notice?
+5. Propose 1-2 verification steps to run AFTER the fix to confirm it worked.
+6. Every step MUST have a "title" field.
+7. If no safe automated fix is possible, set fix_steps to [] and explain in fix_summary
+   what manual steps the user should take in DSM.
 
 Respond ONLY with valid JSON:
 {
@@ -1609,6 +1620,16 @@ async function handleRejectedFix(
   if (pendingFix.length > 0) return;
 
   // All fix steps are rejected — go back to proposing_fix so the AI can try a different approach
+
+  // Skip any orphaned verification steps from this rejected fix proposal so they
+  // don't execute as part of the next fix attempt
+  const orphanedVerifySteps = state.steps.filter(
+    s => s.category === "verification" && (s.status === "planned" || s.status === "approved")
+  );
+  for (const vs of orphanedVerifySteps) {
+    await updateStepStatus(supabase, userId, vs.id, "skipped", "Skipped: associated fix was rejected");
+  }
+
   const rejectedTitles = fixSteps.filter(s => s.status === "rejected").map(s => s.title);
 
   const recentUserInput = state.log
