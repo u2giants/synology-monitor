@@ -8,8 +8,8 @@ const PHASES = [
   { key: "diagnosing", label: "Diagnose" },
   { key: "analyzing", label: "Analyze" },
   { key: "proposing_fix", label: "Propose Fix" },
-  { key: "awaiting_fix_approval", label: "Approve Fix" },
-  { key: "applying_fix", label: "Apply Fix" },
+  { key: "awaiting_fix_approval", label: "Review Fix" },
+  { key: "applying_fix", label: "Apply" },
   { key: "verifying", label: "Verify" },
   { key: "resolved", label: "Resolved" },
 ];

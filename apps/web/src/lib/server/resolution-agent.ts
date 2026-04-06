@@ -227,47 +227,77 @@ async function executeStep(step: ResolutionStep): Promise<{ ok: boolean; stdout:
   }
 }
 
+// --- Safety preamble (injected into every prompt) ---
+
+const SAFETY_PREAMBLE = `
+CRITICAL CONTEXT: You are operating on a LIVE PRODUCTION FILE SERVER that serves an entire company.
+Your #1 priority is DO NO HARM. Speed does not matter. Thoroughness does.
+
+Core principles:
+- It is always better to run more diagnostics than to guess at a fix.
+- It is always better to propose a safe, reversible action than a fast, irreversible one.
+- NEVER touch, rename, move, or delete user files unless the operator explicitly requests it.
+- Prefer service restarts over data operations. Prefer read-only investigation over write actions.
+- ONE change at a time. Apply one fix, verify it worked, then decide about the next.
+- If you are not confident, say so and ask for more diagnostics or user input.
+- Take 5 steps, 10 steps, 50 steps — it does not matter as long as nothing goes wrong.
+`.trim();
+
 // --- Prompts ---
 
-function planningPrompt(res: ResolutionFull, context: Record<string, unknown>): string {
-  const retryNote = res.resolution.attempt_count > 0
-    ? `\n\nPREVIOUS ATTEMPT FAILED (attempt ${res.resolution.attempt_count}). Here is what was tried:\n` +
-      res.steps.filter(s => s.category === "fix").map(s => `- ${s.title}: ${s.status} ${s.result_text ? `(${s.result_text.slice(0, 200)})` : ""}`).join("\n") +
-      (res.resolution.verification_result ? `\nVerification result: ${res.resolution.verification_result}` : "")
-    : "";
-
-  // Include user context messages from the log
+function getUserContext(res: ResolutionFull): string {
   const userInputs = res.log
     .filter(e => e.entry_type === "user_input")
     .map(e => e.content)
     .join("\n");
-  const userContext = userInputs ? `\n\nADDITIONAL CONTEXT FROM USER:\n${userInputs}` : "";
+  return userInputs ? `\nADDITIONAL CONTEXT FROM USER:\n${userInputs}` : "";
+}
 
-  return `You are a Synology NAS diagnostic planner. Generate a diagnostic plan for this issue.
+function getHistoryContext(res: ResolutionFull): string {
+  if (res.resolution.attempt_count === 0) return "";
+  const fixHistory = res.steps
+    .filter(s => s.category === "fix")
+    .map(s => `- ${s.title}: ${s.status}${s.result_text ? ` (${s.result_text.slice(0, 200)})` : ""}`)
+    .join("\n");
+  const verNote = res.resolution.verification_result
+    ? `\nVerification result: ${res.resolution.verification_result}`
+    : "";
+  return `\nPREVIOUS ATTEMPT ${res.resolution.attempt_count} RESULT:\n${fixHistory}${verNote}`;
+}
+
+function planningPrompt(res: ResolutionFull, context: Record<string, unknown>): string {
+  return `${SAFETY_PREAMBLE}
+
+You are planning diagnostics for a Synology NAS issue. Your job is ONLY to gather information.
+Do NOT propose any fix actions — only read-only diagnostics.
 
 ISSUE: ${res.resolution.title}
 DESCRIPTION: ${res.resolution.description}
 SEVERITY: ${res.resolution.severity}
-AFFECTED NAS: ${res.resolution.affected_nas.join(", ") || "unknown"}
-${retryNote}${userContext}
+AFFECTED NAS: ${res.resolution.affected_nas.join(", ") || "unknown — check BOTH NAS units"}
+${getHistoryContext(res)}${getUserContext(res)}
 
 SYSTEM CONTEXT (recent alerts, logs, resource data):
 ${JSON.stringify(context, null, 1).slice(0, 30000)}
 
-AVAILABLE TOOLS:
-${toolCatalogText()}
+AVAILABLE DIAGNOSTIC TOOLS (all are read-only):
+${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
 
-Generate a JSON diagnostic plan. Keep it focused — propose 3-6 diagnostic steps, not more.
-Do NOT propose fix actions yet — only diagnostics.
+INSTRUCTIONS:
+1. If the issue could affect BOTH NAS units, check BOTH. Don't assume only one is affected.
+2. If multiple error types are reported, they may share a root cause. Plan diagnostics that can distinguish.
+3. Be thorough. If unsure, add more diagnostic steps. We will have time for multiple rounds.
+4. Propose 3-8 diagnostic steps. It's OK to propose more if the issue is complex.
+
 Respond ONLY with valid JSON:
 {
-  "plan_summary": "Plain English: what we are going to check and why",
+  "plan_summary": "Plain English: what we are going to check and why (written for a non-technical business owner)",
   "steps": [
     {
       "title": "Human-readable step name",
       "target": "edgesynology1",
       "tool_name": "check_disk_space",
-      "reason": "Why this check is needed",
+      "reason": "Why this specific check is needed for this issue",
       "lookback_hours": 2,
       "filter": null
     }
@@ -281,37 +311,38 @@ function analysisPrompt(res: ResolutionFull): string {
     .map(s => `### ${s.title} (${s.target}) [${s.status}]\n${s.result_text?.slice(0, 2000) ?? "no output"}`)
     .join("\n\n");
 
-  const userInputs = res.log
-    .filter(e => e.entry_type === "user_input")
-    .map(e => e.content)
-    .join("\n");
-  const userContext = userInputs ? `\n\nADDITIONAL CONTEXT FROM USER:\n${userInputs}` : "";
+  return `${SAFETY_PREAMBLE}
 
-  return `You are analyzing diagnostic results for a Synology NAS issue.
+You are analyzing diagnostic results for a Synology NAS issue.
+Your job is to determine the root cause with HIGH CONFIDENCE before any fix is attempted.
 
 ISSUE: ${res.resolution.title}
 DESCRIPTION: ${res.resolution.description}
-${userContext}
+${getUserContext(res)}
 
 DIAGNOSTIC RESULTS:
 ${stepResults}
 
-AVAILABLE TOOLS (if you need more diagnostics):
-${toolCatalogText()}
+AVAILABLE DIAGNOSTIC TOOLS (if you need more information):
+${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
 
-Analyze these results. If you are not confident in the root cause, request more diagnostics.
-It is better to run a second round of diagnostics than to propose a fix based on incomplete information.
+INSTRUCTIONS:
+1. Look at ALL the evidence together. Multiple symptoms may have the SAME root cause.
+2. If your confidence is "medium" or "low", you MUST request more diagnostics. Do not guess.
+3. If some diagnostics failed (SSH error, timeout), that itself is useful information — explain what it means.
+4. Clearly separate what you KNOW from what you SUSPECT.
+5. Write the diagnosis_summary for a non-technical business owner. Write the root_cause for a sysadmin.
 
 Respond ONLY with valid JSON:
 {
   "needs_more_diagnostics": false,
   "additional_steps": [],
-  "diagnosis_summary": "Plain English explanation of what is wrong — written for a non-technical business owner",
-  "root_cause": "Technical root cause",
+  "diagnosis_summary": "Plain English: what is happening, why, and what is affected — for a business owner",
+  "root_cause": "Technical root cause with evidence references",
   "confidence": "high"
 }
 
-If you need more information, set needs_more_diagnostics to true and list additional diagnostic steps (same format as the planning steps).`;
+If confidence is not "high", set needs_more_diagnostics to true and list what else to check.`;
 }
 
 function fixProposalPrompt(res: ResolutionFull): string {
@@ -320,34 +351,40 @@ function fixProposalPrompt(res: ResolutionFull): string {
     .map(([name, t]) => `- ${name}: ${t.description}`)
     .join("\n");
 
-  return `You are proposing a fix for a Synology NAS issue.
+  return `${SAFETY_PREAMBLE}
+
+You are proposing a fix for a Synology NAS issue. This is a PRODUCTION file server.
 
 ISSUE: ${res.resolution.title}
 ROOT CAUSE: ${res.resolution.root_cause}
 DIAGNOSIS: ${res.resolution.diagnosis_summary}
+${getUserContext(res)}
 
 AVAILABLE FIX TOOLS:
 ${writeTools}
 
 AVAILABLE DIAGNOSTIC TOOLS (for verification after fix):
-${toolCatalogText()}
+${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
 
-IMPORTANT RULES:
-1. Propose the MINIMUM viable fix. Usually 1-3 steps maximum. Do NOT propose 10+ steps.
-2. Steps should be numbered in the order they must be executed.
-3. If there are multiple independent problems, propose a fix for the MOST CRITICAL one first. We can iterate.
-4. After this fix is applied, we will verify and can do another round if problems remain.
-5. Every fix_step and verification_step MUST have a "title" field. Never omit it.
+RULES — READ CAREFULLY:
+1. Propose exactly ONE fix action. Not two, not three. ONE.
+   After it runs, we verify, and then decide on the next action if needed.
+2. Choose the SAFEST option. Prefer service restarts over file operations.
+   NEVER propose file renames/moves/deletes unless the user specifically asked for it.
+3. Explain the risk clearly. What service will be briefly interrupted? Will users notice?
+4. Propose 1-2 verification steps to run AFTER the fix to confirm it worked.
+5. Every step MUST have a "title" field.
+6. If the safest fix is "do nothing and monitor", say so.
 
 Respond ONLY with valid JSON:
 {
-  "fix_summary": "Plain English: what we are going to do and why, in what order",
-  "risk_assessment": "What could go wrong",
+  "fix_summary": "Plain English: exactly what we will do, what the user should expect during the fix (e.g., 'Drive sync will pause for ~30 seconds'), and why this is the safest approach",
+  "risk_assessment": "What could go wrong and how we would recover if it does",
   "fix_steps": [
-    { "title": "Step 1: Restart ShareSync", "target": "edgesynology2", "tool_name": "restart_synology_drive_sharesync", "reason": "Why", "risk": "medium", "filter": null }
+    { "title": "Restart Synology Drive ShareSync on edgesynology2", "target": "edgesynology2", "tool_name": "restart_synology_drive_sharesync", "reason": "Why this specific action addresses the root cause", "risk": "medium", "filter": null }
   ],
   "verification_steps": [
-    { "title": "Verify ShareSync running", "target": "edgesynology2", "tool_name": "check_sharesync_status", "reason": "Confirm fix worked", "lookback_hours": 1, "filter": null }
+    { "title": "Verify ShareSync is running cleanly", "target": "edgesynology2", "tool_name": "check_sharesync_status", "reason": "Confirm the restart resolved the error", "lookback_hours": 1, "filter": null }
   ]
 }`;
 }
@@ -358,22 +395,36 @@ function verificationPrompt(res: ResolutionFull): string {
     .map(s => `### ${s.title} (${s.target}) [${s.status}]\n${s.result_text?.slice(0, 2000) ?? "no output"}`)
     .join("\n\n");
 
-  return `You are verifying whether a fix worked for a Synology NAS issue.
+  const fixResults = res.steps
+    .filter(s => s.category === "fix" && (s.status === "completed" || s.status === "failed"))
+    .map(s => `### ${s.title} (${s.target}) [${s.status}]\n${s.result_text?.slice(0, 500) ?? "no output"}`)
+    .join("\n\n");
+
+  return `${SAFETY_PREAMBLE}
+
+You are verifying whether a fix worked on a production Synology NAS.
 
 ISSUE: ${res.resolution.title}
-FIX APPLIED: ${res.resolution.fix_summary}
 ORIGINAL DIAGNOSIS: ${res.resolution.diagnosis_summary}
+FIX APPLIED: ${res.resolution.fix_summary}
+
+FIX EXECUTION RESULTS:
+${fixResults}
 
 VERIFICATION RESULTS:
 ${verResults}
 
-Did the fix resolve the issue? If only partially, say so — we can do another round of diagnostics and fixes.
+INSTRUCTIONS:
+1. Be conservative. If there is ANY sign of remaining problems, set fixed to false.
+2. It is better to do another round of diagnostics than to declare victory prematurely.
+3. If the fix worked for the immediate symptom but you see other related issues, mention them in remaining_concerns.
+4. "Fixed" means the root cause is addressed AND the system is healthy. Not just that the command succeeded.
 
 Respond ONLY with valid JSON:
 {
   "fixed": true,
-  "verification_summary": "Plain English: what the verification shows",
-  "remaining_concerns": "Any issues still present, or empty string if fully fixed"
+  "verification_summary": "Plain English: what the verification shows — is the system actually healthy now?",
+  "remaining_concerns": "Any issues still present, or empty string if fully confirmed fixed"
 }`;
 }
 
@@ -464,7 +515,10 @@ async function handleAnalyzing(
 
   const analysis = await callRemediation<AnalysisResponse>(analysisPrompt(fresh));
 
-  if (analysis.needs_more_diagnostics && analysis.additional_steps?.length) {
+  // If AI wants more diagnostics OR confidence is not high, loop back
+  const needsMore = analysis.needs_more_diagnostics || analysis.confidence !== "high";
+
+  if (needsMore && analysis.additional_steps?.length) {
     const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
     const batch = maxBatch + 1;
 
@@ -476,17 +530,32 @@ async function handleAnalyzing(
       await createSteps(supabase, userId, fresh.resolution.id, batch, stepInputs);
     }
     await appendLog(supabase, userId, fresh.resolution.id, "analysis",
-      `Need more information. ${analysis.diagnosis_summary}`);
+      `Need more information (confidence: ${analysis.confidence}). ${analysis.diagnosis_summary}`);
     await updateResolution(supabase, userId, fresh.resolution.id, { phase: "diagnosing" });
     return;
   }
 
+  // Even without additional steps, if confidence is low, report it and pause for user input
+  if (analysis.confidence === "low") {
+    await updateResolution(supabase, userId, fresh.resolution.id, {
+      phase: "stuck",
+      diagnosis_summary: analysis.diagnosis_summary,
+      stuck_reason: `Diagnosis confidence is low. The agent needs more information to proceed safely. Root cause hypothesis: ${analysis.root_cause}`,
+    });
+    await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+      `Low confidence diagnosis. Pausing for user input.\n\n${analysis.diagnosis_summary}`);
+    return;
+  }
+
+  // High or medium confidence with no more steps to run — proceed to fix proposal
   await updateResolution(supabase, userId, fresh.resolution.id, {
     phase: "proposing_fix",
     diagnosis_summary: analysis.diagnosis_summary,
     root_cause: analysis.root_cause,
   });
-  await appendLog(supabase, userId, fresh.resolution.id, "diagnosis", analysis.diagnosis_summary, analysis.root_cause);
+  await appendLog(supabase, userId, fresh.resolution.id, "diagnosis",
+    `${analysis.diagnosis_summary}\n\nConfidence: ${analysis.confidence}`,
+    analysis.root_cause);
 }
 
 async function handleProposingFix(
