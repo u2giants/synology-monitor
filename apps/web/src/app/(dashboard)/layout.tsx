@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic";
 
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { VersionBanner } from "@/components/dashboard/version-banner";
+import { MetricCollectorTrigger } from "@/components/dashboard/metric-collector-trigger";
 
 export default function DashboardLayout({
   children,
@@ -14,6 +15,7 @@ export default function DashboardLayout({
     <div className="flex min-h-screen">
       <Sidebar />
       <VersionBanner />
+      <MetricCollectorTrigger />
       <main className="flex-1 ml-64 p-6">
         {children}
       </main>

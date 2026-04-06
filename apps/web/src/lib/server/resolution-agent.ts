@@ -28,6 +28,7 @@ import {
   type ResolutionStep,
   type StepInput,
 } from "./resolution-store";
+import { getCustomMetricContext } from "./metric-collector";
 import OpenAI from "openai";
 
 // --- Tick lock: prevent concurrent ticks on the same resolution ---
@@ -124,6 +125,22 @@ interface AnalysisResponse {
   diagnosis_summary: string;
   root_cause: string;
   confidence: "high" | "medium" | "low";
+  /**
+   * Data the AI needs but cannot collect with current tools.
+   * Entries with a collection_command will be auto-scheduled for recurring SSH collection.
+   * Entries without one require manual operator action.
+   */
+  missing_data_suggestions?: Array<{
+    metric_name: string;
+    description: string;
+    target: NasTarget;
+    /** Exact read-only shell command to collect this metric via SSH. Omit if manual action required. */
+    collection_command?: string;
+    interval_minutes?: number;
+    why_needed: string;
+    /** If no command available: what should the operator do manually? (e.g., enable a DSM feature) */
+    manual_action?: string;
+  }>;
 }
 
 interface FixProposalResponse {
@@ -346,11 +363,13 @@ Respond ONLY with valid JSON:
 }`;
 }
 
-function analysisPrompt(res: ResolutionFull): string {
+async function analysisPrompt(res: ResolutionFull, supabase: SupabaseClient): Promise<string> {
   const stepResults = res.steps
     .filter(s => s.category === "diagnostic" && (s.status === "completed" || s.status === "failed"))
     .map(s => `### ${s.title} (${s.target}) [${s.status}]\n${s.result_text?.slice(0, 2000) ?? "no output"}`)
     .join("\n\n");
+
+  const customMetrics = await getCustomMetricContext(supabase, res.resolution.id);
 
   return `${SAFETY_PREAMBLE}
 
@@ -363,6 +382,7 @@ ${getUserContext(res)}
 
 DIAGNOSTIC RESULTS:
 ${stepResults}
+${customMetrics}
 
 AVAILABLE DIAGNOSTIC TOOLS (if you need more information):
 ${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
@@ -373,6 +393,14 @@ INSTRUCTIONS:
 3. If some diagnostics failed (SSH error, timeout), that itself is useful information — explain what it means.
 4. Clearly separate what you KNOW from what you SUSPECT.
 5. Write the diagnosis_summary for a non-technical business owner. Write the root_cause for a sysadmin.
+6. MISSING DATA: If data exists on the NAS that would help diagnosis but isn't reachable through the available
+   tools, you MUST list it in missing_data_suggestions. For each entry:
+   - If it can be collected via a read-only SSH command: provide collection_command and interval_minutes.
+     The system will automatically start running that command on a schedule and feed results back to you.
+   - If it requires a manual operator action (e.g., enabling a DSM feature, installing a package, turning on
+     verbose logging): describe exactly what to do in manual_action and leave collection_command empty.
+     The operator will be notified to take that action.
+   Commands MUST be read-only (no rm, mv, dd, mkfs, chmod -R, or any write operation).
 
 Respond ONLY with valid JSON:
 {
@@ -380,9 +408,21 @@ Respond ONLY with valid JSON:
   "additional_steps": [],
   "diagnosis_summary": "Plain English: what is happening, why, and what is affected — for a business owner",
   "root_cause": "Technical root cause with evidence references",
-  "confidence": "high"
+  "confidence": "high",
+  "missing_data_suggestions": [
+    {
+      "metric_name": "sharesync_queue_depth",
+      "description": "Number of files pending sync",
+      "target": "edgesynology2",
+      "collection_command": "synopkg exec DriveAPI status 2>&1 | grep -i queue",
+      "interval_minutes": 5,
+      "why_needed": "Would reveal whether sync backlog is growing over time",
+      "manual_action": null
+    }
+  ]
 }
 
+missing_data_suggestions can be an empty array [] if no gaps exist.
 If confidence is not "high", set needs_more_diagnostics to true and list what else to check.`;
 }
 
@@ -561,6 +601,46 @@ async function handleDiagnosing(
   await updateResolution(supabase, userId, state.resolution.id, { phase: "analyzing" });
 }
 
+/** Create metric collection schedules for any missing data the AI identified. */
+async function processMissingDataSuggestions(
+  supabase: SupabaseClient,
+  userId: string,
+  resolutionId: string,
+  suggestions: AnalysisResponse["missing_data_suggestions"]
+): Promise<void> {
+  if (!suggestions?.length) return;
+
+  for (const s of suggestions) {
+    if (s.collection_command && s.target) {
+      // Check if we already scheduled this exact command on this NAS
+      const { count } = await supabase
+        .from("smon_custom_metric_schedules")
+        .select("id", { count: "exact", head: true })
+        .eq("collection_command", s.collection_command)
+        .eq("nas_id", s.target);
+
+      if (!count || count === 0) {
+        await supabase.from("smon_custom_metric_schedules").insert({
+          created_by: userId,
+          resolution_id: resolutionId,
+          name: s.metric_name,
+          description: s.description,
+          nas_id: s.target,
+          collection_command: s.collection_command,
+          interval_minutes: Math.max(1, Math.min(60, s.interval_minutes ?? 5)),
+          is_active: true,
+        });
+        await appendLog(supabase, userId, resolutionId, "analysis",
+          `Started collecting metric: **${s.metric_name}** on ${s.target} every ${s.interval_minutes ?? 5} min.\n${s.why_needed}`);
+      }
+    } else if (s.manual_action) {
+      // Notify operator that manual action is needed
+      await appendLog(supabase, userId, resolutionId, "analysis",
+        `**Manual action needed to improve diagnosis:**\n${s.manual_action}\n\n_Why: ${s.why_needed}_`);
+    }
+  }
+}
+
 async function handleAnalyzing(
   supabase: SupabaseClient,
   userId: string,
@@ -569,7 +649,8 @@ async function handleAnalyzing(
   const fresh = await loadResolution(supabase, userId, state.resolution.id);
   if (!fresh) return;
 
-  const primaryAnalysis = await callRemediation<AnalysisResponse>(analysisPrompt(fresh));
+  const builtAnalysisPrompt = await analysisPrompt(fresh, supabase);
+  const primaryAnalysis = await callRemediation<AnalysisResponse>(builtAnalysisPrompt);
 
   let analysis = primaryAnalysis;
 
@@ -579,7 +660,7 @@ async function handleAnalyzing(
       `Primary model confidence: ${analysis.confidence}. Requesting second opinion from a different AI model.`);
 
     try {
-      const secondPrompt = `${analysisPrompt(fresh)}
+      const secondPrompt = `${builtAnalysisPrompt}
 
 IMPORTANT: A different AI model already analyzed this and concluded:
 - Diagnosis: ${analysis.diagnosis_summary}
@@ -664,6 +745,9 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
       }
     }
 
+    // Auto-schedule any missing data the AI identified (before forcing stuck)
+    await processMissingDataSuggestions(supabase, userId, fresh.resolution.id, analysis.missing_data_suggestions);
+
     // Cannot gather more evidence — force a conclusion with everything we know
     const roundMsg = diagnosticRoundCount >= MAX_DIAGNOSTIC_ROUNDS
       ? `After ${diagnosticRoundCount} diagnostic rounds the agent could not reach high confidence.`
@@ -685,6 +769,9 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
       `${roundMsg} Here is what we know:\n\n${fullSummary}`);
     return;
   }
+
+  // Schedule any useful metric collection the AI identified even when confident
+  await processMissingDataSuggestions(supabase, userId, fresh.resolution.id, analysis.missing_data_suggestions);
 
   // High confidence — proceed to fix proposal
   await updateResolution(supabase, userId, fresh.resolution.id, {
