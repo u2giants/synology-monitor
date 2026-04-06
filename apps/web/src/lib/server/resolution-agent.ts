@@ -986,6 +986,7 @@ function fixProposalPrompt(res: ResolutionFull): string {
 You are proposing a fix for a Synology NAS issue. This is a PRODUCTION file server.
 
 ISSUE: ${res.resolution.title}
+DESCRIPTION (includes all accumulated user context and rejection history): ${res.resolution.description}
 ROOT CAUSE: ${res.resolution.root_cause}
 DIAGNOSIS: ${res.resolution.diagnosis_summary}
 ${userContext}

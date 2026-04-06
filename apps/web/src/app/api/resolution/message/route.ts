@@ -46,8 +46,10 @@ export async function POST(request: Request) {
         })
         .eq("id", resolutionId)
         .eq("user_id", user.id);
+      await appendLog(supabase, user.id, resolutionId, "analysis",
+        `Got it. Incorporating your context and restarting the investigation: "${message.trim()}"`);
     } else if (res?.phase === "awaiting_fix_approval") {
-      // User typed context while reviewing a fix — treat as rejection + guidance for re-proposal
+      // User typed context while reviewing a fix — treat as guidance for re-proposal
       await updateResolution(supabase, user.id, resolutionId, { phase: "proposing_fix" });
       await supabase
         .from("smon_issue_resolutions")
@@ -57,6 +59,12 @@ export async function POST(request: Request) {
         })
         .eq("id", resolutionId)
         .eq("user_id", user.id);
+      await appendLog(supabase, user.id, resolutionId, "analysis",
+        `Got it. Will take that into account and propose a different fix: "${message.trim()}"`);
+    } else {
+      // In any other active phase — acknowledge and the agent will incorporate it on next tick
+      await appendLog(supabase, user.id, resolutionId, "analysis",
+        `Noted: "${message.trim()}" — will incorporate this into the current investigation.`);
     }
 
     const state = await tick(supabase, user.id, resolutionId);
