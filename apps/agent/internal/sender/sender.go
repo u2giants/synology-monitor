@@ -115,6 +115,10 @@ func (s *Sender) QueueNetConnection(p NetConnectionPayload) {
 	s.queue("smon_net_connections", p)
 }
 
+func (s *Sender) QueueCustomMetricData(p CustomMetricDataPayload) {
+	s.queue("smon_custom_metric_data", p)
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {

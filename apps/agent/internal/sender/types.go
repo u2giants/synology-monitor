@@ -160,6 +160,15 @@ type SyncTaskSnapshotPayload struct {
 	IndexingQueue    int       `json:"indexing_queue,omitempty"`
 }
 
+// CustomMetricDataPayload is a row in smon_custom_metric_data
+type CustomMetricDataPayload struct {
+	ScheduleID string    `json:"schedule_id"`
+	NasID      string    `json:"nas_id"`
+	RawOutput  string    `json:"raw_output,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	CapturedAt time.Time `json:"captured_at"`
+}
+
 // NetConnectionPayload is a row in smon_net_connections
 type NetConnectionPayload struct {
 	NasID      string    `json:"nas_id"`
