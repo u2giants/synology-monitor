@@ -8,6 +8,8 @@
 
 import { callMinimaxJSON } from "./minimax";
 import { getRemediationModel, getSecondOpinionModel } from "./ai-settings";
+import { readFile } from "fs/promises";
+import { join } from "path";
 import { runNasScript, getNasConfigs } from "./nas";
 import {
   TOOL_DEFINITIONS,
@@ -453,6 +455,149 @@ async function reflectOnProgress(res: ResolutionFull, currentConfidence: string)
       recommendation: "proceed",
       notes: "Reflection check skipped (model error) — proceeding.",
     };
+  }
+}
+
+// --- Code-aware incident review ---
+
+interface SoftwareBugReviewResponse {
+  likely_software_bug: boolean;
+  confidence: "high" | "medium" | "low";
+  behavior_observed: string;
+  expected_behavior: string;
+  suspected_component: string;
+  suggested_fix_for_developer: string;
+  alert_title: string;
+}
+
+/**
+ * Reads the phase handler source + failed tool definitions, then asks an AI
+ * whether the behavior described in the resolution log looks like a software bug.
+ *
+ * OUTPUT ONLY — never modifies code or state. Creates a log entry and a
+ * dashboard alert so a developer can investigate. Runs fire-and-forget.
+ */
+async function reviewOwnBehavior(
+  supabase: SupabaseClient,
+  userId: string,
+  state: ResolutionFull
+): Promise<void> {
+  try {
+    const cwd = process.cwd();
+
+    // Read phase handler source (the state machine logic)
+    let agentSource = "";
+    try {
+      const raw = await readFile(join(cwd, "src/lib/server/resolution-agent.ts"), "utf-8");
+      // Extract from phase handlers onward — skip prompts and context fetching
+      const handlerStart = raw.indexOf("// --- Phase handlers ---");
+      const handlerEnd = raw.indexOf("// --- Main tick function ---");
+      if (handlerStart !== -1 && handlerEnd !== -1) {
+        agentSource = raw.slice(handlerStart, handlerEnd).slice(0, 15000);
+      } else {
+        agentSource = raw.slice(0, 15000);
+      }
+    } catch { /* source unavailable — review will be less precise */ }
+
+    // Read tool definitions for tools that failed
+    let toolSource = "";
+    const failedToolNames = [...new Set(
+      state.steps
+        .filter(s => s.status === "failed" || (s.status === "completed" && !s.result_text?.trim()))
+        .map(s => s.tool_name)
+    )];
+    if (failedToolNames.length > 0) {
+      try {
+        const raw = await readFile(join(cwd, "src/lib/server/tools.ts"), "utf-8");
+        // Extract the definition block for each failed tool (up to 3 tools)
+        const excerpts: string[] = [];
+        for (const toolName of failedToolNames.slice(0, 3)) {
+          const idx = raw.indexOf(`${toolName}:`);
+          if (idx !== -1) {
+            excerpts.push(raw.slice(Math.max(0, idx - 20), idx + 1200));
+          }
+        }
+        toolSource = excerpts.join("\n\n---\n\n");
+      } catch { /* tools source unavailable */ }
+    }
+
+    const logSummary = state.log
+      .slice(-40)
+      .map(e => `[${e.entry_type}] ${e.content.slice(0, 400)}`)
+      .join("\n");
+
+    const stepSummary = state.steps
+      .map(s => `${s.category} | ${s.tool_name} on ${s.target} | ${s.status}${s.result_text ? ` | output: ${s.result_text.slice(0, 200)}` : ""}`)
+      .join("\n");
+
+    const prompt = `You are a software quality reviewer. A production AI agent just got stuck while trying to resolve a NAS issue.
+Your job is to determine whether this looks like a SOFTWARE BUG in the agent itself vs. a genuine NAS problem that the agent correctly couldn't solve.
+
+DO NOT suggest any code changes. DO NOT modify anything. ONLY describe what you observe and what a developer should investigate.
+
+RESOLUTION SUMMARY:
+Title: ${state.resolution.title}
+Phase when stuck: ${state.resolution.phase}
+Stuck reason: ${state.resolution.stuck_reason}
+Attempt count: ${state.resolution.attempt_count}
+Diagnosis summary: ${state.resolution.diagnosis_summary ?? "none"}
+
+AGENT ACTIVITY LOG (last 40 entries):
+${logSummary}
+
+ALL STEPS (category | tool | status | output excerpt):
+${stepSummary}
+
+${agentSource ? `PHASE HANDLER SOURCE CODE:\n\`\`\`typescript\n${agentSource}\n\`\`\`` : ""}
+${toolSource ? `FAILED TOOL DEFINITIONS:\n\`\`\`typescript\n${toolSource}\n\`\`\`` : ""}
+
+QUESTIONS TO ANSWER:
+1. Does the sequence of phase transitions, step statuses, and log entries make sense for a correctly functioning agent? Or does something look wrong?
+2. Are there any steps that returned empty output, SSH banners, or clearly wrong data that the agent treated as valid?
+3. Does any phase transition happen at a point it shouldn't (e.g., entering awaiting_fix_approval with no actual fix steps waiting)?
+4. If source code is available: does the code logic match the observed behavior, or is there a guard condition, loop, or timeout that would cause the observed problem?
+
+Respond ONLY with valid JSON — no explanations outside the JSON:
+{
+  "likely_software_bug": false,
+  "confidence": "medium",
+  "behavior_observed": "What the log shows happening",
+  "expected_behavior": "What should have happened if the software was working correctly",
+  "suspected_component": "e.g. handleProposingFix guard condition, check_drive_database shell command, tick loop",
+  "suggested_fix_for_developer": "Plain English description of what a developer should investigate and change — NO code, just what and where",
+  "alert_title": "Short title for a developer dashboard alert (max 80 chars)"
+}
+
+If this looks like a genuine NAS problem (not a software bug), set likely_software_bug to false and confidence to high.`;
+
+    const review = await callSecondOpinion<SoftwareBugReviewResponse>(prompt);
+
+    if (!review.likely_software_bug) return; // Genuine NAS problem, not a software issue
+
+    // Log the finding in the resolution activity
+    await appendLog(supabase, userId, state.resolution.id, "software_issue",
+      `⚠️ **Possible software bug detected** (${review.confidence} confidence)\n\n` +
+      `**Observed:** ${review.behavior_observed}\n\n` +
+      `**Expected:** ${review.expected_behavior}\n\n` +
+      `**Suspected component:** ${review.suspected_component}\n\n` +
+      `**For developers:** ${review.suggested_fix_for_developer}`
+    );
+
+    // Create a dashboard alert so it's visible outside this resolution
+    if (review.confidence === "high" || review.confidence === "medium") {
+      await supabase.from("smon_alerts").insert({
+        severity: review.confidence === "high" ? "critical" : "warning",
+        source: "resolution_agent",
+        title: `[Agent Bug] ${review.alert_title}`,
+        message: `Resolution "${state.resolution.title}" (${state.resolution.id}) went stuck and a code review suspects a software bug.\n\n` +
+          `Observed: ${review.behavior_observed}\n` +
+          `Component: ${review.suspected_component}\n` +
+          `Developer action: ${review.suggested_fix_for_developer}`,
+        status: "active",
+      });
+    }
+  } catch {
+    // Never let the review crash the agent — it's informational only
   }
 }
 
@@ -1264,6 +1409,7 @@ export async function tick(
     const stalled = await detectStalls(supabase, userId, state);
     if (stalled) return loadResolution(supabase, userId, resolutionId);
 
+    const phaseBefore = state.resolution.phase;
     const { phase } = state.resolution;
 
     switch (phase) {
@@ -1298,5 +1444,12 @@ export async function tick(
     activeTicks.delete(resolutionId);
   }
 
-  return loadResolution(supabase, userId, resolutionId);
+  const finalState = await loadResolution(supabase, userId, resolutionId);
+
+  // If this tick caused a transition to "stuck", run the code-aware bug review (fire-and-forget)
+  if (finalState && finalState.resolution.phase === "stuck" && phaseBefore !== "stuck") {
+    reviewOwnBehavior(supabase, userId, finalState).catch(() => {});
+  }
+
+  return finalState;
 }
