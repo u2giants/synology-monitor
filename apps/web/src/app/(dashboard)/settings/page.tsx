@@ -34,14 +34,11 @@ export default function SettingsPage() {
       })
       .catch(() => {});
 
-    // Load available models from OpenRouter
-    fetch("https://openrouter.ai/api/v1/models")
+    // Load available models via server route (uses OPENROUTER_API_KEY server-side)
+    fetch("/api/models")
       .then((res) => res.json())
       .then((data) => {
-        const models = (data.data ?? [])
-          .map((m: { id: string; name: string }) => ({ id: m.id, name: m.name }))
-          .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
-        setAvailableModels(models);
+        setAvailableModels(data.models ?? []);
       })
       .catch(() => {})
       .finally(() => setModelsLoading(false));
