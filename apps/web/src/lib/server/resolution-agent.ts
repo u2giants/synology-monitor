@@ -214,6 +214,14 @@ interface VerificationResponse {
   remaining_concerns: string;
 }
 
+interface ReflectionResponse {
+  evidence_quality: "good" | "thin" | "contaminated";
+  quality_issues: string[];
+  progress_assessment: "making_progress" | "stalled" | "looping";
+  recommendation: "proceed" | "gather_more" | "escalate_to_user";
+  notes: string;
+}
+
 async function callModel<T>(prompt: string, modelOverride?: string): Promise<T> {
   const client = getOpenAIClient();
   const model = modelOverride ?? await getRemediationModel();
@@ -326,6 +334,125 @@ async function executeStep(step: ResolutionStep): Promise<{ ok: boolean; stdout:
     return { ok: result.exitCode === 0, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
   } catch (err) {
     return { ok: false, stdout: "", stderr: err instanceof Error ? err.message : "SSH error", exitCode: null };
+  }
+}
+
+// --- Stall detection ---
+
+const ACTIVE_PHASES_SET = new Set([
+  "planning", "diagnosing", "analyzing", "proposing_fix", "applying_fix", "verifying",
+]);
+const STEP_RUNNING_TIMEOUT_MS = 120_000;
+const PHASE_STALL_TIMEOUT_MS = 12 * 60 * 1000; // 12 minutes
+
+/**
+ * Detects and recovers from two classes of stall:
+ * 1. A step stuck in "running" for >120s (SSH command never returned)
+ * 2. An active phase with no DB updates for >12 min (agent silently hung)
+ * Returns true if a stall was handled (caller should skip normal phase processing).
+ */
+async function detectStalls(
+  supabase: SupabaseClient,
+  userId: string,
+  state: ResolutionFull
+): Promise<boolean> {
+  const { resolution, steps } = state;
+  const now = Date.now();
+
+  // 1. Hung running step
+  for (const step of steps) {
+    if (step.status === "running" && step.started_at) {
+      const runningMs = now - new Date(step.started_at).getTime();
+      if (runningMs > STEP_RUNNING_TIMEOUT_MS) {
+        const secs = Math.round(runningMs / 1000);
+        await updateStepStatus(supabase, userId, step.id, "failed",
+          `Timed out after ${secs}s — step was still marked running when the next tick checked.`);
+        await appendLog(supabase, userId, resolution.id, "error",
+          `Step "${step.title}" on ${step.target} timed out after ${secs}s and was marked failed. The agent will continue with whatever data was collected.`);
+        return true;
+      }
+    }
+  }
+
+  // 2. Phase-level stall
+  if (ACTIVE_PHASES_SET.has(resolution.phase)) {
+    const stalledMs = now - new Date(resolution.updated_at).getTime();
+    if (stalledMs > PHASE_STALL_TIMEOUT_MS) {
+      const mins = Math.round(stalledMs / 60_000);
+      await updateResolution(supabase, userId, resolution.id, {
+        phase: "stuck",
+        stuck_reason: `Agent stalled in phase "${resolution.phase}" for ${mins} minutes with no progress. This usually means an AI model timed out or a network error occurred silently. Try sending a message to restart, or cancel and create a new resolution.`,
+      });
+      await appendLog(supabase, userId, resolution.id, "stuck",
+        `No progress for ${mins} minutes in phase "${resolution.phase}". The agent was stuck and has been paused. Send a message or cancel to proceed.`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// --- Reflection / quality gate ---
+
+function reflectionPrompt(res: ResolutionFull, currentConfidence: string): string {
+  const logEntries = res.log
+    .slice(-30)
+    .map(e => `[${e.entry_type}] ${e.content.slice(0, 300)}`)
+    .join("\n");
+
+  const stepSummary = res.steps
+    .filter(s => s.status === "completed" || s.status === "failed")
+    .map(s => `- ${s.tool_name} on ${s.target} [${s.status}]: ${(s.result_text ?? "no output").slice(0, 400)}`)
+    .join("\n");
+
+  return `You are a quality reviewer for an AI diagnostic agent working on a production Synology NAS.
+Your job is to assess whether the agent's evidence is solid enough to proceed to a fix proposal.
+
+ISSUE: ${res.resolution.title}
+CURRENT CONFIDENCE: ${currentConfidence}
+DIAGNOSIS SUMMARY: ${res.resolution.diagnosis_summary ?? "not yet written"}
+ROOT CAUSE: ${res.resolution.root_cause ?? "not yet identified"}
+ATTEMPT: ${res.resolution.attempt_count + 1} of ${res.resolution.max_attempts}
+
+AGENT ACTIVITY (last 30 entries):
+${logEntries}
+
+DIAGNOSTIC STEP RESULTS:
+${stepSummary || "No steps completed yet."}
+
+EVALUATE THE FOLLOWING:
+1. Evidence quality: Are step results substantive? Look for SSH banners with no real output, empty results, timeouts, or steps that just returned the default shell prompt. These are NOT real data.
+2. Progress: Is the agent converging on a specific root cause with real evidence, or repeating similar checks without new information?
+3. Recommendation: Should it proceed to propose a fix, gather more evidence first, or escalate to the user because the evidence is too weak or contradictory?
+
+Respond ONLY with valid JSON:
+{
+  "evidence_quality": "good",
+  "quality_issues": ["list any specific issues — e.g. 'check_sharesync_status returned only SSH banner', 'no disk health data collected'"],
+  "progress_assessment": "making_progress",
+  "recommendation": "proceed",
+  "notes": "One or two sentences explaining your verdict"
+}
+
+evidence_quality: "good" = solid real output; "thin" = some gaps but enough to proceed; "contaminated" = significant outputs were noise/empty/SSH banners
+recommendation: "proceed" = evidence supports the diagnosis; "gather_more" = needs specific additional checks; "escalate_to_user" = evidence too weak or contradictory to propose a safe fix`;
+}
+
+/**
+ * Ask the second-opinion model to review evidence quality before proposing a fix.
+ * Returns a safe default ("proceed") on any error so it never blocks the agent.
+ */
+async function reflectOnProgress(res: ResolutionFull, currentConfidence: string): Promise<ReflectionResponse> {
+  try {
+    return await callSecondOpinion<ReflectionResponse>(reflectionPrompt(res, currentConfidence));
+  } catch {
+    return {
+      evidence_quality: "good",
+      quality_issues: [],
+      progress_assessment: "making_progress",
+      recommendation: "proceed",
+      notes: "Reflection check skipped (model error) — proceeding.",
+    };
   }
 }
 
@@ -812,10 +939,66 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
     }
   }
 
-  // Count distinct diagnostic batches to detect infinite loops
+  // Count distinct diagnostic batches
   const MAX_DIAGNOSTIC_ROUNDS = 3;
   const diagnosticBatches = new Set(fresh.steps.filter(s => s.category === "diagnostic").map(s => s.batch));
   const diagnosticRoundCount = diagnosticBatches.size;
+
+  // Loop detection: if we're on round 2+ and the root cause hasn't changed, we're semantically looping
+  if (diagnosticRoundCount >= 2 && fresh.resolution.root_cause &&
+      analysis.root_cause && analysis.root_cause === fresh.resolution.root_cause) {
+    await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+      `Semantic loop detected: round ${diagnosticRoundCount} analysis reached the same root cause as the previous round. ${analysis.needs_more_diagnostics ? "Agent still wants more diagnostics but the diagnosis hasn't changed — forcing a decision." : ""}`);
+    // Force a conclusion — additional rounds won't change the picture
+    analysis.needs_more_diagnostics = false;
+    analysis.confidence = "high";
+  }
+
+  // Reflection quality gate: before committing to a fix, ask a second AI to review evidence quality
+  const reflection = await reflectOnProgress(fresh, analysis.confidence);
+  if (reflection.recommendation === "escalate_to_user") {
+    await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+      `Quality review blocked fix proposal: ${reflection.evidence_quality} evidence.\n\n${reflection.notes}`,
+      reflection.quality_issues.join("; ") || null);
+    await updateResolution(supabase, userId, fresh.resolution.id, {
+      phase: "stuck",
+      diagnosis_summary: analysis.diagnosis_summary,
+      root_cause: analysis.root_cause,
+      stuck_reason: `Quality review: ${reflection.notes} Issues: ${reflection.quality_issues.join("; ")}. Add more context or manually inspect the NAS.`,
+    });
+    return;
+  } else if (reflection.recommendation === "gather_more") {
+    await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+      `Quality review: ${reflection.evidence_quality} evidence — requesting additional diagnostics before fix.\n\n${reflection.notes}`,
+      reflection.quality_issues.join("; ") || null);
+    // Ask the primary model what to collect next, given the quality issues
+    try {
+      const revisedPrompt = `${builtAnalysisPrompt}
+
+QUALITY REVIEW FEEDBACK (from a second AI reviewer):
+${reflection.quality_issues.map(q => `• ${q}`).join("\n")}
+
+The reviewer recommends gathering more evidence before proposing a fix. Please reconsider: set needs_more_diagnostics to true and list specific additional diagnostic steps that would address these gaps.`;
+      const revisedAnalysis = await callRemediation<AnalysisResponse>(revisedPrompt);
+      // Merge additional steps from both analyses
+      analysis.needs_more_diagnostics = true;
+      analysis.confidence = revisedAnalysis.confidence ?? "medium";
+      analysis.additional_steps = [
+        ...(revisedAnalysis.additional_steps ?? []),
+        ...(analysis.additional_steps ?? []),
+      ];
+    } catch {
+      // If revised call fails, force needsMore anyway so the existing path handles it
+      analysis.needs_more_diagnostics = true;
+      analysis.confidence = "medium";
+    }
+  } else {
+    // "proceed" — log a brief note if any quality issues were found
+    if (reflection.quality_issues.length > 0) {
+      await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+        `Quality review passed (${reflection.evidence_quality}): ${reflection.notes}`);
+    }
+  }
 
   // If AI wants more diagnostics OR confidence is not high, try to loop back
   const needsMore = analysis.needs_more_diagnostics || analysis.confidence !== "high";
@@ -1027,14 +1210,34 @@ async function handleVerifying(
       await appendLog(supabase, userId, fresh.resolution.id, "stuck",
         `Fix did not fully work. ${verdict.verification_summary}. ${verdict.remaining_concerns}`);
     } else {
-      // Go back to planning for another round of diagnose → fix → verify
-      await updateResolution(supabase, userId, fresh.resolution.id, {
-        phase: "planning",
-        attempt_count: newAttempt,
-        verification_result: verdict.verification_summary,
-      });
-      await appendLog(supabase, userId, fresh.resolution.id, "verification",
-        `Partially fixed. Starting another round (attempt ${newAttempt + 1}). ${verdict.remaining_concerns}`);
+      // Reflect before re-entering the diagnosis loop — are we making real progress?
+      const reflection = await reflectOnProgress(fresh, "medium");
+      if (reflection.progress_assessment === "looping" || reflection.recommendation === "escalate_to_user") {
+        await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+          `Quality review after failed fix: ${reflection.progress_assessment} — ${reflection.notes}`,
+          reflection.quality_issues.join("; ") || null);
+        await updateResolution(supabase, userId, fresh.resolution.id, {
+          phase: "stuck",
+          attempt_count: newAttempt,
+          verification_result: verdict.verification_summary,
+          stuck_reason: `Fix did not work and quality review detected: ${reflection.notes} Add more context or a different approach to help the agent.`,
+        });
+        await appendLog(supabase, userId, fresh.resolution.id, "stuck",
+          `Fix did not resolve the issue and the quality reviewer flagged: ${reflection.notes}`);
+      } else {
+        if (reflection.quality_issues.length > 0) {
+          await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+            `Quality review before retry: ${reflection.notes}`);
+        }
+        // Go back to planning for another round of diagnose → fix → verify
+        await updateResolution(supabase, userId, fresh.resolution.id, {
+          phase: "planning",
+          attempt_count: newAttempt,
+          verification_result: verdict.verification_summary,
+        });
+        await appendLog(supabase, userId, fresh.resolution.id, "verification",
+          `Partially fixed. Starting another round (attempt ${newAttempt + 1}). ${verdict.remaining_concerns}`);
+      }
     }
   }
 }
@@ -1056,6 +1259,10 @@ export async function tick(
   try {
     const state = await loadResolution(supabase, userId, resolutionId);
     if (!state) return null;
+
+    // Stall detection: recover from hung running steps and phase-level freezes
+    const stalled = await detectStalls(supabase, userId, state);
+    if (stalled) return loadResolution(supabase, userId, resolutionId);
 
     const { phase } = state.resolution;
 
