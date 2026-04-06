@@ -7,3 +7,11 @@ create table smon_resolution_messages (
   created_at timestamptz default now() not null
 );
 create index on smon_resolution_messages(resolution_id, created_at);
+
+alter table smon_resolution_messages enable row level security;
+
+create policy "authenticated_all" on smon_resolution_messages
+  for all
+  to authenticated
+  using (true)
+  with check (true);

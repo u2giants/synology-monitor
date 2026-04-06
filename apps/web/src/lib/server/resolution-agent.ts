@@ -980,8 +980,17 @@ function fixProposalPrompt(res: ResolutionFull): string {
     .join("\n");
 
   const rejectedSteps = res.steps.filter(s => s.category === "fix" && s.status === "rejected");
+
+  // Infer broader constraint categories from rejected tool names so the AI doesn't
+  // just propose a slightly different variant of the same action class.
+  const restartTools = new Set(["restart_synology_drive_sharesync", "restart_synology_drive_server", "restart_service", "restart_package"]);
+  const anyRestartRejected = rejectedSteps.some(s => restartTools.has(s.tool_name) || s.tool_name.startsWith("restart_"));
+  const inferredConstraints = anyRestartRejected
+    ? "\nINFERRED CONSTRAINT: A restart action was already rejected. Do NOT propose any other restart or service-stop/start action — the user has indicated restarts are not the solution. Move to a fundamentally different approach (e.g., repair, reinstall, config change, manual DSM steps)."
+    : "";
+
   const rejectedSection = rejectedSteps.length > 0
-    ? `\nPREVIOUSLY REJECTED FIXES — DO NOT PROPOSE THESE AGAIN:\n${rejectedSteps.map(s => `- ${s.tool_name} on ${s.target}: ${s.title} (REJECTED BY USER)`).join("\n")}\n`
+    ? `\nPREVIOUSLY REJECTED FIXES — DO NOT PROPOSE THESE AGAIN:\n${rejectedSteps.map(s => `- ${s.tool_name} on ${s.target}: ${s.title} (REJECTED BY USER)`).join("\n")}${inferredConstraints}\n`
     : "";
 
   const userInputs = res.log.filter(e => e.entry_type === "user_input").map(e => e.content);
