@@ -16,7 +16,7 @@ export async function getCustomMetricContext(
 ): Promise<string> {
   const { data: schedules } = await supabase
     .from("smon_custom_metric_schedules")
-    .select("id, name, nas_id, description")
+    .select("id, name, nas_id, description, referenced_count")
     .eq("resolution_id", resolutionId)
     .eq("is_active", true);
 
@@ -33,6 +33,17 @@ export async function getCustomMetricContext(
 
   if (!dataPoints?.length) {
     return "\nCUSTOM METRICS: Collection schedules are active — data will appear within 60 seconds as the NAS agent picks them up.";
+  }
+
+  // Track that these metrics were referenced in analysis (for promotion decisions).
+  // When referenced_count >= 3, this metric is consistently useful and should
+  // be considered for permanent addition to the Go agent's built-in collectors.
+  const referencedIds = schedules
+    .filter((s) => dataPoints.some((d) => d.schedule_id === s.id))
+    .map((s) => s.id);
+
+  if (referencedIds.length) {
+    await supabase.rpc("increment_metric_references", { schedule_ids: referencedIds }).throwOnError();
   }
 
   const sections = schedules

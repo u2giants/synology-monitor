@@ -115,6 +115,10 @@ func (s *Sender) QueueNetConnection(p NetConnectionPayload) {
 	s.queue("smon_net_connections", p)
 }
 
+func (s *Sender) QueueServiceHealth(p ServiceHealthPayload) {
+	s.queue("smon_service_health", p)
+}
+
 func (s *Sender) QueueCustomMetricData(p CustomMetricDataPayload) {
 	s.queue("smon_custom_metric_data", p)
 }

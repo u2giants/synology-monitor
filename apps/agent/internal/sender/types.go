@@ -160,6 +160,14 @@ type SyncTaskSnapshotPayload struct {
 	IndexingQueue    int       `json:"indexing_queue,omitempty"`
 }
 
+// ServiceHealthPayload is a row in smon_service_health
+type ServiceHealthPayload struct {
+	NasID       string    `json:"nas_id"`
+	ServiceName string    `json:"service_name"`
+	Status      string    `json:"status"` // running, stopped, not_found
+	CapturedAt  time.Time `json:"captured_at"`
+}
+
 // CustomMetricDataPayload is a row in smon_custom_metric_data
 type CustomMetricDataPayload struct {
 	ScheduleID string    `json:"schedule_id"`

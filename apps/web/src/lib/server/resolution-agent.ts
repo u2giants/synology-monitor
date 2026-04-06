@@ -48,7 +48,10 @@ async function fetchSystemContext(supabase: SupabaseClient, lookbackHours: numbe
   const lookbackCutoff = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
   const resourceCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
 
-  const [alerts, driveLogs, securityEvents, processSnaps, diskIO, netConns] = await Promise.all([
+  const [
+    alerts, driveLogs, securityEvents, processSnaps, diskIO, netConns,
+    storageSnaps, syncTasks, systemMetrics, containers, serviceHealth,
+  ] = await Promise.all([
     supabase
       .from("smon_alerts")
       .select("severity, status, source, title, message, created_at")
@@ -86,6 +89,37 @@ async function fetchSystemContext(supabase: SupabaseClient, lookbackHours: numbe
       .gte("captured_at", resourceCutoff)
       .order("conn_count", { ascending: false })
       .limit(20),
+    // --- Data that was being collected but NOT fed to the AI until now ---
+    supabase
+      .from("smon_storage_snapshots")
+      .select("nas_id, volume_id, volume_path, total_bytes, used_bytes, status, raid_type, disks, recorded_at")
+      .gte("recorded_at", resourceCutoff)
+      .order("recorded_at", { ascending: false })
+      .limit(10),
+    supabase
+      .from("smon_sync_task_snapshots")
+      .select("nas_id, captured_at, task_id, task_name, status, backlog_count, backlog_bytes, current_file, retry_count, last_error, speed_bps, indexing_queue")
+      .gte("captured_at", resourceCutoff)
+      .order("captured_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("smon_metrics")
+      .select("nas_id, type, value, unit, metadata, recorded_at")
+      .gte("recorded_at", resourceCutoff)
+      .order("recorded_at", { ascending: false })
+      .limit(40),
+    supabase
+      .from("smon_container_status")
+      .select("nas_id, container_name, image, status, cpu_percent, memory_bytes, uptime_seconds, recorded_at")
+      .gte("recorded_at", resourceCutoff)
+      .order("recorded_at", { ascending: false })
+      .limit(20),
+    supabase
+      .from("smon_service_health")
+      .select("nas_id, service_name, status, captured_at")
+      .gte("captured_at", resourceCutoff)
+      .order("captured_at", { ascending: false })
+      .limit(30),
   ]);
 
   return {
@@ -95,6 +129,11 @@ async function fetchSystemContext(supabase: SupabaseClient, lookbackHours: numbe
     top_processes: processSnaps.data ?? [],
     disk_io_stats: diskIO.data ?? [],
     net_connections: netConns.data ?? [],
+    storage_health: storageSnaps.data ?? [],
+    sync_task_status: syncTasks.data ?? [],
+    system_metrics: systemMetrics.data ?? [],
+    container_status: containers.data ?? [],
+    service_health: serviceHealth.data ?? [],
   };
 }
 
@@ -393,13 +432,21 @@ INSTRUCTIONS:
 3. If some diagnostics failed (SSH error, timeout), that itself is useful information — explain what it means.
 4. Clearly separate what you KNOW from what you SUSPECT.
 5. Write the diagnosis_summary for a non-technical business owner. Write the root_cause for a sysadmin.
-6. MISSING DATA: If data exists on the NAS that would help diagnosis but isn't reachable through the available
-   tools, you MUST list it in missing_data_suggestions. For each entry:
-   - If it can be collected via a read-only SSH command: provide collection_command and interval_minutes.
-     The system will automatically start running that command on a schedule and feed results back to you.
-   - If it requires a manual operator action (e.g., enabling a DSM feature, installing a package, turning on
-     verbose logging): describe exactly what to do in manual_action and leave collection_command empty.
-     The operator will be notified to take that action.
+6. MISSING DATA & PERMANENT COLLECTION EXPANSION:
+   The monitoring agent runs inside a Docker container on each NAS with access to /proc, /host/log,
+   /host/volume1, all file shares, and host networking. If data exists on the NAS that would help
+   diagnosis but isn't available in SYSTEM CONTEXT or DIAGNOSTIC RESULTS above, you can PERMANENTLY
+   expand what the agent collects by adding entries to missing_data_suggestions.
+
+   This is NOT a one-time thing — once you request a metric, the agent collects it on schedule forever,
+   across all future diagnoses. Think about what data would be CONSISTENTLY useful for diagnosing
+   NAS issues, not just this specific problem.
+
+   For each entry:
+   - If it can be collected via a read-only shell command (executed inside the container):
+     provide collection_command and interval_minutes. The agent picks it up within 60 seconds.
+   - If it requires a manual operator action (e.g., enabling a DSM feature, installing a package):
+     describe exactly what to do in manual_action and leave collection_command empty.
    Commands MUST be read-only (no rm, mv, dd, mkfs, chmod -R, or any write operation).
 
 Respond ONLY with valid JSON:

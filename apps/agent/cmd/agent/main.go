@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/synology-monitor/agent/internal/collector"
 	"github.com/synology-monitor/agent/internal/config"
@@ -132,6 +133,22 @@ func main() {
 	go func() {
 		defer wg.Done()
 		logW.Run(stop)
+	}()
+
+	// Start service health collector (DSM service status)
+	serviceCollector := collector.NewServiceHealthCollector(s, cfg.NasID, 60*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serviceCollector.Run(stop)
+	}()
+
+	// Start system extras collector (memory pressure, inode usage, thermal)
+	sysExtrasCollector := collector.NewSysExtrasCollector(s, cfg.NasID, 30*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sysExtrasCollector.Run(stop)
 	}()
 
 	// Start custom metric collector (polls smon_custom_metric_schedules for AI-requested collections)
