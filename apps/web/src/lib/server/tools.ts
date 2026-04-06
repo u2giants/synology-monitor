@@ -178,10 +178,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     write: false,
     buildPreview: () => [
       "echo '=== SHARE DATABASE ENUMERATION ==='",
-      "synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
+      "/usr/syno/sbin/synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
       "echo ''",
       "echo '=== SHARE DETAILS (first 10) ==='",
-      `synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; synoshare --get "$name" 2>&1 | head -15; done`,
+      `/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; /usr/syno/sbin/synoshare --get "$name" 2>&1 | head -15; done`,
     ].join("\n"),
   },
   check_drive_package_health: {
@@ -189,11 +189,11 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     write: false,
     buildPreview: () => [
       "echo '=== DRIVE PACKAGE STATUS ==='",
-      "synopkg status SynologyDrive 2>&1",
-      "synopkg status SynologyDriveShareSync 2>&1",
+      "/usr/syno/bin/synopkg status SynologyDrive 2>&1",
+      "/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
       "echo ''",
       "echo '=== DRIVE VERSION ==='",
-      "synopkg version SynologyDrive 2>&1",
+      "/usr/syno/bin/synopkg version SynologyDrive 2>&1",
       "echo ''",
       "echo '=== DRIVE PACKAGE FILES ==='",
       "ls -la /var/packages/SynologyDrive/target/ 2>/dev/null | head -20",

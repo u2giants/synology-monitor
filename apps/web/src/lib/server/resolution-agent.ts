@@ -1287,6 +1287,11 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
       stuck_reason: `Quality review: ${reflection.notes} Issues: ${reflection.quality_issues.join("; ")}. Add more context or manually inspect the NAS.`,
     });
     return;
+  } else if (reflection.recommendation === "gather_more" && diagnosticRoundCount >= MAX_DIAGNOSTIC_ROUNDS) {
+    // Nothing left to gather — treat as proceed so medium-confidence cases still get a fix attempt
+    await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
+      `Quality review suggested more diagnostics but max rounds (${MAX_DIAGNOSTIC_ROUNDS}) reached — proceeding with current evidence.`,
+      reflection.quality_issues.join("; ") || null);
   } else if (reflection.recommendation === "gather_more") {
     await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
       `Quality review: ${reflection.evidence_quality} evidence — requesting additional diagnostics before fix.\n\n${reflection.notes}`,
@@ -1320,8 +1325,11 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
     }
   }
 
-  // If AI wants more diagnostics OR confidence is not high, try to loop back
-  const needsMore = analysis.needs_more_diagnostics || analysis.confidence !== "high";
+  // If AI wants more diagnostics OR confidence is not high enough, try to loop back.
+  // At max rounds, medium confidence is acceptable — better a cautious fix attempt than going stuck.
+  const confidenceBlocksProgress = analysis.confidence === "low" ||
+    (analysis.confidence === "medium" && diagnosticRoundCount < MAX_DIAGNOSTIC_ROUNDS);
+  const needsMore = analysis.needs_more_diagnostics || confidenceBlocksProgress;
 
   if (needsMore) {
     // Deduplicate proposed additional steps by tool_name+target, and filter already-run ones
@@ -1370,11 +1378,29 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
 
     const fullSummary = `${analysis.diagnosis_summary}\n\nRoot cause hypothesis: ${analysis.root_cause}\n\nConfidence: ${analysis.confidence}${potentialNextSteps}`;
 
+    // Build a specific, actionable stuck message rather than a generic one
+    const stuckActionItems: string[] = [];
+    if (analysis.root_cause) {
+      stuckActionItems.push(`Check DSM > Log Center for errors related to: ${analysis.root_cause}`);
+    }
+    if ((analysis.additional_steps ?? []).length > 0) {
+      const firstStep = (analysis.additional_steps as Array<{title?: string; target?: string}>)[0];
+      if (firstStep?.title) stuckActionItems.push(`Consider running manually: ${firstStep.title}${firstStep.target ? ` on ${firstStep.target}` : ""}`);
+    }
+    if ((analysis.missing_data_suggestions ?? []).length > 0) {
+      stuckActionItems.push(`Useful info to provide: ${(analysis.missing_data_suggestions as string[]).slice(0, 2).join("; ")}`);
+    }
+    if (stuckActionItems.length === 0) {
+      stuckActionItems.push("Provide any recent changes, error messages, or DSM notification text you've seen");
+    }
+
+    const stuckReason = `${roundMsg} Confidence: ${analysis.confidence}. Manual steps to try:\n${stuckActionItems.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n\nType a response below to give the agent more context or ask it to try a different approach.`;
+
     await updateResolution(supabase, userId, fresh.resolution.id, {
       phase: "stuck",
       diagnosis_summary: fullSummary,
       root_cause: analysis.root_cause,
-      stuck_reason: `${roundMsg} Confidence: ${analysis.confidence}. Add more context or manually inspect the NAS to help the agent proceed.`,
+      stuck_reason: stuckReason,
     });
     await appendLog(supabase, userId, fresh.resolution.id, "stuck",
       `${roundMsg} Here is what we know:\n\n${fullSummary}`);
@@ -1384,14 +1410,17 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
   // Schedule any useful metric collection the AI identified even when confident
   await processMissingDataSuggestions(supabase, userId, fresh.resolution.id, analysis.missing_data_suggestions);
 
-  // High confidence — proceed to fix proposal
+  // Proceed to fix proposal (high confidence, or medium at max rounds)
+  const confidenceNote = analysis.confidence !== "high"
+    ? ` [Note: proceeding at ${analysis.confidence} confidence after exhausting diagnostic rounds — fix proposal should be conservative and reversible]`
+    : "";
   await updateResolution(supabase, userId, fresh.resolution.id, {
     phase: "proposing_fix",
-    diagnosis_summary: analysis.diagnosis_summary,
+    diagnosis_summary: analysis.diagnosis_summary + confidenceNote,
     root_cause: analysis.root_cause,
   });
   await appendLog(supabase, userId, fresh.resolution.id, "diagnosis",
-    `${analysis.diagnosis_summary}\n\nConfidence: ${analysis.confidence}`,
+    `${analysis.diagnosis_summary}\n\nConfidence: ${analysis.confidence}${confidenceNote}`,
     analysis.root_cause);
 }
 
