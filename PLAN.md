@@ -40,7 +40,7 @@ These observations were verified from:
    Supabase public env vars pointing to the dedicated `qnjimovrsaacneqkggsn`
    project.
 
-### Live database facts (updated 2026-04-05)
+### Live database facts (updated 2026-04-06)
 
 1. `smon_ai_analyses` has live rows and is still being populated.
 2. `smon_analysis_runs` — now receiving rows (RLS policies were added to fix
@@ -52,8 +52,11 @@ These observations were verified from:
    `smon_sync_remediations` that are not defined in the tracked migrations in
    this repo.
 7. `smon_process_snapshots`, `smon_disk_io_stats`, `smon_net_connections`,
-   `smon_sync_task_snapshots` — new resource attribution tables, active and
+   `smon_sync_task_snapshots` — resource attribution tables, active and
    receiving data. Created via `resource-snapshot-migration.sql`.
+8. `smon_service_health` — new; DSM service status snapshots. Migration 00019.
+9. `smon_custom_metric_schedules`, `smon_custom_metric_data` — new; AI-driven
+   dynamic metric collection. Migrations 00018, 00020.
 
 ### Important implication
 
@@ -104,7 +107,7 @@ The system must support:
 1. Grouped analysis over many related alerts/logs
 2. Pattern detection across repeated sync failures
 3. Correlation across NASes
-4. A single “analyze this cluster” or “analyze all current sync issues” flow
+4. A single "analyze this cluster" or "analyze all current sync issues" flow
 
 ### Problem 3: Sync Triage is a raw log dump
 
@@ -122,8 +125,8 @@ Sync Triage must provide:
 
 ### Problem 4: AI Insights is unclear
 
-The page currently implies “No AI analyses yet” unless rows load. But in
-production `smon_ai_analyses` already has rows, and the page’s purpose is not
+The page currently implies "No AI analyses yet" unless rows load. But in
+production `smon_ai_analyses` already has rows, and the page's purpose is not
 explained clearly enough.
 
 This page must clearly represent:
@@ -134,14 +137,14 @@ This page must clearly represent:
 4. The latest successful scheduled run time
 5. Whether the scheduled pipeline is healthy
 
-### Problem 5: Active Alerts and Sync Triage don’t match
+### Problem 5: Active Alerts and Sync Triage don't match
 
 Overview and Sync Triage use different datasets:
 
 1. Overview active alerts use `smon_alerts`
 2. Sync Triage uses filtered `smon_logs`
 
-This is why “View All Alerts” lands on a page with different items.
+This is why "View All Alerts" lands on a page with different items.
 
 The app needs a consistent mapping:
 
@@ -161,6 +164,54 @@ persists results correctly.
 Added three new agent collectors (process, diskstats, connections) and four new
 Supabase tables. The Copilot now automatically includes this data in every
 response without needing an SSH tool call. See `AGENTS.md` for schema details.
+
+### Problem 9: AI cannot diagnose Synology Drive/ShareSync failures — **FIXED**
+
+The AI was saying "the decisive logs are missing" and acting as a passive
+passenger. Root causes identified and fixed:
+
+1. **Wrong log files** — added synowebapi.log, synoshare.log, synostorage.log,
+   kern.log, synoservice.log, synoinfo.log to the logwatcher
+2. **Missing DSM API integrations** — added GetShares(), GetInstalledPackages(),
+   GetRecentSystemLogs() to the DSM client and ShareHealthCollector
+3. **No targeted diagnostic tools** — added check_io_stalls, check_share_database,
+   check_drive_package_health, check_kernel_io_errors, search_webapi_log,
+   check_drive_database, search_all_logs, check_filesystem_health
+4. **No Synology error pattern knowledge** — added KNOWN SYNOLOGY ERROR PATTERNS
+   section to both planningPrompt and analysisPrompt
+5. **SSH banner treated as normal** — now flagged as a symptom
+6. **AI didn't know it could expand collection** — prompts now explain the
+   missing_data_suggestions mechanism explicitly
+7. **AI acted passive** — SAFETY_PREAMBLE rewritten as "YOU ARE THE DRIVER"
+8. **Infinite diagnostic loop** — MAX_DIAGNOSTIC_ROUNDS = 3 prevents cycling
+9. **"undefined (undefined): undefined" bug** — null/undefined steps filtered
+   before display in stuck message
+10. **Second opinion JSON failures** — callSecondOpinion() rewritten with
+    dedicated JSON enforcement (system message + prompt instruction + regex
+    fallback)
+
+### Problem 10: No visibility into DSM service health — **FIXED**
+
+Added `ServiceHealthCollector` (services.go) polling 12 key DSM services every
+60 seconds, plus OOM kill / segfault detection from dmesg. All results go to
+`smon_service_health` and `smon_logs` source `kernel_health`.
+
+### Problem 11: Missing memory pressure, inode, and temperature data — **FIXED**
+
+Added `SysExtrasCollector` (sysextras.go) polling every 30 seconds for:
+- Memory pressure (MemAvailable%, SwapUsed%, Dirty+Writeback KB)
+- Inode usage (df -i /volume1)
+- CPU temperature (/sys/class/thermal/thermal_zone*/temp)
+
+### Problem 12: AI cannot permanently expand what the agent collects — **FIXED**
+
+Added the dynamic metric collection system:
+- AI specifies missing_data_suggestions in analysis response
+- processMissingDataSuggestions() creates smon_custom_metric_schedules rows
+- CustomCollector (custom.go) polls schedules every 60s, runs commands natively
+- Results in smon_custom_metric_data, injected into future analyses
+- referenced_count tracks how often each metric is used; >= 3 = promote to
+  built-in collector
 
 ### Problem 7: Analyze with Copilot opens Copilot without context
 
@@ -188,16 +239,6 @@ whitespace. Analysis runs are now persisted correctly.
 The analysis tables are now populated. UI wiring improvements (Problems 1–5,
 7) from the original plan remain as future work.
 
-Files:
-
-1. `apps/web/src/app/(dashboard)/page.tsx`
-2. `apps/web/src/app/(dashboard)/sync-triage/page.tsx`
-3. `apps/web/src/app/api/analysis/route.ts`
-4. `apps/web/src/lib/server/copilot.ts`
-5. `apps/web/src/app/api/copilot/problem-prompt/route.ts`
-
-The tables now have rows in production.
-
 ### Root cause C: the alert pipeline stores only counts, not explanation
 
 The older SQL-based AI pipeline inserts alerts with generic summary text and a
@@ -222,7 +263,7 @@ Pipeline 1:
 Pipeline 2:
 
 1. application route `/api/analysis`
-2. uses Minimax
+2. uses google/gemini-2.5-flash
 3. writes `smon_analysis_runs`
 4. writes `smon_analyzed_problems`
 
@@ -237,7 +278,16 @@ The UI currently jumps between:
 3. analyzed problems
 4. Copilot sessions
 
-without one stable “issue” record that everything points to.
+without one stable "issue" record that everything points to.
+
+### Root cause F: AI acted as passive passenger — **FIXED**
+
+The AI's SAFETY_PREAMBLE has been rewritten. The AI now:
+- Is told explicitly it is "THE DRIVER, NOT A PASSENGER"
+- Knows the escalation ladder: search_all_logs → specific tool → add collection_command → ask operator
+- Knows it can ask about service interruption timing
+- Has pre-loaded knowledge of Synology-specific error patterns
+- Has 8 new targeted diagnostic tools to use before giving up
 
 ## Design Direction
 
@@ -272,7 +322,7 @@ Use `smon_analysis_runs` and `smon_analyzed_problems` for:
 
 1. grouping recent alerts/logs by root cause
 2. generating plain-English issue summaries
-3. driving dashboard “Diagnosed Problems”
+3. driving dashboard "Diagnosed Problems"
 4. driving Sync Triage AI summaries
 5. launching Copilot with structured issue context
 
@@ -285,7 +335,7 @@ Create one shared server-side path that can build Copilot input from:
 1. analyzed problem IDs
 2. alert IDs
 3. lists of raw log IDs
-4. ad hoc grouped filters such as “all current sync issues”
+4. ad hoc grouped filters such as "all current sync issues"
 
 The result should be a structured object with:
 
@@ -320,76 +370,12 @@ Examples:
 
 The work should be done in the order below.
 
-### Phase 1: repair the broken analysis pipeline
+### Phase 1: repair the broken analysis pipeline — **COMPLETE**
 
-This is the highest priority.
-
-#### 1. Harden Minimax response parsing
-
-Files:
-
-1. `apps/web/src/lib/server/minimax.ts`
-2. `apps/web/src/lib/server/log-analyzer.ts`
-
-Tasks:
-
-1. Add a sanitizer that can extract the first valid JSON object from Minimax
-   output even if the response includes:
-   1. `<think>...</think>`
-   2. markdown fences
-   3. leading prose
-2. Preserve the raw response for logging on failure.
-3. Return a structured error reason when parsing fails.
-4. Log enough context to diagnose malformed completions without leaking secrets.
-
-Acceptance criteria:
-
-1. A live Minimax response with `<think>` content is parsed successfully.
-2. `POST /api/analysis` can create a row in `smon_analysis_runs`.
-3. Related rows appear in `smon_analyzed_problems`.
-
-#### 2. Make the analysis API return actionable failure information
-
-File:
-
-`apps/web/src/app/api/analysis/route.ts`
-
-Tasks:
-
-1. Distinguish:
-   1. no events found
-   2. upstream Minimax failure
-   3. parse failure
-   4. DB insert failure
-2. Return a structured error payload.
-3. Include a short user-safe message for the UI.
-4. Add optional debug fields only when running server-side logs.
-
-Acceptance criteria:
-
-1. The UI can tell the difference between “nothing to analyze” and “analysis
-   failed.”
-2. The button no longer silently spins and ends with nothing.
-
-#### 3. Improve analysis run persistence
-
-File:
-
-`apps/web/src/lib/server/log-analyzer.ts`
-
-Tasks:
-
-1. Store failure diagnostics if the Minimax call fails or the response is
-   malformed.
-2. Consider adding an optional `status` / `error_message` field to
-   `smon_analysis_runs` in a new migration if useful.
-3. Ensure the run is not discarded silently.
-
-Acceptance criteria:
-
-1. Operators can inspect why the last run failed.
-2. The UI can display “last analysis failed” instead of pretending nothing
-   happened.
+✅ Analysis pipeline repaired (RLS fix, token limit fix)
+✅ Second opinion model JSON enforcement
+✅ Infinite loop prevention (MAX_DIAGNOSTIC_ROUNDS)
+✅ Null step filtering in stuck message
 
 ### Phase 2: make alerts understandable
 
@@ -412,31 +398,18 @@ Tasks:
    `drive_server` / `drive_sharesync` rows near the alert window.
 3. Generate a layman explanation.
 4. Show:
-   1. “what happened”
-   2. “why we think it happened”
-   3. “what to do next”
+   1. "what happened"
+   2. "why we think it happened"
+   3. "what to do next"
 5. Preserve access to raw details for engineers.
 
 Known live sync cases to support:
 
 1. `edgesynology2` repeated `share-service.cpp(30): Failed to SYNOShareGet()`
 2. `edgesynology2` `service-ctrl.cpp.o(406): error when reading st (st) :stoi`
-3. `edgesynology2` references to `/volume1/@synologydrive/@sync` “no such
-   share”
+3. `edgesynology2` references to `/volume1/@synologydrive/@sync` "no such
+   share"
 4. `edgesynology1` repeated thumbnail / Exiv2 read failures
-
-These should render in human terms, for example:
-
-1. NAS 2’s Synology Drive sync service appears misconfigured or missing an
-   internal sync-share path, so the service repeatedly fails to start cleanly.
-2. NAS 1 hit image-thumbnail parsing errors while processing files, which may
-   indicate corrupted image metadata or unreadable temporary files rather than a
-   full system-wide sync outage.
-
-Acceptance criteria:
-
-1. Opening a sync-error alert no longer shows only `{"error_count":N}`.
-2. The top explanation is readable by a non-technical user.
 
 ### Phase 3: unify alert-to-Copilot handoff
 
@@ -446,7 +419,7 @@ Files:
 
 1. `apps/web/src/app/(dashboard)/assistant/page.tsx`
 2. `apps/web/src/app/api/copilot/problem-prompt/route.ts`
-3. `apps/web/src/lib/server/copilot.ts`
+3. `apps/web/src/lib/server/resolution-agent.ts`
 4. possibly a renamed route like `api/copilot/context-prompt/route.ts`
 
 Tasks:
@@ -462,35 +435,9 @@ Tasks:
 4. If a row is missing, show a clear error inside the chat UI instead of just
    navigating with no context.
 
-Acceptance criteria:
-
-1. Clicking from an alert sends the actual alert context.
-2. Clicking from a diagnosed problem sends the full problem bundle.
-3. Clicking from triage can send several related logs at once.
-
-#### 6. Auto-create a new chat when launching from a new issue context
-
-Files:
-
-1. `apps/web/src/app/(dashboard)/assistant/page.tsx`
-2. `apps/web/src/app/api/copilot/chat/route.ts`
-3. possibly `copilot-store.ts`
-
-Tasks:
-
-1. If the user launches Copilot from an issue, start a fresh issue-scoped chat
-   by default.
-2. Seed the first user message automatically.
-3. Make the chat title reflect the issue.
-
-Acceptance criteria:
-
-1. The user no longer lands in an unrelated previous chat.
-2. The first message already contains the issue description.
-
 ### Phase 4: enable grouped multi-error analysis
 
-#### 7. Add “analyze all current sync issues” flow
+#### 7. Add "analyze all current sync issues" flow
 
 Files:
 
@@ -509,29 +456,6 @@ Tasks:
 3. Persist the resulting grouped problems.
 4. Make the grouped result visible before going into Copilot.
 
-Acceptance criteria:
-
-1. The user can analyze multiple errors in one action.
-2. The output highlights patterns across repeated failures.
-
-#### 8. Add issue clustering independent of scheduled alerts
-
-Problem:
-
-If the analysis layer depends too heavily on preexisting alerts, it can miss
-useful clusters in raw log data.
-
-Tasks:
-
-1. Let the on-demand analysis include raw `smon_logs` even when corresponding
-   alert rows are absent.
-2. Prefer root-cause grouping over alert-count reporting.
-
-Acceptance criteria:
-
-1. A cluster can be built from repeated log errors alone.
-2. The grouped result references the underlying rows.
-
 ### Phase 5: repair Sync Triage UX
 
 #### 9. Make AI analysis first-class in Sync Triage
@@ -548,35 +472,6 @@ Tasks:
    1. Analyze current filtered rows
    2. Send filtered rows to Copilot
    3. Show root-cause summary
-
-Acceptance criteria:
-
-1. The page is not just a log dump.
-2. The user can get English summaries without manually deciphering log lines.
-
-#### 10. Make “View All Alerts” consistent
-
-Files:
-
-1. `apps/web/src/components/dashboard/alert-list.tsx`
-2. `apps/web/src/app/(dashboard)/page.tsx`
-3. `apps/web/src/app/(dashboard)/sync-triage/page.tsx`
-4. maybe a dedicated alerts page if needed
-
-Tasks:
-
-1. Decide whether “View All Alerts” should go to:
-   1. a true alerts page using `smon_alerts`, or
-   2. Sync Triage filtered to the exact alert source selection
-2. If using Sync Triage, pass filters explicitly.
-3. Ensure the receiving page states that it is showing:
-   1. raw alert records, or
-   2. logs underlying those alerts
-
-Acceptance criteria:
-
-1. The destination content matches the link label.
-2. The user no longer feels that the app switched to a different problem list.
 
 ### Phase 6: clarify AI Insights
 
@@ -596,12 +491,7 @@ Tasks:
    3. whether the pipeline is healthy
 3. If no rows exist, explain why.
 4. If rows exist but the page cannot load them, show an error state instead of
-   a misleading “No AI analyses yet.”
-
-Acceptance criteria:
-
-1. The purpose of the page is obvious.
-2. Empty-state messaging is accurate.
+   a misleading "No AI analyses yet."
 
 ### Phase 7: data-model cleanup
 
@@ -622,43 +512,20 @@ Tasks:
    1. stop referencing them in UI logic
    2. optionally deprecate them later
 
-Acceptance criteria:
-
-1. The repo matches the live schema it depends on.
-2. Production behavior is not governed by undocumented tables/functions.
-
-#### 13. Decide whether generic “Sync Errors Detected” SQL alerts should stay
-
-Current issue:
-
-These alerts are too thin to be useful.
-
-Possible options:
-
-1. Keep them but enrich them on read
-2. Replace them with richer grouped problem records
-3. Keep them only as trigger signals, not as the main user-facing cards
-
-Recommended direction:
-
-1. Keep them as raw signal rows
-2. Present grouped issue records in the UI instead of raw count alerts
-
 ## Concrete Code Changes Expected
 
 This section lists the likely code touchpoints.
 
 ### High-confidence files to modify
 
-1. `apps/web/src/lib/server/minimax.ts`
-2. `apps/web/src/lib/server/log-analyzer.ts`
-3. `apps/web/src/app/api/analysis/route.ts`
-4. `apps/web/src/app/(dashboard)/page.tsx`
-5. `apps/web/src/app/(dashboard)/sync-triage/page.tsx`
-6. `apps/web/src/app/(dashboard)/ai-insights/page.tsx`
-7. `apps/web/src/app/(dashboard)/assistant/page.tsx`
-8. `apps/web/src/lib/server/copilot.ts`
-9. `apps/web/src/components/dashboard/alert-list.tsx`
+1. `apps/web/src/lib/server/log-analyzer.ts`
+2. `apps/web/src/app/api/analysis/route.ts`
+3. `apps/web/src/app/(dashboard)/page.tsx`
+4. `apps/web/src/app/(dashboard)/sync-triage/page.tsx`
+5. `apps/web/src/app/(dashboard)/ai-insights/page.tsx`
+6. `apps/web/src/app/(dashboard)/assistant/page.tsx`
+7. `apps/web/src/lib/server/resolution-agent.ts`
+8. `apps/web/src/components/dashboard/alert-list.tsx`
 
 ### Possible new files
 
@@ -689,7 +556,7 @@ For each alert shown in the UI:
 
 ### B. Analysis button requirements
 
-When the user clicks “Run Analysis Now”:
+When the user clicks "Run Analysis Now":
 
 1. show immediate activity state
 2. report success or failure explicitly
@@ -732,13 +599,13 @@ The page must say clearly:
 
 Add tests for:
 
-1. Minimax response sanitization
-2. JSON extraction from `<think>` + fenced output
-3. alert explanation mapping for known sync failure patterns
-4. prompt generation for:
+1. JSON extraction from second opinion model prose responses
+2. alert explanation mapping for known sync failure patterns
+3. prompt generation for:
    1. problem context
    2. alert context
    3. multi-log context
+4. missing_data_suggestions → schedule row creation
 
 ### Integration checks
 
@@ -750,6 +617,7 @@ Verify:
 2. dashboard loads those problems
 3. Sync Triage loads and filters grouped sync problems
 4. assistant auto-seeds a chat from problem/alert context
+5. custom metric schedules are picked up by the CustomCollector within 60s
 
 ### Live data checks
 
@@ -769,24 +637,29 @@ Do not spend time on these before the core issue flow works:
 2. broad refactors unrelated to analysis / triage / Copilot wiring
 3. replacing the scheduled SQL AI pipeline entirely
 4. changing NAS agent telemetry collection unless needed for missing context
+   (note: the agent now has 13 collectors and dynamic metric collection — the
+   collection layer is now very comprehensive)
 
 ## Recommended Execution Order For The Coding Pass
 
-1. Fix Minimax output parsing.
-2. Make `/api/analysis` persist runs and failures.
-3. Verify rows appear in `smon_analysis_runs` and `smon_analyzed_problems`.
-4. Make dashboard and Sync Triage show those rows clearly.
-5. Replace problem-only Copilot handoff with generic context handoff.
-6. Add alert-context prompt generation.
-7. Add grouped multi-error analysis and “send filtered set to Copilot”.
-8. Clarify AI Insights as scheduled background analysis.
-9. Reconcile undocumented live tables or document why they remain external.
+1. ~~Fix analysis pipeline~~ ✅ Done
+2. ~~Verify rows appear in `smon_analysis_runs`~~ ✅ Done
+3. ~~Add diagnostic tools and log sources~~ ✅ Done (8 new tools, 6 new log sources)
+4. ~~Add service health, memory pressure, inode, temperature collection~~ ✅ Done
+5. ~~Add dynamic metric collection~~ ✅ Done
+6. ~~Fix infinite loop and second opinion JSON~~ ✅ Done
+7. Make dashboard and Sync Triage show analysis rows clearly
+8. Replace problem-only Copilot handoff with generic context handoff
+9. Add alert-context prompt generation
+10. Add grouped multi-error analysis and "send filtered set to Copilot"
+11. Clarify AI Insights as scheduled background analysis
+12. Reconcile undocumented live tables or document why they remain external
 
 ## Definition Of Done
 
 This work is done only when all of the following are true:
 
-1. `Run Analysis Now` creates a visible, persisted analysis result.
+1. `Run Analysis Now` creates a visible, persisted analysis result. ✅
 2. The dashboard shows grouped human-readable issues instead of only vague raw
    alerts.
 3. Clicking into a sync-error issue explains the actual likely problem in plain
@@ -797,6 +670,9 @@ This work is done only when all of the following are true:
 7. AI Insights accurately reflects the scheduled background pipeline.
 8. Navigation between alerts, triage, grouped problems, and Copilot is
    consistent and understandable.
+9. The resolution agent successfully diagnoses Drive/ShareSync failures without
+   saying "I don't have access to X". ✅ (in progress — new tools + data
+   available; real-world validation pending)
 
 ## Final Instruction To The Implementing Model
 
@@ -804,7 +680,7 @@ Do not patch around symptoms one page at a time.
 
 Implement the issue flow end to end:
 
-1. reliable grouped analysis persistence
+1. reliable grouped analysis persistence ✅
 2. understandable alert explanation
 3. consistent issue-to-Copilot context passing
 4. clear separation between scheduled AI insights and on-demand incident

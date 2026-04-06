@@ -11,13 +11,13 @@ Read these files first, in order:
 4. `deploy/synology/.env.agent.example` — all env vars with defaults
 5. `apps/agent/internal/config/config.go` — config validation logic
 
-## Current Live State (as of 2026-04-05)
+## Current Live State (as of 2026-04-06)
 
 ### Both NAS units are running the current image
 
-- Image: `ghcr.io/u2giants/synology-monitor-agent:latest` (`sha256:7b74054b`)
-- All seven collectors are active (see startup logs below)
-- All four resource attribution tables are receiving data
+- Image: `ghcr.io/u2giants/synology-monitor-agent:latest`
+- All thirteen collectors are active (see startup logs below)
+- All data tables are receiving data
 
 **edgesynology1** (`popdam@100.107.131.35:22`)
 - NAS ID: `4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001`
@@ -27,7 +27,7 @@ Read these files first, in order:
 - NAS ID: `9dbd4646-5f4e-4fa0-8f44-1d0dbe6f1002`
 - Container: `synology-monitor-agent`, status: running
 
-Expected startup log output (all seven collectors should appear):
+Expected startup log output (all thirteen collectors should appear):
 ```
 [docker] collector started (interval: 30s)
 [system] collector started (interval: 30s)
@@ -37,6 +37,10 @@ Expected startup log output (all seven collectors should appear):
 [connections] collector started (interval: 30s)
 [storage] collector started (interval: 1m0s)
 [logwatcher] started (interval: 10s, dir: /host/log)
+[share-health] started (every 2m0s)
+[service-health] started (every 1m0s)
+[sys-extras] started (every 30s)
+[custom-collector] started (polling every 60s)
 [security] watcher started
 Agent running for NAS: edgesynology1 (4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001)
 ```
@@ -140,6 +144,20 @@ be empty until this changes. This is expected and not a bug.
 The first collection pass stores baseline values only (no rows written to Supabase).
 Data starts appearing after the second tick (~15–30s after startup).
 
+### 9. Custom metric collector uses NAS_NAME, not NAS_ID
+
+The `CustomCollector` polls `smon_custom_metric_schedules` using the `NAS_NAME`
+environment variable (e.g. `edgesynology1`) as the `nas_id` filter — NOT the UUID.
+This allows the web app's resolution agent to target schedules by name without
+needing to manage UUIDs.
+
+### 10. SSH banner output is a diagnostic symptom
+
+When SSH returns a banner (Synology EULA, legal notice, etc.) and no further output,
+the resolution agent now treats this as a symptom — not normal output — and tries
+alternative diagnostic approaches. Don't mistake banner-only output for a working
+command response.
+
 ## Recommended Debugging Workflow
 
 ```sh
@@ -149,8 +167,8 @@ DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 $DOCKER inspect synology-monitor-agent --format "{{.Image}}"
 $DOCKER images ghcr.io/u2giants/synology-monitor-agent
 
-# 2. Check startup logs (all collectors should appear)
-$DOCKER logs synology-monitor-agent 2>&1 | head -30
+# 2. Check startup logs (all thirteen collectors should appear)
+$DOCKER logs synology-monitor-agent 2>&1 | head -40
 
 # 3. Validate compose config renders correctly
 cd /volume1/docker/synology-monitor-agent
@@ -164,7 +182,9 @@ $DOCKER inspect synology-monitor-agent
 SELECT
   (SELECT COUNT(*) FROM smon_process_snapshots WHERE captured_at > now() - interval '5 min') AS process_rows,
   (SELECT COUNT(*) FROM smon_disk_io_stats      WHERE captured_at > now() - interval '5 min') AS disk_rows,
-  (SELECT COUNT(*) FROM smon_net_connections    WHERE captured_at > now() - interval '5 min') AS conn_rows;
+  (SELECT COUNT(*) FROM smon_net_connections    WHERE captured_at > now() - interval '5 min') AS conn_rows,
+  (SELECT COUNT(*) FROM smon_service_health     WHERE captured_at > now() - interval '5 min') AS service_rows,
+  (SELECT COUNT(*) FROM smon_custom_metric_data WHERE captured_at > now() - interval '5 min') AS custom_rows;
 ```
 
 ## What Has Changed Over Time (Brief History)
@@ -189,6 +209,43 @@ SELECT
    Created four new Supabase tables via `resource-snapshot-migration.sql`
    Updated both NAS `.env` files from SHA-pinned tag to `AGENT_IMAGE_TAG=latest`
 
+6. **Drive/ShareSync diagnosis overhaul (April 2026)** — major expansion to fix the AI's
+   inability to diagnose Synology Drive/ShareSync failures:
+
+   **New log sources in logwatcher** (added to `defaultLogFiles`):
+   - `synolog/synowebapi.log` → source `webapi` — **"Failed to SYNOShareGet" lives here**
+   - `synolog/synostorage.log` → source `storage` — share/volume management
+   - `synolog/synoshare.log` → source `share` — share database operations
+   - `kern.log` → source `kernel` — I/O stalls, SCSI/ATA errors
+   - `synolog/synoinfo.log` → source `system_info` — DSM config changes
+   - `synolog/synoservice.log` → source `service` — service start/stop/crash
+
+   **New DSM API integrations** (added to `dsm/client.go`):
+   - `GetShares()` via `SYNO.Core.Share`
+   - `GetInstalledPackages()` via `SYNO.Core.Package`
+   - `GetRecentSystemLogs(limit)` via `SYNO.Core.SyslogClient.Log`
+
+   **New collectors**:
+   - `sharehealth.go` — share DB health, package status, structured DSM logs (2m interval)
+   - `services.go` — DSM service status for 12 key services + kernel OOM/segfault detection (60s)
+   - `sysextras.go` — memory pressure, inode usage, CPU temperature (30s)
+   - `custom.go` — AI-requested custom metric collection (60s poll of Supabase)
+
+   **New Supabase tables** (migrations 00018, 00019, 00020):
+   - `smon_custom_metric_schedules` — AI-requested collection schedules
+   - `smon_custom_metric_data` — results of custom metric collections
+   - `smon_service_health` — DSM service status snapshots
+   - `referenced_count` column in schedules — tracks how often each metric is used
+
+   **Resolution agent overhaul**:
+   - AI personality rewritten as "THE DRIVER" (not a passive passenger)
+   - Three-model architecture (diagnosis + remediation + second opinion)
+   - MAX_DIAGNOSTIC_ROUNDS = 3 to prevent infinite loops
+   - 8 new diagnostic tools for share DB, kernel I/O, Drive database, etc.
+   - Dynamic metric collection: AI can permanently expand what the agent collects
+   - Timing awareness: AI asks if now is a good time before interrupting services
+   - Admin version banner showing build SHA + date
+
 ## Things to Watch Out For
 
 - Keep `WATCH_PATHS` and `CHECKSUM_PATHS` aligned with actual mounted share paths in `.env`
@@ -196,3 +253,5 @@ SELECT
 - The healthcheck only verifies `/app/data/wal.db` exists — healthy ≠ data flowing
 - `smon_process_snapshots`, `smon_disk_io_stats`, and `smon_net_connections` have no automated cleanup — they will grow indefinitely without a retention job (see `resource-snapshot-migration.sql` comments)
 - If you see the agent writing to Supabase but the web app shows no new data, check RLS policies — all tables need both `authenticated` SELECT and `service_role` INSERT policies
+- The `CustomCollector` uses `NAS_NAME` (human-readable string) not `NAS_ID` (UUID) to filter schedules
+- The second opinion model (`anthropic/claude-sonnet-4`) requires special JSON enforcement — it ignores `response_format` and needs an explicit system message + prompt instruction to return valid JSON

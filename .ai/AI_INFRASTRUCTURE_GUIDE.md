@@ -132,6 +132,7 @@ ssh coolify "docker exec g5j115bwrn8125ev6ap1tjrv psql -U twenty -d twenty -c 'S
 ### Synology Monitor — mon.designflow.app
 
 AI-powered NAS monitoring dashboard. App runs in Docker on the VPS. All data in Supabase.
+NAS agents run as Docker containers on each Synology unit, connected via Tailscale.
 
 **MCPs:** `coolify-server` (logs/env) + `supabase` (database)
 **Container:** `lrddgp8im0276gllujfu7wm3-010449503799`
@@ -142,7 +143,7 @@ ssh coolify "docker logs lrddgp8im0276gllujfu7wm3-010449503799 --tail 100"
 ssh coolify "docker exec lrddgp8im0276gllujfu7wm3-010449503799 env"
 ```
 
-Key env vars: `NEXT_PUBLIC_SUPABASE_URL` (https://qnjimovrsaacneqkggsn.supabase.co), `NAS_EDGE1_HOST`, `NAS_EDGE2_HOST`, `CRON_SECRET`
+Key env vars: `NEXT_PUBLIC_SUPABASE_URL` (https://qnjimovrsaacneqkggsn.supabase.co), `NAS_EDGE1_HOST`, `NAS_EDGE2_HOST`, `CRON_SECRET`, `OPENROUTER_API_KEY`, `COPILOT_ACTION_SIGNING_KEY`
 
 **Database via `supabase` MCP:**
 ```
@@ -150,6 +151,24 @@ list_tables(project_id="qnjimovrsaacneqkggsn")
 execute_sql(project_id="qnjimovrsaacneqkggsn", query="SELECT * FROM ...")
 get_logs(project_id="qnjimovrsaacneqkggsn", service="api")
 ```
+
+**NAS agents (Tailscale SSH):**
+- edgesynology1: `popdam@100.107.131.35:22`
+- edgesynology2: `popdam@100.107.131.36:1904`
+- Docker binary: `/var/packages/ContainerManager/target/usr/bin/docker`
+- Agent container dir: `/volume1/docker/synology-monitor-agent/`
+
+**AI architecture (three-model via OpenRouter):**
+- `google/gemini-2.5-flash` — diagnosis / planning
+- `openai/gpt-5.4` — remediation / fix proposals
+- `anthropic/claude-sonnet-4` — second opinion / confidence check
+
+**Key tables for debugging:**
+- `smon_logs` — all NAS log events (17+ sources including webapi, kernel, share_health)
+- `smon_service_health` — DSM service status (Drive, ShareSync, smbd, etc.)
+- `smon_custom_metric_schedules` — AI-requested dynamic metric collections
+- `smon_custom_metric_data` — results of those collections
+- `smon_issue_resolutions` — resolution agent state machine state
 
 ---
 
