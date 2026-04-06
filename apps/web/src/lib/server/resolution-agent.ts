@@ -401,11 +401,26 @@ ${JSON.stringify(context, null, 1).slice(0, 30000)}
 AVAILABLE DIAGNOSTIC TOOLS (all are read-only):
 ${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
 
+KNOWN SYNOLOGY ERROR PATTERNS (search for these when relevant):
+- "Failed to SYNOShareGet" / "share_db_get.c" → share database corruption → use check_share_database and search_webapi_log
+- "WebAPI SYNO.SynologyDrive.* is not valid" → Drive package registration broken → use check_drive_package_health
+- "error when reading st :stoi" / "service-ctrl.cpp" → service control binary crash → use search_all_logs with filter "stoi"
+- Processes in 'D' state (uninterruptible sleep) → I/O stalls, disk problems → use check_kernel_io_errors and check_filesystem_health
+- "sqlite3.*corrupt" / "database disk image is malformed" → Drive DB corruption → use check_drive_database
+- ShareSync log empty or returns only SSH banner → service may be unable to start → use check_drive_package_health
+
+IMPORTANT: If a diagnostic tool returns only an SSH banner/MOTD with no actual command output, that is a
+symptom (the command failed to execute), NOT a normal result. Report it and try an alternative approach.
+
 INSTRUCTIONS:
 1. If the issue could affect BOTH NAS units, check BOTH. Don't assume only one is affected.
 2. If multiple error types are reported, they may share a root cause. Plan diagnostics that can distinguish.
 3. Be thorough. If unsure, add more diagnostic steps. We will have time for multiple rounds.
 4. Propose 3-8 diagnostic steps. It's OK to propose more if the issue is complex.
+5. For Drive/ShareSync issues, ALWAYS include: check_share_database, check_drive_package_health,
+   search_webapi_log, and check_kernel_io_errors. These are the logs where the root cause lives.
+6. If the issue description mentions specific error messages, use search_all_logs to find EXACTLY
+   where those messages appear, how often, and when they started.
 
 Respond ONLY with valid JSON:
 {
@@ -447,10 +462,19 @@ ${customMetrics}
 AVAILABLE DIAGNOSTIC TOOLS (if you need more information):
 ${Object.entries(TOOL_DEFINITIONS).filter(([,t]) => !t.write).map(([name, t]) => `- ${name}: ${t.description}`).join("\n")}
 
+KNOWN SYNOLOGY ERROR PATTERNS (use to interpret results):
+- "Failed to SYNOShareGet" / "share_db_get.c" → share database corruption or inaccessible
+- "WebAPI SYNO.SynologyDrive.* is not valid" → Drive package not properly registered with DSM WebAPI layer
+- "error when reading st :stoi" / "service-ctrl.cpp" → service control binary crash parsing a non-numeric value
+- Processes stuck in 'D' state → uninterruptible I/O wait, likely disk/RAID/filesystem issue
+- If a command returned only an SSH banner with no output → command failed to run, tool path may be wrong, or service can't start
+
 INSTRUCTIONS:
 1. Look at ALL the evidence together. Multiple symptoms may have the SAME root cause.
-2. If your confidence is "medium" or "low", you MUST request more diagnostics. Do not guess.
-3. If some diagnostics failed (SSH error, timeout), that itself is useful information — explain what it means.
+2. If your confidence is "medium" or "low", request MORE diagnostics with the new tools available to you:
+   check_share_database, check_drive_package_health, check_kernel_io_errors, search_webapi_log,
+   check_drive_database, search_all_logs, check_filesystem_health.
+3. If some diagnostics failed (SSH error, timeout, empty output), that itself is useful information — explain what it means.
 4. Clearly separate what you KNOW from what you SUSPECT.
 5. Write the diagnosis_summary for a non-technical business owner. Write the root_cause for a sysadmin.
 6. MISSING DATA & PERMANENT COLLECTION EXPANSION:
@@ -821,8 +845,10 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
       ? `After ${diagnosticRoundCount} diagnostic rounds the agent could not reach high confidence.`
       : `No new diagnostic steps available.`;
 
-    const potentialNextSteps = (analysis.additional_steps ?? []).length
-      ? `\n\nPotential next steps suggested by AI (not yet run):\n${analysis.additional_steps!.map(s => `• ${s.title} (${s.target}): ${s.reason}`).join("\n")}`
+    // Filter out malformed steps (AI sometimes returns objects with null/undefined fields)
+    const validNextSteps = (analysis.additional_steps ?? []).filter(s => s.title && s.target);
+    const potentialNextSteps = validNextSteps.length
+      ? `\n\nPotential next steps suggested by AI (not yet run):\n${validNextSteps.map(s => `• ${s.title} (${s.target}): ${s.reason || "no reason given"}`).join("\n")}`
       : "";
 
     const fullSummary = `${analysis.diagnosis_summary}\n\nRoot cause hypothesis: ${analysis.root_cause}\n\nConfidence: ${analysis.confidence}${potentialNextSteps}`;

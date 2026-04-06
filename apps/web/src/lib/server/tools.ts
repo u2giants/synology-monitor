@@ -22,6 +22,7 @@ export type CopilotToolName =
   | "remove_invalid_chars"
   | "trigger_sharesync_resync"
   // --- New diagnostics for share/sync issues ---
+  | "check_io_stalls"
   | "check_share_database"
   | "check_drive_package_health"
   | "check_kernel_io_errors"
@@ -150,6 +151,27 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
   },
 
   // === New diagnostic tools for share/sync issues ===
+
+  check_io_stalls: {
+    description: "Read-only. Check for processes stuck in D-state (uninterruptible sleep), I/O wait percentage, disk queue depths, and hung tasks. Detects I/O contention that causes cascading service failures.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== PROCESSES IN D-STATE (I/O WAIT) ==='",
+      "ps aux | awk '$8 ~ /D/ {print}' | head -30 || echo 'No D-state processes'",
+      "echo ''",
+      "echo '=== I/O WAIT CPU PERCENTAGE ==='",
+      "top -b -n2 -d1 2>/dev/null | grep -i 'cpu' | tail -1 || vmstat 1 2 | tail -1",
+      "echo ''",
+      "echo '=== DISK QUEUE DEPTH & LATENCY ==='",
+      "cat /proc/diskstats | awk '{if ($4+$8>0) printf \"%-8s reads:%-8d writes:%-8d in_progress:%-4d\\n\", $3, $4, $8, $12}' | grep -E 'sd|md|dm'",
+      "echo ''",
+      "echo '=== HUNG TASK WARNINGS (kernel) ==='",
+      "dmesg -T 2>/dev/null | grep -i 'blocked for more than\\|hung_task\\|INFO: task' | tail -20 || dmesg | grep -i 'blocked\\|hung' | tail -20 || echo 'No hung task warnings'",
+      "echo ''",
+      "echo '=== TOP I/O CONSUMERS ==='",
+      "iotop -b -o -n1 -P 2>/dev/null | head -20 || echo 'iotop not available'",
+    ].join("\n"),
+  },
 
   check_share_database: {
     description: "Read-only. Enumerate all shared folders from the DSM share database (synoshare). Shows share names, paths, and configuration. Failures here indicate a corrupted share database.",
