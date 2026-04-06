@@ -1362,53 +1362,59 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
       }
     }
 
-    // Auto-schedule any missing data the AI identified (before forcing stuck)
+    // Auto-schedule any missing data the AI identified
     await processMissingDataSuggestions(supabase, userId, fresh.resolution.id, analysis.missing_data_suggestions);
 
-    // Cannot gather more evidence — force a conclusion with everything we know
-    const roundMsg = diagnosticRoundCount >= MAX_DIAGNOSTIC_ROUNDS
-      ? `After ${diagnosticRoundCount} diagnostic rounds the agent could not reach high confidence.`
-      : `No new diagnostic steps available.`;
+    // Cannot gather more evidence. If confidence is medium, proceed to a cautious fix
+    // rather than going stuck — doing nothing is worse than a conservative attempt.
+    if (analysis.confidence !== "low") {
+      await safeAppendLog(supabase, userId, fresh.resolution.id, "analysis",
+        `No new diagnostic steps available after ${diagnosticRoundCount} round(s). Proceeding to fix at ${analysis.confidence} confidence with conservative approach.`);
+      // Fall through to the fix proposal path below
+    } else {
+      // Low confidence — genuinely stuck, need user input
+      const roundMsg = diagnosticRoundCount >= MAX_DIAGNOSTIC_ROUNDS
+        ? `After ${diagnosticRoundCount} diagnostic rounds the agent could not reach sufficient confidence.`
+        : `No new diagnostic steps available.`;
 
-    // Filter out malformed steps (AI sometimes returns objects with null/undefined fields)
-    const validNextSteps = (analysis.additional_steps ?? []).filter(s => s.title && s.target);
-    const potentialNextSteps = validNextSteps.length
-      ? `\n\nPotential next steps suggested by AI (not yet run):\n${validNextSteps.map(s => `• ${s.title} (${s.target}): ${s.reason || "no reason given"}`).join("\n")}`
-      : "";
+      const validNextSteps = (analysis.additional_steps ?? []).filter(s => s.title && s.target);
+      const potentialNextSteps = validNextSteps.length
+        ? `\n\nPotential next steps suggested by AI (not yet run):\n${validNextSteps.map(s => `• ${s.title} (${s.target}): ${s.reason || "no reason given"}`).join("\n")}`
+        : "";
 
-    const fullSummary = `${analysis.diagnosis_summary}\n\nRoot cause hypothesis: ${analysis.root_cause}\n\nConfidence: ${analysis.confidence}${potentialNextSteps}`;
+      const fullSummary = `${analysis.diagnosis_summary}\n\nRoot cause hypothesis: ${analysis.root_cause}\n\nConfidence: ${analysis.confidence}${potentialNextSteps}`;
 
-    // Build a specific, actionable stuck message rather than a generic one
-    const stuckActionItems: string[] = [];
-    if (analysis.root_cause) {
-      stuckActionItems.push(`Check DSM > Log Center for errors related to: ${analysis.root_cause}`);
+      const stuckActionItems: string[] = [];
+      if (analysis.root_cause) {
+        stuckActionItems.push(`Check DSM > Log Center for errors related to: ${analysis.root_cause}`);
+      }
+      if ((analysis.additional_steps ?? []).length > 0) {
+        const firstStep = (analysis.additional_steps as Array<{title?: string; target?: string}>)[0];
+        if (firstStep?.title) stuckActionItems.push(`Consider running manually: ${firstStep.title}${firstStep.target ? ` on ${firstStep.target}` : ""}`);
+      }
+      if ((analysis.missing_data_suggestions ?? []).length > 0) {
+        const suggestions = (analysis.missing_data_suggestions ?? [])
+          .slice(0, 2)
+          .map((s: unknown) => (typeof s === "string" ? s : (s as { why_needed?: string; description?: string })?.why_needed ?? (s as { description?: string })?.description ?? ""))
+          .filter(Boolean);
+        if (suggestions.length > 0) stuckActionItems.push(`Useful info to provide: ${suggestions.join("; ")}`);
+      }
+      if (stuckActionItems.length === 0) {
+        stuckActionItems.push("Provide any recent changes, error messages, or DSM notification text you've seen");
+      }
+
+      const stuckReason = `${roundMsg} Confidence: ${analysis.confidence}. Manual steps to try:\n${stuckActionItems.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n\nType a response below to give the agent more context or ask it to try a different approach.`;
+
+      await updateResolution(supabase, userId, fresh.resolution.id, {
+        phase: "stuck",
+        diagnosis_summary: fullSummary,
+        root_cause: analysis.root_cause,
+        stuck_reason: stuckReason,
+      });
+      await appendLog(supabase, userId, fresh.resolution.id, "stuck",
+        `${roundMsg} Here is what we know:\n\n${fullSummary}`);
+      return;
     }
-    if ((analysis.additional_steps ?? []).length > 0) {
-      const firstStep = (analysis.additional_steps as Array<{title?: string; target?: string}>)[0];
-      if (firstStep?.title) stuckActionItems.push(`Consider running manually: ${firstStep.title}${firstStep.target ? ` on ${firstStep.target}` : ""}`);
-    }
-    if ((analysis.missing_data_suggestions ?? []).length > 0) {
-      const suggestions = (analysis.missing_data_suggestions ?? [])
-        .slice(0, 2)
-        .map((s: unknown) => (typeof s === "string" ? s : (s as { why_needed?: string; description?: string })?.why_needed ?? (s as { description?: string })?.description ?? ""))
-        .filter(Boolean);
-      if (suggestions.length > 0) stuckActionItems.push(`Useful info to provide: ${suggestions.join("; ")}`);
-    }
-    if (stuckActionItems.length === 0) {
-      stuckActionItems.push("Provide any recent changes, error messages, or DSM notification text you've seen");
-    }
-
-    const stuckReason = `${roundMsg} Confidence: ${analysis.confidence}. Manual steps to try:\n${stuckActionItems.map((a, i) => `${i + 1}. ${a}`).join("\n")}\n\nType a response below to give the agent more context or ask it to try a different approach.`;
-
-    await updateResolution(supabase, userId, fresh.resolution.id, {
-      phase: "stuck",
-      diagnosis_summary: fullSummary,
-      root_cause: analysis.root_cause,
-      stuck_reason: stuckReason,
-    });
-    await appendLog(supabase, userId, fresh.resolution.id, "stuck",
-      `${roundMsg} Here is what we know:\n\n${fullSummary}`);
-    return;
   }
 
   // Schedule any useful metric collection the AI identified even when confident
