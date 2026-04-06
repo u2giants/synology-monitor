@@ -90,7 +90,7 @@ export async function GET() {
     return NextResponse.json({
       models: Array.from(CURATED_IDS)
         .map((id) => ({ id, name: id }))
-        .sort((a, b) => a.localeCompare(b)),
+        .sort((a, b) => a.id.localeCompare(b.id)),
       warning: err instanceof Error ? err.message : "Could not reach OpenRouter",
     });
   }
