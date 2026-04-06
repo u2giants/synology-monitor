@@ -1,17 +1,17 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { Check, Loader2 } from "lucide-react";
+import { Check, Loader2, Clock } from "lucide-react";
 
 const PHASES = [
-  { key: "planning", label: "Plan" },
-  { key: "diagnosing", label: "Diagnose" },
-  { key: "analyzing", label: "Analyze" },
-  { key: "proposing_fix", label: "Propose Fix" },
-  { key: "awaiting_fix_approval", label: "Review Fix" },
-  { key: "applying_fix", label: "Apply" },
-  { key: "verifying", label: "Verify" },
-  { key: "resolved", label: "Resolved" },
+  { key: "planning", label: "Plan", waitForUser: false },
+  { key: "diagnosing", label: "Diagnose", waitForUser: false },
+  { key: "analyzing", label: "Analyze", waitForUser: false },
+  { key: "proposing_fix", label: "Propose Fix", waitForUser: false },
+  { key: "awaiting_fix_approval", label: "Review Fix", waitForUser: true },
+  { key: "applying_fix", label: "Apply", waitForUser: false },
+  { key: "verifying", label: "Verify", waitForUser: false },
+  { key: "resolved", label: "Resolved", waitForUser: false },
 ];
 
 const PHASE_ORDER = Object.fromEntries(PHASES.map((p, i) => [p.key, i]));
@@ -42,12 +42,15 @@ export function PhaseStepper({ currentPhase }: { currentPhase: string }) {
               className={cn(
                 "flex items-center gap-1 rounded-full px-2 py-1 text-xs whitespace-nowrap",
                 isDone && "bg-primary/10 text-primary",
-                isCurrent && "bg-primary text-primary-foreground",
+                isCurrent && phase.waitForUser && "bg-warning/20 text-warning border border-warning/40",
+                isCurrent && !phase.waitForUser && "bg-primary text-primary-foreground",
                 !isDone && !isCurrent && "bg-muted text-muted-foreground"
               )}
             >
               {isDone ? (
                 <Check className="h-3 w-3" />
+              ) : isCurrent && phase.waitForUser ? (
+                <Clock className="h-3 w-3" />
               ) : isCurrent ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : null}

@@ -191,6 +191,22 @@ export async function updateResolution(
   if (error) throw new Error(`Failed to update resolution: ${error.message}`);
 }
 
+export async function deleteResolution(
+  supabase: SupabaseClient,
+  userId: string,
+  resolutionId: string
+) {
+  // Delete child rows first (steps and log), then the resolution
+  await supabase.from("smon_resolution_steps").delete().eq("resolution_id", resolutionId);
+  await supabase.from("smon_resolution_log").delete().eq("resolution_id", resolutionId);
+  const { error } = await supabase
+    .from("smon_issue_resolutions")
+    .delete()
+    .eq("id", resolutionId)
+    .eq("user_id", userId);
+  if (error) throw new Error(`Failed to delete resolution: ${error.message}`);
+}
+
 // --- Steps ---
 
 export interface StepInput {

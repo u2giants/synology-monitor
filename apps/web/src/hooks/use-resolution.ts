@@ -270,6 +270,20 @@ export function useResolution() {
     }
   }, [current, stopPolling]);
 
+  const deleteResolution = useCallback(async (resolutionId: string) => {
+    try {
+      await fetch(`/api/resolution/${resolutionId}`, { method: "DELETE" });
+      setResolutions((prev) => prev.filter((r) => r.id !== resolutionId));
+      if (currentIdRef.current === resolutionId) {
+        stopPolling();
+        setCurrent(null);
+        currentIdRef.current = null;
+      }
+    } catch {
+      // ignore
+    }
+  }, [stopPolling]);
+
   const toggleAutoApprove = useCallback(async (value: boolean) => {
     if (!current) return;
     try {
@@ -298,5 +312,6 @@ export function useResolution() {
     sendMessage,
     cancelResolution,
     toggleAutoApprove,
+    deleteResolution,
   };
 }

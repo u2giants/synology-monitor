@@ -12,6 +12,7 @@ import {
   Send,
   ToggleLeft,
   ToggleRight,
+  Trash2,
 } from "lucide-react";
 import { cn, timeAgo } from "@/lib/utils";
 import {
@@ -46,6 +47,7 @@ export default function AssistantPage() {
     sendMessage,
     cancelResolution,
     toggleAutoApprove,
+    deleteResolution,
   } = useResolution();
 
   const [newTitle, setNewTitle] = useState("");
@@ -201,6 +203,10 @@ export default function AssistantPage() {
                     onClick={() => {
                       loadResolution(r.id);
                       router.replace(`/assistant?resolutionId=${r.id}`);
+                    }}
+                    onDelete={() => {
+                      deleteResolution(r.id);
+                      router.replace("/assistant");
                     }}
                   />
                 ))}
@@ -392,40 +398,51 @@ function ResolutionListItem({
   resolution,
   active,
   onClick,
+  onDelete,
 }: {
   resolution: Resolution;
   active: boolean;
   onClick: () => void;
+  onDelete: () => void;
 }) {
   const phase = resolution.phase;
   const isTerminal = phase === "resolved" || phase === "cancelled";
 
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "w-full rounded-lg border px-3 py-2 text-left transition-colors",
-        active
-          ? "border-primary bg-primary/5"
-          : "border-border bg-background hover:bg-muted/40",
-        isTerminal && "opacity-60"
-      )}
-    >
-      <div className="flex items-center gap-1.5">
-        {phase === "resolved" ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
-        ) : phase === "stuck" ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-critical shrink-0" />
-        ) : phase === "cancelled" ? (
-          <XCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        ) : (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
-        )}
-        <span className="text-sm font-medium truncate">{resolution.title}</span>
-      </div>
-      <div className="text-[11px] text-muted-foreground mt-1">
-        {phase} · {timeAgo(resolution.updated_at)}
-      </div>
-    </button>
+    <div className={cn(
+      "group relative rounded-lg border transition-colors",
+      active
+        ? "border-primary bg-primary/5"
+        : "border-border bg-background hover:bg-muted/40",
+      isTerminal && "opacity-60"
+    )}>
+      <button
+        onClick={onClick}
+        className="w-full px-3 py-2 text-left"
+      >
+        <div className="flex items-center gap-1.5 pr-5">
+          {phase === "resolved" ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
+          ) : phase === "stuck" ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-critical shrink-0" />
+          ) : phase === "cancelled" ? (
+            <XCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          ) : (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
+          )}
+          <span className="text-sm font-medium truncate">{resolution.title}</span>
+        </div>
+        <div className="text-[11px] text-muted-foreground mt-1">
+          {phase} · {timeAgo(resolution.updated_at)}
+        </div>
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onDelete(); }}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-critical transition-opacity"
+        title="Delete issue"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }

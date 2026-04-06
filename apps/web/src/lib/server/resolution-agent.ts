@@ -883,10 +883,12 @@ async function handleProposingFix(
   userId: string,
   state: ResolutionFull
 ): Promise<void> {
-  // Guard: if fix steps already exist, skip (race condition protection)
+  // Guard: if there are already PENDING (not yet run) fix steps, skip creating new ones.
+  // Do NOT skip if all existing fix steps are completed/failed — that means a prior round
+  // already ran and we need to create fresh fix steps for this new round.
   const existingFix = state.steps.filter(s => s.category === "fix");
-  if (existingFix.length > 0) {
-    // Steps already created — just transition
+  const hasPendingFix = existingFix.some(s => s.status === "planned" || s.status === "approved");
+  if (hasPendingFix) {
     await updateResolution(supabase, userId, state.resolution.id, { phase: "awaiting_fix_approval" });
     return;
   }

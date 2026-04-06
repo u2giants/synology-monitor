@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { loadResolution, listResolutions, updateResolution } from "@/lib/server/resolution-store";
+import { loadResolution, listResolutions, updateResolution, deleteResolution } from "@/lib/server/resolution-store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +24,23 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Load failed." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+
+    const { id } = await params;
+    await deleteResolution(supabase, user.id, id);
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Delete failed." },
       { status: 500 }
     );
   }
