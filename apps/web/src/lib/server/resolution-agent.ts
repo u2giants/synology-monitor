@@ -36,6 +36,38 @@ import OpenAI from "openai";
 // --- Tick lock: prevent concurrent ticks on the same resolution ---
 const activeTicks = new Set<string>();
 
+// --- AI call health tracking (in-memory, resets on server restart) ---
+const aiCallStats = {
+  total: 0,
+  success: 0,
+  parseError: 0,
+  timeout: 0,
+  modelError: 0,
+  lastErrors: [] as { model: string; error: string; ts: number }[],
+};
+function trackAICall(ok: boolean, model: string, error?: string) {
+  aiCallStats.total++;
+  if (ok) { aiCallStats.success++; return; }
+  const errLower = (error ?? "").toLowerCase();
+  if (errLower.includes("timeout") || errLower.includes("timed out")) aiCallStats.timeout++;
+  else if (errLower.includes("parse") || errLower.includes("json")) aiCallStats.parseError++;
+  else aiCallStats.modelError++;
+  aiCallStats.lastErrors.push({ model, error: (error ?? "unknown").slice(0, 200), ts: Date.now() });
+  if (aiCallStats.lastErrors.length > 20) aiCallStats.lastErrors.shift();
+}
+function getAIHealthSummary(): string {
+  if (aiCallStats.total === 0) return "No AI calls tracked yet (server may have just restarted).";
+  const pct = Math.round(100 * aiCallStats.success / aiCallStats.total);
+  let summary = `AI calls: ${aiCallStats.total} total, ${pct}% success, ${aiCallStats.parseError} parse errors, ${aiCallStats.timeout} timeouts, ${aiCallStats.modelError} model errors.`;
+  if (aiCallStats.lastErrors.length > 0) {
+    const recent = aiCallStats.lastErrors.slice(-5).map(e =>
+      `  - ${new Date(e.ts).toISOString()} ${e.model}: ${e.error}`
+    ).join("\n");
+    summary += `\nRecent errors:\n${recent}`;
+  }
+  return summary;
+}
+
 // --- OpenRouter client ---
 
 function getOpenAIClient() {
@@ -228,16 +260,23 @@ async function callModel<T>(prompt: string, modelOverride?: string): Promise<T> 
   const client = getOpenAIClient();
   const model = modelOverride ?? await getRemediationModel();
 
-  const response = await client.chat.completions.create({
-    model,
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
-    max_tokens: 8000,
-  });
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      max_tokens: 8000,
+    });
 
-  const text = response.choices?.[0]?.message?.content ?? "";
-  const cleaned = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
-  return JSON.parse(cleaned) as T;
+    const text = response.choices?.[0]?.message?.content ?? "";
+    const cleaned = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+    const result = JSON.parse(cleaned) as T;
+    trackAICall(true, model);
+    return result;
+  } catch (err) {
+    trackAICall(false, model, err instanceof Error ? err.message : "unknown");
+    throw err;
+  }
 }
 
 /** Call the primary remediation model */
@@ -255,28 +294,41 @@ async function callSecondOpinion<T>(prompt: string): Promise<T> {
 
 IMPORTANT: Your ENTIRE response must be valid JSON. Start your response with { and end with }. Do NOT include any explanation, preamble, or markdown fences outside the JSON object.`;
 
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: "system", content: "You respond only with valid JSON objects. Never include explanation or prose outside the JSON." },
-      { role: "user", content: jsonPrompt },
-    ],
-    response_format: { type: "json_object" },
-    max_tokens: 8000,
-  });
+  let text = "";
+  try {
+    const response = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: "You respond only with valid JSON objects. Never include explanation or prose outside the JSON." },
+        { role: "user", content: jsonPrompt },
+      ],
+      response_format: { type: "json_object" },
+      max_tokens: 8000,
+    });
 
-  const text = response.choices?.[0]?.message?.content ?? "";
+    text = response.choices?.[0]?.message?.content ?? "";
+  } catch (err) {
+    trackAICall(false, model, err instanceof Error ? err.message : "unknown");
+    throw err;
+  }
 
   // Try direct parse
   const cleaned = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
   try {
-    return JSON.parse(cleaned) as T;
+    const result = JSON.parse(cleaned) as T;
+    trackAICall(true, model);
+    return result;
   } catch {
     // Try to extract the first {...} block from prose
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
-      return JSON.parse(match[0]) as T;
+      try {
+        const result = JSON.parse(match[0]) as T;
+        trackAICall(true, model);
+        return result;
+      } catch { /* fall through */ }
     }
+    trackAICall(false, model, `JSON parse: "${text.slice(0, 120)}"`);
     throw new Error(`Second opinion model returned non-JSON: "${text.slice(0, 120)}"`);
   }
 }
@@ -394,6 +446,67 @@ async function detectStalls(
   return false;
 }
 
+// --- DB state consistency checks (no AI needed, catches impossible states) ---
+
+/**
+ * Checks for impossible DB states that are always software bugs.
+ * Returns a list of anomalies found. Cheap to run — no AI calls, just DB reads.
+ */
+function checkStateConsistency(state: ResolutionFull): string[] {
+  const issues: string[] = [];
+  const { resolution, steps } = state;
+
+  // awaiting_fix_approval with no pending fix steps → nothing to approve
+  if (resolution.phase === "awaiting_fix_approval") {
+    const pendingFix = steps.filter(s => s.category === "fix" && (s.status === "planned" || s.status === "approved"));
+    if (pendingFix.length === 0) {
+      issues.push(`INCONSISTENT: Phase is "awaiting_fix_approval" but 0 fix steps are planned/approved. Fix steps: ${steps.filter(s => s.category === "fix").map(s => `${s.title}[${s.status}]`).join(", ") || "none"}`);
+    }
+  }
+
+  // diagnosing with no actionable diagnostic steps
+  if (resolution.phase === "diagnosing") {
+    const actionable = steps.filter(s => s.category === "diagnostic" && ["planned", "approved", "running"].includes(s.status));
+    if (actionable.length === 0) {
+      issues.push(`INCONSISTENT: Phase is "diagnosing" but 0 diagnostic steps are planned/approved/running.`);
+    }
+  }
+
+  // applying_fix with all fix steps already done
+  if (resolution.phase === "applying_fix") {
+    const approvedFix = steps.filter(s => s.category === "fix" && s.status === "approved");
+    if (approvedFix.length === 0) {
+      const allDone = steps.filter(s => s.category === "fix").every(s =>
+        ["completed", "failed", "rejected", "skipped"].includes(s.status));
+      if (allDone) {
+        issues.push(`INCONSISTENT: Phase is "applying_fix" but all fix steps are already terminal (${steps.filter(s => s.category === "fix").map(s => s.status).join(", ")}).`);
+      }
+    }
+  }
+
+  // verifying with no verification steps at all
+  if (resolution.phase === "verifying") {
+    const verifySteps = steps.filter(s => s.category === "verification");
+    if (verifySteps.length === 0) {
+      issues.push(`INCONSISTENT: Phase is "verifying" but 0 verification steps exist.`);
+    } else {
+      const active = verifySteps.filter(s => ["planned", "approved", "running"].includes(s.status));
+      if (active.length === 0) {
+        issues.push(`INCONSISTENT: Phase is "verifying" but all verification steps are already terminal.`);
+      }
+    }
+  }
+
+  // step marked running with no started_at
+  for (const step of steps) {
+    if (step.status === "running" && !step.started_at) {
+      issues.push(`INCONSISTENT: Step "${step.title}" is "running" but started_at is null.`);
+    }
+  }
+
+  return issues;
+}
+
 // --- Reflection / quality gate ---
 
 function reflectionPrompt(res: ResolutionFull, currentConfidence: string): string {
@@ -471,8 +584,8 @@ interface SoftwareBugReviewResponse {
 }
 
 /**
- * Reads the phase handler source + failed tool definitions, then asks an AI
- * whether the behavior described in the resolution log looks like a software bug.
+ * Code-aware incident review. Reads source code, checks cross-resolution patterns,
+ * and evaluates AI call health to determine if a stuck resolution is a software bug.
  *
  * OUTPUT ONLY — never modifies code or state. Creates a log entry and a
  * dashboard alert so a developer can investigate. Runs fire-and-forget.
@@ -484,12 +597,12 @@ async function reviewOwnBehavior(
 ): Promise<void> {
   try {
     const cwd = process.cwd();
+    const srcBase = join(cwd, "src/lib/server");
 
-    // Read phase handler source (the state machine logic)
+    // --- 1. Source code: phase handlers, store, minimax, failed tools ---
     let agentSource = "";
     try {
-      const raw = await readFile(join(cwd, "src/lib/server/resolution-agent.ts"), "utf-8");
-      // Extract from phase handlers onward — skip prompts and context fetching
+      const raw = await readFile(join(srcBase, "resolution-agent.ts"), "utf-8");
       const handlerStart = raw.indexOf("// --- Phase handlers ---");
       const handlerEnd = raw.indexOf("// --- Main tick function ---");
       if (handlerStart !== -1 && handlerEnd !== -1) {
@@ -497,9 +610,20 @@ async function reviewOwnBehavior(
       } else {
         agentSource = raw.slice(0, 15000);
       }
-    } catch { /* source unavailable — review will be less precise */ }
+    } catch { /* source unavailable */ }
 
-    // Read tool definitions for tools that failed
+    let storeSource = "";
+    try {
+      const raw = await readFile(join(srcBase, "resolution-store.ts"), "utf-8");
+      storeSource = raw.slice(0, 8000);
+    } catch { /* source unavailable */ }
+
+    let minimaxSource = "";
+    try {
+      const raw = await readFile(join(srcBase, "minimax.ts"), "utf-8");
+      minimaxSource = raw.slice(0, 5000);
+    } catch { /* source unavailable */ }
+
     let toolSource = "";
     const failedToolNames = [...new Set(
       state.steps
@@ -508,19 +632,71 @@ async function reviewOwnBehavior(
     )];
     if (failedToolNames.length > 0) {
       try {
-        const raw = await readFile(join(cwd, "src/lib/server/tools.ts"), "utf-8");
-        // Extract the definition block for each failed tool (up to 3 tools)
+        const raw = await readFile(join(srcBase, "tools.ts"), "utf-8");
         const excerpts: string[] = [];
         for (const toolName of failedToolNames.slice(0, 3)) {
           const idx = raw.indexOf(`${toolName}:`);
-          if (idx !== -1) {
-            excerpts.push(raw.slice(Math.max(0, idx - 20), idx + 1200));
-          }
+          if (idx !== -1) excerpts.push(raw.slice(Math.max(0, idx - 20), idx + 1200));
         }
         toolSource = excerpts.join("\n\n---\n\n");
       } catch { /* tools source unavailable */ }
     }
 
+    // Read relevant API route if the phase suggests an API-level issue
+    let apiRouteSource = "";
+    const phaseRouteMap: Record<string, string> = {
+      awaiting_fix_approval: "approve/route.ts",
+      planning: "message/route.ts",
+    };
+    const routeFile = phaseRouteMap[state.resolution.phase];
+    if (routeFile) {
+      try {
+        apiRouteSource = await readFile(join(cwd, `src/app/api/resolution/${routeFile}`), "utf-8");
+      } catch { /* route unavailable */ }
+    }
+
+    // --- 2. Cross-resolution pattern detection ---
+    let patternSection = "";
+    try {
+      const { data: recentStuck } = await supabase
+        .from("smon_issue_resolutions")
+        .select("id, title, phase, stuck_reason, updated_at")
+        .eq("user_id", userId)
+        .eq("phase", "stuck")
+        .gte("updated_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+        .order("updated_at", { ascending: false })
+        .limit(10);
+
+      if (recentStuck && recentStuck.length > 1) {
+        // Group by stuck_reason prefix (first 80 chars) to detect repetition
+        const reasonCounts = new Map<string, number>();
+        for (const r of recentStuck) {
+          const key = (r.stuck_reason ?? "").slice(0, 80);
+          reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
+        }
+        const repeats = [...reasonCounts.entries()].filter(([, c]) => c >= 2);
+
+        patternSection = `\nCROSS-RESOLUTION PATTERNS (last 7 days, ${recentStuck.length} stuck resolutions):\n`;
+        patternSection += recentStuck.map(r =>
+          `- "${r.title}" stuck at: ${(r.stuck_reason ?? "unknown").slice(0, 120)} (${r.updated_at})`
+        ).join("\n");
+        if (repeats.length > 0) {
+          patternSection += `\n\n⚠️ REPEATED STUCK REASONS (strong signal for software bug):\n`;
+          patternSection += repeats.map(([reason, count]) => `- "${reason}..." appeared ${count} times`).join("\n");
+        }
+      }
+    } catch { /* pattern detection failed — continue without */ }
+
+    // --- 3. AI call health stats ---
+    const aiHealth = getAIHealthSummary();
+
+    // --- 4. DB consistency issues already detected ---
+    const consistencyIssues = checkStateConsistency(state);
+    const consistencySection = consistencyIssues.length > 0
+      ? `\nDB STATE INCONSISTENCIES DETECTED:\n${consistencyIssues.map(i => `- ${i}`).join("\n")}`
+      : "";
+
+    // --- Build prompt ---
     const logSummary = state.log
       .slice(-40)
       .map(e => `[${e.entry_type}] ${e.content.slice(0, 400)}`)
@@ -547,15 +723,25 @@ ${logSummary}
 
 ALL STEPS (category | tool | status | output excerpt):
 ${stepSummary}
+${consistencySection}
+${patternSection}
 
-${agentSource ? `PHASE HANDLER SOURCE CODE:\n\`\`\`typescript\n${agentSource}\n\`\`\`` : ""}
-${toolSource ? `FAILED TOOL DEFINITIONS:\n\`\`\`typescript\n${toolSource}\n\`\`\`` : ""}
+AI CALL HEALTH:
+${aiHealth}
+${agentSource ? `\nPHASE HANDLER SOURCE CODE (resolution-agent.ts):\n\`\`\`typescript\n${agentSource}\n\`\`\`` : ""}
+${storeSource ? `\nDB STORE SOURCE CODE (resolution-store.ts):\n\`\`\`typescript\n${storeSource}\n\`\`\`` : ""}
+${minimaxSource ? `\nAI CALL LAYER (minimax.ts):\n\`\`\`typescript\n${minimaxSource}\n\`\`\`` : ""}
+${toolSource ? `\nFAILED TOOL DEFINITIONS (tools.ts):\n\`\`\`typescript\n${toolSource}\n\`\`\`` : ""}
+${apiRouteSource ? `\nRELEVANT API ROUTE:\n\`\`\`typescript\n${apiRouteSource}\n\`\`\`` : ""}
 
 QUESTIONS TO ANSWER:
 1. Does the sequence of phase transitions, step statuses, and log entries make sense for a correctly functioning agent? Or does something look wrong?
 2. Are there any steps that returned empty output, SSH banners, or clearly wrong data that the agent treated as valid?
 3. Does any phase transition happen at a point it shouldn't (e.g., entering awaiting_fix_approval with no actual fix steps waiting)?
 4. If source code is available: does the code logic match the observed behavior, or is there a guard condition, loop, or timeout that would cause the observed problem?
+5. Do the DB queries in resolution-store.ts have correct filters? Could a missing .eq() or wrong status filter cause the observed state?
+6. Is the AI call layer (minimax.ts) handling errors and truncation correctly? Could a parse failure be silently swallowed?
+7. If multiple resolutions are stuck with similar reasons, that is almost certainly a software bug — a one-off could be a NAS problem, a pattern cannot.
 
 Respond ONLY with valid JSON — no explanations outside the JSON:
 {
@@ -563,7 +749,7 @@ Respond ONLY with valid JSON — no explanations outside the JSON:
   "confidence": "medium",
   "behavior_observed": "What the log shows happening",
   "expected_behavior": "What should have happened if the software was working correctly",
-  "suspected_component": "e.g. handleProposingFix guard condition, check_drive_database shell command, tick loop",
+  "suspected_component": "e.g. handleProposingFix guard condition, check_drive_database shell command, minimax JSON parsing, approveSteps DB filter",
   "suggested_fix_for_developer": "Plain English description of what a developer should investigate and change — NO code, just what and where",
   "alert_title": "Short title for a developer dashboard alert (max 80 chars)"
 }
@@ -572,11 +758,11 @@ If this looks like a genuine NAS problem (not a software bug), set likely_softwa
 
     const review = await callSecondOpinion<SoftwareBugReviewResponse>(prompt);
 
-    if (!review.likely_software_bug) return; // Genuine NAS problem, not a software issue
+    if (!review.likely_software_bug) return;
 
     // Log the finding in the resolution activity
     await appendLog(supabase, userId, state.resolution.id, "software_issue",
-      `⚠️ **Possible software bug detected** (${review.confidence} confidence)\n\n` +
+      `**Possible software bug detected** (${review.confidence} confidence)\n\n` +
       `**Observed:** ${review.behavior_observed}\n\n` +
       `**Expected:** ${review.expected_behavior}\n\n` +
       `**Suspected component:** ${review.suspected_component}\n\n` +
@@ -902,6 +1088,7 @@ async function handlePlanning(
     "You are a Synology NAS diagnostic planner. Respond ONLY with valid JSON.",
     planningPrompt(state, context)
   );
+  trackAICall(!!fastPlan, "diagnosis-model", fastError ?? undefined);
 
   if (fastPlan && fastPlan.steps?.length >= 2) {
     plan = fastPlan;
@@ -1400,6 +1587,7 @@ export async function tick(
   }
 
   activeTicks.add(resolutionId);
+  let phaseBefore = "stuck"; // default to "stuck" so we don't fire review on error paths
 
   try {
     const state = await loadResolution(supabase, userId, resolutionId);
@@ -1409,7 +1597,26 @@ export async function tick(
     const stalled = await detectStalls(supabase, userId, state);
     if (stalled) return loadResolution(supabase, userId, resolutionId);
 
-    const phaseBefore = state.resolution.phase;
+    // DB state consistency: catch impossible states that are always software bugs
+    const inconsistencies = checkStateConsistency(state);
+    if (inconsistencies.length > 0) {
+      for (const issue of inconsistencies) {
+        await appendLog(supabase, userId, resolutionId, "software_issue", issue);
+      }
+      // Force to stuck — the state machine is in an invalid state
+      await updateResolution(supabase, userId, resolutionId, {
+        phase: "stuck",
+        stuck_reason: `Internal state inconsistency detected: ${inconsistencies[0]}. This is likely a software bug — an alert will be created.`,
+      });
+      // Return so the stuck → reviewOwnBehavior flow fires
+      const updated = await loadResolution(supabase, userId, resolutionId);
+      if (updated) {
+        reviewOwnBehavior(supabase, userId, updated).catch(() => {});
+      }
+      return updated;
+    }
+
+    phaseBefore = state.resolution.phase;
     const { phase } = state.resolution;
 
     switch (phase) {
