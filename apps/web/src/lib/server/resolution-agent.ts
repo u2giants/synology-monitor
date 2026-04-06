@@ -1388,7 +1388,11 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
       if (firstStep?.title) stuckActionItems.push(`Consider running manually: ${firstStep.title}${firstStep.target ? ` on ${firstStep.target}` : ""}`);
     }
     if ((analysis.missing_data_suggestions ?? []).length > 0) {
-      stuckActionItems.push(`Useful info to provide: ${(analysis.missing_data_suggestions as string[]).slice(0, 2).join("; ")}`);
+      const suggestions = (analysis.missing_data_suggestions ?? [])
+        .slice(0, 2)
+        .map((s: unknown) => (typeof s === "string" ? s : (s as { why_needed?: string; description?: string })?.why_needed ?? (s as { description?: string })?.description ?? ""))
+        .filter(Boolean);
+      if (suggestions.length > 0) stuckActionItems.push(`Useful info to provide: ${suggestions.join("; ")}`);
     }
     if (stuckActionItems.length === 0) {
       stuckActionItems.push("Provide any recent changes, error messages, or DSM notification text you've seen");
