@@ -3,6 +3,7 @@
 export const dynamic = "force-dynamic";
 
 import { Sidebar } from "@/components/dashboard/sidebar";
+import { VersionBanner } from "@/components/dashboard/version-banner";
 
 export default function DashboardLayout({
   children,
@@ -12,6 +13,7 @@ export default function DashboardLayout({
   return (
     <div className="flex min-h-screen">
       <Sidebar />
+      <VersionBanner />
       <main className="flex-1 ml-64 p-6">
         {children}
       </main>
