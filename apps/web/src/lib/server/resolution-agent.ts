@@ -391,6 +391,18 @@ async function executeStep(step: ResolutionStep): Promise<{ ok: boolean; stdout:
   }
 }
 
+/** appendLog that never throws — informational entries must never block phase transitions. */
+async function safeAppendLog(
+  supabase: SupabaseClient, userId: string, resolutionId: string,
+  entryType: string, content: string, technicalDetail?: string | null
+) {
+  try {
+    await appendLog(supabase, userId, resolutionId, entryType, content, technicalDetail);
+  } catch (err) {
+    console.error(`[safeAppendLog] Failed to write entry_type="${entryType}": ${err instanceof Error ? err.message : err}`);
+  }
+}
+
 // --- Stall detection ---
 
 const ACTIVE_PHASES_SET = new Set([
@@ -761,7 +773,7 @@ If this looks like a genuine NAS problem (not a software bug), set likely_softwa
     if (!review.likely_software_bug) return;
 
     // Log the finding in the resolution activity
-    await appendLog(supabase, userId, state.resolution.id, "software_issue",
+    await safeAppendLog(supabase, userId, state.resolution.id, "software_issue",
       `**Possible software bug detected** (${review.confidence} confidence)\n\n` +
       `**Observed:** ${review.behavior_observed}\n\n` +
       `**Expected:** ${review.expected_behavior}\n\n` +
@@ -1289,7 +1301,7 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
   // Reflection quality gate: before committing to a fix, ask a second AI to review evidence quality
   const reflection = await reflectOnProgress(fresh, analysis.confidence);
   if (reflection.recommendation === "escalate_to_user") {
-    await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+    await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
       `Quality review blocked fix proposal: ${reflection.evidence_quality} evidence.\n\n${reflection.notes}`,
       reflection.quality_issues.join("; ") || null);
     await updateResolution(supabase, userId, fresh.resolution.id, {
@@ -1300,7 +1312,7 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
     });
     return;
   } else if (reflection.recommendation === "gather_more") {
-    await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+    await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
       `Quality review: ${reflection.evidence_quality} evidence — requesting additional diagnostics before fix.\n\n${reflection.notes}`,
       reflection.quality_issues.join("; ") || null);
     // Ask the primary model what to collect next, given the quality issues
@@ -1327,7 +1339,7 @@ The reviewer recommends gathering more evidence before proposing a fix. Please r
   } else {
     // "proceed" — log a brief note if any quality issues were found
     if (reflection.quality_issues.length > 0) {
-      await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+      await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
         `Quality review passed (${reflection.evidence_quality}): ${reflection.notes}`);
     }
   }
@@ -1545,7 +1557,7 @@ async function handleVerifying(
       // Reflect before re-entering the diagnosis loop — are we making real progress?
       const reflection = await reflectOnProgress(fresh, "medium");
       if (reflection.progress_assessment === "looping" || reflection.recommendation === "escalate_to_user") {
-        await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+        await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
           `Quality review after failed fix: ${reflection.progress_assessment} — ${reflection.notes}`,
           reflection.quality_issues.join("; ") || null);
         await updateResolution(supabase, userId, fresh.resolution.id, {
@@ -1558,7 +1570,7 @@ async function handleVerifying(
           `Fix did not resolve the issue and the quality reviewer flagged: ${reflection.notes}`);
       } else {
         if (reflection.quality_issues.length > 0) {
-          await appendLog(supabase, userId, fresh.resolution.id, "reflection",
+          await safeAppendLog(supabase, userId, fresh.resolution.id, "reflection",
             `Quality review before retry: ${reflection.notes}`);
         }
         // Go back to planning for another round of diagnose → fix → verify
@@ -1601,7 +1613,7 @@ export async function tick(
     const inconsistencies = checkStateConsistency(state);
     if (inconsistencies.length > 0) {
       for (const issue of inconsistencies) {
-        await appendLog(supabase, userId, resolutionId, "software_issue", issue);
+        await safeAppendLog(supabase, userId, resolutionId, "software_issue", issue);
       }
       // Force to stuck — the state machine is in an invalid state
       await updateResolution(supabase, userId, resolutionId, {
