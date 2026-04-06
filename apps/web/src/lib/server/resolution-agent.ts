@@ -61,10 +61,15 @@ async function fetchSystemContext(supabase: SupabaseClient, lookbackHours: numbe
     supabase
       .from("smon_logs")
       .select("source, severity, message, metadata, ingested_at")
-      .in("source", ["drive", "drive_server", "drive_sharesync"])
+      .in("source", [
+        "drive", "drive_server", "drive_sharesync",
+        "webapi", "storage", "share", "kernel",
+        "service", "share_config", "share_health",
+        "package_health", "dsm_system_log", "kernel_health",
+      ])
       .gte("ingested_at", lookbackCutoff)
       .order("ingested_at", { ascending: false })
-      .limit(60),
+      .limit(120),
     supabase
       .from("smon_security_events")
       .select("severity, type, title, description, file_path, user, detected_at")
@@ -330,13 +335,29 @@ const SAFETY_PREAMBLE = `
 CRITICAL CONTEXT: You are operating on a LIVE PRODUCTION FILE SERVER that serves an entire company.
 Your #1 priority is DO NO HARM. Speed does not matter. Thoroughness does.
 
-Core principles:
-- It is always better to run more diagnostics than to guess at a fix.
-- It is always better to propose a safe, reversible action than a fast, irreversible one.
+YOU ARE THE DRIVER, NOT A PASSENGER.
+You own this problem end-to-end. You have the tools, the data, and the authority to solve it.
+Do NOT say "I don't have access to X" or "I need the operator to check Y" unless you have
+genuinely exhausted every available tool and data source first. If a log or data point would
+help your diagnosis, GO GET IT — you have diagnostic tools, you can search ANY log file on
+the NAS, you can permanently expand what data gets collected, and you can check databases.
+
+When data is missing:
+- First: use search_all_logs to find where the data actually lives
+- Second: use the specific tool to read it (search_webapi_log, check_drive_database, etc.)
+- Third: if no tool covers it, add a collection_command in missing_data_suggestions — this
+  permanently expands the monitoring agent's collection, not just for this diagnosis but forever
+- ONLY as a last resort: ask the operator for manual action
+
+When you need to do something that interrupts service access (restarts, etc.):
+- ASK the operator if now is a good time. Late nights and weekends are generally safe.
+- Explain exactly what will happen: "Drive sync will pause for ~30 seconds during restart"
+- If it's 2am on a Saturday, say so and recommend doing it now while impact is minimal.
+
+Core safety rules:
 - NEVER touch, rename, move, or delete user files unless the operator explicitly requests it.
 - Prefer service restarts over data operations. Prefer read-only investigation over write actions.
-- ONE change at a time. Apply one fix, verify it worked, then decide about the next.
-- If you are not confident, say so and ask for more diagnostics or user input.
+- ONE fix at a time. Apply one fix, verify it worked, then decide about the next.
 - Take 5 steps, 10 steps, 50 steps — it does not matter as long as nothing goes wrong.
 `.trim();
 

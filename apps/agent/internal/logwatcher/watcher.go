@@ -40,6 +40,13 @@ var defaultLogFiles = []LogFile{
 	{Path: "synolog/synopkg.log", Source: "package"},
 	{Path: "samba/log.smbd", Source: "smb"},
 	{Path: "samba/log.nmbd", Source: "smb"},
+	// --- Logs critical for diagnosing share/sync issues ---
+	{Path: "synolog/synowebapi.log", Source: "webapi"},        // "Failed to SYNOShareGet" errors live HERE
+	{Path: "synolog/synostorage.log", Source: "storage"},      // Share/volume management operations
+	{Path: "synolog/synoshare.log", Source: "share"},          // Share database ops (create/delete/get errors)
+	{Path: "kern.log", Source: "kernel"},                      // I/O stalls, SCSI errors, disk faults
+	{Path: "synolog/synoinfo.log", Source: "system_info"},     // System config changes
+	{Path: "synolog/synoservice.log", Source: "service"},      // Service start/stop/crash events
 }
 
 func New(s *sender.Sender, nasID, logDir string, watchPaths, extraLogFiles []string, interval time.Duration) *LogWatcher {

@@ -20,7 +20,15 @@ export type CopilotToolName =
   | "check_sharesync_status"
   | "rename_file_to_old"
   | "remove_invalid_chars"
-  | "trigger_sharesync_resync";
+  | "trigger_sharesync_resync"
+  // --- New diagnostics for share/sync issues ---
+  | "check_share_database"
+  | "check_drive_package_health"
+  | "check_kernel_io_errors"
+  | "search_webapi_log"
+  | "check_drive_database"
+  | "search_all_logs"
+  | "check_filesystem_health";
 
 export interface ToolDefinition {
   description: string;
@@ -139,6 +147,127 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
       const folder = input.filter || "/volume1/SharedFolder";
       return `/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
     },
+  },
+
+  // === New diagnostic tools for share/sync issues ===
+
+  check_share_database: {
+    description: "Read-only. Enumerate all shared folders from the DSM share database (synoshare). Shows share names, paths, and configuration. Failures here indicate a corrupted share database.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== SHARE DATABASE ENUMERATION ==='",
+      "synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
+      "echo ''",
+      "echo '=== SHARE DETAILS (first 10) ==='",
+      `synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; synoshare --get "$name" 2>&1 | head -15; done`,
+    ].join("\n"),
+  },
+  check_drive_package_health: {
+    description: "Read-only. Check Synology Drive package status, version, registration, and internal database files. Detects broken installations.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== DRIVE PACKAGE STATUS ==='",
+      "synopkg status SynologyDrive 2>&1",
+      "synopkg status SynologyDriveShareSync 2>&1",
+      "echo ''",
+      "echo '=== DRIVE VERSION ==='",
+      "synopkg version SynologyDrive 2>&1",
+      "echo ''",
+      "echo '=== DRIVE PACKAGE FILES ==='",
+      "ls -la /var/packages/SynologyDrive/target/ 2>/dev/null | head -20",
+      "echo ''",
+      "echo '=== DRIVE DATABASE FILES ==='",
+      "find /volume1/@synologydrive/ -name '*.db' -o -name '*.sqlite' 2>/dev/null | head -20",
+      "ls -lh /volume1/@synologydrive/db/ 2>/dev/null || echo 'No Drive DB directory'",
+      "echo ''",
+      "echo '=== DRIVE LOG FILES ==='",
+      "find /var/log -name '*drive*' -o -name '*Drive*' 2>/dev/null",
+      "find /volume1/@synologydrive/log/ -type f 2>/dev/null",
+      "echo ''",
+      "echo '=== RECENT DRIVE PACKAGE LOG ==='",
+      "grep -i 'synologydrive\\|SynologyDrive' /var/log/synolog/synopkg.log 2>/dev/null | tail -20 || true",
+    ].join("\n"),
+  },
+  check_kernel_io_errors: {
+    description: "Read-only. Check kernel ring buffer (dmesg) for I/O errors, SCSI errors, disk faults, filesystem corruption, and stall warnings. Critical for distinguishing software bugs from hardware failures.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== KERNEL I/O & DISK ERRORS ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'i/o error|scsi|ata.*error|blk_update|buffer i/o|ext4.*error|btrfs.*error|md.*error|raid.*error|sector|fault|stall|hung_task|blocked for' | tail -60 || dmesg | grep -iE 'error|scsi|ata|fault|stall' | tail -60",
+      "echo ''",
+      "echo '=== FILESYSTEM ERRORS ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'EXT4-fs|BTRFS|error.*mount\\|mount.*error' | tail -20 || true",
+      "echo ''",
+      "echo '=== RECENT OOM EVENTS ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'oom|out of memory|killed process' | tail -10 || true",
+    ].join("\n"),
+  },
+  search_webapi_log: {
+    description: "Read-only. Search the DSM WebAPI log for share errors, SYNOShareGet failures, and API call failures. This is where 'Failed to SYNOShareGet' errors are logged.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const filter = input.filter?.trim() || "SYNOShare\\|share.*error\\|failed.*share";
+      const lines = Math.max(60, Math.min(300, (input.lookbackHours ?? 4) * 40));
+      return [
+        "echo '=== WEBAPI LOG (share/drive errors) ==='",
+        `grep -iE ${quote(filter)} /var/log/synolog/synowebapi.log 2>/dev/null | tail -n ${lines} || echo 'No matches or file not found'`,
+        "echo ''",
+        "echo '=== STORAGE LOG ==='",
+        `grep -iE 'share\\|volume\\|storage\\|mount' /var/log/synolog/synostorage.log 2>/dev/null | tail -40 || echo 'No matches or file not found'`,
+        "echo ''",
+        "echo '=== SHARE LOG ==='",
+        `grep -iE 'error\\|fail\\|warn' /var/log/synolog/synoshare.log 2>/dev/null | tail -40 || echo 'No matches or file not found'`,
+      ].join("\n");
+    },
+  },
+  check_drive_database: {
+    description: "Read-only. Check integrity of Synology Drive's internal SQLite databases. Detects corruption that causes persistent sync failures.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== DRIVE DATABASE INTEGRITY ==='",
+      `for db in $(find /volume1/@synologydrive/ -name '*.db' -o -name '*.sqlite' 2>/dev/null | head -10); do echo "--- $db ---"; sqlite3 "$db" 'PRAGMA integrity_check;' 2>&1 | head -5; echo "size: $(ls -lh "$db" | awk '{print $5}')"; done`,
+      "echo ''",
+      "echo '=== DRIVE DATABASE TABLES ==='",
+      `maindb=$(find /volume1/@synologydrive/ -name 'synodrive.db' -o -name 'sync.db' 2>/dev/null | head -1); [ -n "$maindb" ] && echo "DB: $maindb" && sqlite3 "$maindb" '.tables' 2>&1 | head -20 || echo 'Main Drive DB not found'`,
+      "echo ''",
+      "echo '=== RECENT DRIVE DB ERRORS ==='",
+      "grep -i 'database\\|sqlite\\|db.*error\\|corrupt' /var/log/synologydrive.log 2>/dev/null | tail -20 || echo 'No DB errors in Drive log'",
+    ].join("\n"),
+  },
+  search_all_logs: {
+    description: "Read-only. Search ALL system and application logs for a specific term. Use this when you suspect an error appears in a log you haven't checked yet.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const filter = input.filter?.trim() || "error";
+      return [
+        `echo '=== SEARCHING ALL LOGS FOR: ${filter} ==='`,
+        `for f in /var/log/synolog/*.log /var/log/messages /var/log/kern.log /var/log/synologydrive.log /var/log/samba/*.log; do`,
+        `  [ -f "$f" ] || continue`,
+        `  matches=$(grep -ciE ${quote(filter)} "$f" 2>/dev/null || true)`,
+        `  [ "$matches" -gt 0 ] 2>/dev/null && echo "$f: $matches matches" && grep -iE ${quote(filter)} "$f" 2>/dev/null | tail -5 && echo ""`,
+        `done`,
+      ].join("\n");
+    },
+  },
+  check_filesystem_health: {
+    description: "Read-only. Check filesystem health: mount status, inode usage, journal status, and SMART disk health. Detects issues that cause I/O stalls.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== MOUNT STATUS ==='",
+      "mount | grep volume",
+      "echo ''",
+      "echo '=== INODE USAGE ==='",
+      "df -i /volume1",
+      "echo ''",
+      "echo '=== FILESYSTEM TYPE & FLAGS ==='",
+      "tune2fs -l $(mount | grep '/volume1 ' | awk '{print $1}') 2>/dev/null | grep -iE 'filesystem|mount count|error|state|journal' || btrfs filesystem show /volume1 2>/dev/null || echo 'Could not determine filesystem details'",
+      "echo ''",
+      "echo '=== SMART STATUS (all disks) ==='",
+      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo \"--- $d ---\"; smartctl -H \"$d\" 2>/dev/null | grep -E 'result|Status'; smartctl -A \"$d\" 2>/dev/null | grep -E 'Reallocated|Current_Pending|Offline_Uncorrectable|Temperature'; done",
+      "echo ''",
+      "echo '=== MDADM RAID STATUS ==='",
+      "cat /proc/mdstat 2>/dev/null || echo 'No mdstat available'",
+    ].join("\n"),
   },
 };
 

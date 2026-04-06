@@ -647,6 +647,109 @@ func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
 	return nil, nil
 }
 
+// === Share Management API ===
+
+// ShareInfo represents a DSM shared folder (SYNO.Core.Share)
+type ShareInfo struct {
+	Name          string            `json:"name"`
+	Path          string            `json:"vol_path"`
+	Description   string            `json:"desc"`
+	IsUSB         bool              `json:"is_usb_share"`
+	RecycleBinEnabled bool          `json:"enable_recycle_bin"`
+	Encryption    int               `json:"encryption"`
+	Additional    map[string]interface{} `json:"additional"`
+}
+
+// GetShares returns all shared folders and their configuration.
+// This is critical for diagnosing "Failed to SYNOShareGet" errors.
+func (c *Client) GetShares() ([]ShareInfo, error) {
+	data, err := c.request("SYNO.Core.Share", 1, "list", url.Values{
+		"additional": {`["vol_path","encryption","recycle_bin","quota","enable_share_compress"]`},
+		"limit":      {"-1"},
+		"offset":     {"0"},
+		"shareType":  {"all"},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Shares []ShareInfo `json:"shares"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing shares: %w", err)
+	}
+	return response.Shares, nil
+}
+
+// === Package Management API ===
+
+// PackageInfo represents an installed DSM package (SYNO.Core.Package)
+type PackageInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"dname"`
+	Version string `json:"version"`
+	Status  string `json:"additional_status"`
+	Type    string `json:"type"`
+}
+
+// GetInstalledPackages returns all installed packages with their status.
+// Key for checking if SynologyDrive is properly registered/installed.
+func (c *Client) GetInstalledPackages() ([]PackageInfo, error) {
+	data, err := c.request("SYNO.Core.Package", 1, "list", url.Values{
+		"additional": {`["status","description"]`},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Packages []PackageInfo `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing packages: %w", err)
+	}
+	return response.Packages, nil
+}
+
+// === System Logs API ===
+
+// SystemLogEntry represents a log from DSM's structured log system.
+type SystemLogEntry struct {
+	Time     string `json:"time"`
+	Level    int    `json:"level"`
+	Message  string `json:"msg"`
+	Who      string `json:"who"`
+	Descr    string `json:"descr"`
+	LogName  string `json:"logname"`
+}
+
+// GetRecentSystemLogs returns recent system logs via the DSM API.
+// These are the structured logs visible in Log Center — they contain
+// events like share database errors that may not appear in text log files.
+func (c *Client) GetRecentSystemLogs(limit int) ([]SystemLogEntry, error) {
+	data, err := c.request("SYNO.Core.SyslogClient.Log", 1, "list", url.Values{
+		"limit":      {fmt.Sprintf("%d", limit)},
+		"offset":     {"0"},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Items []SystemLogEntry `json:"items"`
+		Logs  []SystemLogEntry `json:"logs"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, fmt.Errorf("parsing system logs: %w", err)
+	}
+	logs := response.Items
+	if len(logs) == 0 {
+		logs = response.Logs
+	}
+	return logs, nil
+}
+
 // === Scheduled Tasks API ===
 
 // ScheduledTask represents a DSM task scheduler entry.

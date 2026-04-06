@@ -135,6 +135,14 @@ func main() {
 		logW.Run(stop)
 	}()
 
+	// Start share health collector (shares, packages, DSM system logs via API)
+	shareHealthCollector := collector.NewShareHealthCollector(dsmClient, s, cfg.NasID, 2*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		shareHealthCollector.Run(stop)
+	}()
+
 	// Start service health collector (DSM service status)
 	serviceCollector := collector.NewServiceHealthCollector(s, cfg.NasID, 60*time.Second)
 	wg.Add(1)
