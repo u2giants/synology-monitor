@@ -174,10 +174,40 @@ async function callRemediation<T>(prompt: string): Promise<T> {
   return callModel<T>(prompt);
 }
 
-/** Call the second opinion model */
+/** Call the second opinion model with robust JSON extraction (some models ignore response_format) */
 async function callSecondOpinion<T>(prompt: string): Promise<T> {
   const model = await getSecondOpinionModel();
-  return callModel<T>(prompt, model);
+  const client = getOpenAIClient();
+
+  // Add hard JSON enforcement to the prompt — some models ignore response_format
+  const jsonPrompt = `${prompt}
+
+IMPORTANT: Your ENTIRE response must be valid JSON. Start your response with { and end with }. Do NOT include any explanation, preamble, or markdown fences outside the JSON object.`;
+
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: "system", content: "You respond only with valid JSON objects. Never include explanation or prose outside the JSON." },
+      { role: "user", content: jsonPrompt },
+    ],
+    response_format: { type: "json_object" },
+    max_tokens: 8000,
+  });
+
+  const text = response.choices?.[0]?.message?.content ?? "";
+
+  // Try direct parse
+  const cleaned = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
+  try {
+    return JSON.parse(cleaned) as T;
+  } catch {
+    // Try to extract the first {...} block from prose
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      return JSON.parse(match[0]) as T;
+    }
+    throw new Error(`Second opinion model returned non-JSON: "${text.slice(0, 120)}"`);
+  }
 }
 
 // --- Step materialization with null-safety ---
@@ -595,48 +625,68 @@ You are a second opinion. Do you agree with this diagnosis? If you have a differ
     }
   }
 
-  // If AI wants more diagnostics OR confidence is not high, loop back
+  // Count distinct diagnostic batches to detect infinite loops
+  const MAX_DIAGNOSTIC_ROUNDS = 3;
+  const diagnosticBatches = new Set(fresh.steps.filter(s => s.category === "diagnostic").map(s => s.batch));
+  const diagnosticRoundCount = diagnosticBatches.size;
+
+  // If AI wants more diagnostics OR confidence is not high, try to loop back
   const needsMore = analysis.needs_more_diagnostics || analysis.confidence !== "high";
 
-  if (needsMore && analysis.additional_steps?.length) {
-    const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
-    const batch = maxBatch + 1;
-
-    // Deduplicate additional steps by tool_name+target
+  if (needsMore) {
+    // Deduplicate proposed additional steps by tool_name+target, and filter already-run ones
+    const alreadyRun = new Set(fresh.steps.map(s => `${s.tool_name}:${s.target}`));
     const seen = new Set<string>();
     const dedupedSteps = (analysis.additional_steps ?? []).filter(s => {
       const key = `${s.tool_name}:${s.target}`;
-      if (seen.has(key)) return false;
+      if (seen.has(key) || alreadyRun.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    const stepInputs = dedupedSteps
-      .map(raw => materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours))
-      .filter((s): s is StepInput => s !== null);
+    const hasNewSteps = dedupedSteps.length > 0;
+    const underRoundLimit = diagnosticRoundCount < MAX_DIAGNOSTIC_ROUNDS;
 
-    if (stepInputs.length > 0) {
-      await createSteps(supabase, userId, fresh.resolution.id, batch, stepInputs);
+    if (hasNewSteps && underRoundLimit) {
+      const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
+      const batch = maxBatch + 1;
+
+      const stepInputs = dedupedSteps
+        .map(raw => materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours))
+        .filter((s): s is StepInput => s !== null);
+
+      if (stepInputs.length > 0) {
+        await createSteps(supabase, userId, fresh.resolution.id, batch, stepInputs);
+        await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+          `Need more information (confidence: ${analysis.confidence}, round ${diagnosticRoundCount + 1} of ${MAX_DIAGNOSTIC_ROUNDS}). ${analysis.diagnosis_summary}`);
+        await updateResolution(supabase, userId, fresh.resolution.id, { phase: "diagnosing" });
+        return;
+      }
     }
-    await appendLog(supabase, userId, fresh.resolution.id, "analysis",
-      `Need more information (confidence: ${analysis.confidence}). ${analysis.diagnosis_summary}`);
-    await updateResolution(supabase, userId, fresh.resolution.id, { phase: "diagnosing" });
-    return;
-  }
 
-  // Even without additional steps, if confidence is low, report it and pause for user input
-  if (analysis.confidence === "low") {
+    // Cannot gather more evidence — force a conclusion with everything we know
+    const roundMsg = diagnosticRoundCount >= MAX_DIAGNOSTIC_ROUNDS
+      ? `After ${diagnosticRoundCount} diagnostic rounds the agent could not reach high confidence.`
+      : `No new diagnostic steps available.`;
+
+    const potentialNextSteps = (analysis.additional_steps ?? []).length
+      ? `\n\nPotential next steps suggested by AI (not yet run):\n${analysis.additional_steps!.map(s => `• ${s.title} (${s.target}): ${s.reason}`).join("\n")}`
+      : "";
+
+    const fullSummary = `${analysis.diagnosis_summary}\n\nRoot cause hypothesis: ${analysis.root_cause}\n\nConfidence: ${analysis.confidence}${potentialNextSteps}`;
+
     await updateResolution(supabase, userId, fresh.resolution.id, {
       phase: "stuck",
-      diagnosis_summary: analysis.diagnosis_summary,
-      stuck_reason: `Both AI models have low confidence in the diagnosis. The agent needs more information to proceed safely. Root cause hypothesis: ${analysis.root_cause}`,
+      diagnosis_summary: fullSummary,
+      root_cause: analysis.root_cause,
+      stuck_reason: `${roundMsg} Confidence: ${analysis.confidence}. Add more context or manually inspect the NAS to help the agent proceed.`,
     });
-    await appendLog(supabase, userId, fresh.resolution.id, "analysis",
-      `Low confidence diagnosis even after second opinion. Pausing for user input.\n\n${analysis.diagnosis_summary}`);
+    await appendLog(supabase, userId, fresh.resolution.id, "stuck",
+      `${roundMsg} Here is what we know:\n\n${fullSummary}`);
     return;
   }
 
-  // High or medium confidence — proceed to fix proposal
+  // High confidence — proceed to fix proposal
   await updateResolution(supabase, userId, fresh.resolution.id, {
     phase: "proposing_fix",
     diagnosis_summary: analysis.diagnosis_summary,
