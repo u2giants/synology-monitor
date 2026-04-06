@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAnalysis } from "@/hooks/use-analysis";
 import { formatET, timeAgoET } from "@/lib/utils";
-import { AlertTriangle, XCircle, Clock, User, FolderSync, Loader2, RefreshCw, Wrench } from "lucide-react";
+import { AlertTriangle, XCircle, Clock, User, FolderSync, Loader2, RefreshCw, Wrench, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
 
@@ -310,6 +310,13 @@ function ProblemCard({
             >
               <Wrench className="h-3 w-3" />
               Fix This
+            </Link>
+            <Link
+              href={`/assistant?alertTitle=${encodeURIComponent(problem.title)}&alertMessage=${encodeURIComponent(problem.explanation)}&alertSeverity=${problem.severity}`}
+              className="flex items-center gap-1 px-3 py-1.5 text-sm border border-border text-muted-foreground rounded-md hover:text-foreground hover:border-foreground/20"
+            >
+              <MessageSquare className="h-3 w-3" />
+              Ask About This
             </Link>
           </div>
         </div>

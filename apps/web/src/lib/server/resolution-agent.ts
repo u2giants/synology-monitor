@@ -1,9 +1,11 @@
 /**
  * Resolution Agent — the brain of the issue resolution state machine.
  * Each call to tick() processes one step and returns the new state.
+ *
+ * The agent can iterate: diagnose → analyze → re-diagnose → propose fix →
+ * apply ONE fix → verify → re-diagnose if issues remain → propose next fix → ...
  */
 
-import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { callMinimaxJSON } from "./minimax";
 import { getRemediationModel } from "./ai-settings";
 import { runNasScript, getNasConfigs } from "./nas";
@@ -28,6 +30,9 @@ import {
 } from "./resolution-store";
 import OpenAI from "openai";
 
+// --- Tick lock: prevent concurrent ticks on the same resolution ---
+const activeTicks = new Set<string>();
+
 // --- OpenRouter client ---
 
 function getOpenAIClient() {
@@ -36,7 +41,7 @@ function getOpenAIClient() {
   return new OpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" });
 }
 
-// --- System context (shared with copilot) ---
+// --- System context ---
 
 async function fetchSystemContext(supabase: SupabaseClient, lookbackHours: number) {
   const lookbackCutoff = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
@@ -164,32 +169,23 @@ async function callRemediation<T>(prompt: string): Promise<T> {
   return JSON.parse(cleaned) as T;
 }
 
-// --- Step materialization ---
+// --- Step materialization with null-safety ---
 
 function materializeStepInput(
-  raw: { title: string; target: NasTarget; tool_name: CopilotToolName; reason: string; risk?: string; lookback_hours?: number; filter?: string },
+  raw: { title?: string; target?: string; tool_name?: string; reason?: string; risk?: string; lookback_hours?: number; filter?: string },
   category: "diagnostic" | "fix" | "verification",
   autoApproveReads: boolean,
   lookbackHours: number
-): StepInput {
-  const toolDef = TOOL_DEFINITIONS[raw.tool_name];
-  if (!toolDef) {
-    // Fallback for unknown tools — skip them
-    return {
-      category,
-      title: raw.title,
-      target: raw.target,
-      toolName: raw.tool_name,
-      commandPreview: "echo 'Unknown tool'",
-      reason: raw.reason,
-      risk: "low",
-      approvalToken: null,
-      requiresApproval: true,
-      status: "skipped",
-    };
-  }
+): StepInput | null {
+  // Validate required fields — AI sometimes returns incomplete objects
+  const toolName = raw.tool_name as CopilotToolName;
+  const target = raw.target as NasTarget;
+  if (!raw.title || !target || !toolName) return null;
 
-  const preview = toolDef.buildPreview(raw.target, {
+  const toolDef = TOOL_DEFINITIONS[toolName];
+  if (!toolDef) return null;
+
+  const preview = toolDef.buildPreview(target, {
     lookbackHours: raw.lookback_hours ?? lookbackHours,
     filter: raw.filter,
   });
@@ -200,12 +196,12 @@ function materializeStepInput(
   return {
     category,
     title: raw.title,
-    target: raw.target,
-    toolName: raw.tool_name,
+    target,
+    toolName,
     commandPreview: preview,
-    reason: raw.reason,
+    reason: raw.reason ?? "",
     risk: (raw.risk as "low" | "medium" | "high") ?? (isWrite ? "medium" : "low"),
-    approvalToken: needsApproval ? buildApprovalToken(raw.target, preview) : null,
+    approvalToken: needsApproval ? buildApprovalToken(target, preview) : null,
     requiresApproval: needsApproval,
     status: needsApproval ? "planned" : "approved",
   };
@@ -240,13 +236,20 @@ function planningPrompt(res: ResolutionFull, context: Record<string, unknown>): 
       (res.resolution.verification_result ? `\nVerification result: ${res.resolution.verification_result}` : "")
     : "";
 
+  // Include user context messages from the log
+  const userInputs = res.log
+    .filter(e => e.entry_type === "user_input")
+    .map(e => e.content)
+    .join("\n");
+  const userContext = userInputs ? `\n\nADDITIONAL CONTEXT FROM USER:\n${userInputs}` : "";
+
   return `You are a Synology NAS diagnostic planner. Generate a diagnostic plan for this issue.
 
 ISSUE: ${res.resolution.title}
 DESCRIPTION: ${res.resolution.description}
 SEVERITY: ${res.resolution.severity}
 AFFECTED NAS: ${res.resolution.affected_nas.join(", ") || "unknown"}
-${retryNote}
+${retryNote}${userContext}
 
 SYSTEM CONTEXT (recent alerts, logs, resource data):
 ${JSON.stringify(context, null, 1).slice(0, 30000)}
@@ -254,7 +257,8 @@ ${JSON.stringify(context, null, 1).slice(0, 30000)}
 AVAILABLE TOOLS:
 ${toolCatalogText()}
 
-Generate a JSON diagnostic plan. Group related diagnostics together. Do NOT propose fix actions yet — only diagnostics.
+Generate a JSON diagnostic plan. Keep it focused — propose 3-6 diagnostic steps, not more.
+Do NOT propose fix actions yet — only diagnostics.
 Respond ONLY with valid JSON:
 {
   "plan_summary": "Plain English: what we are going to check and why",
@@ -277,10 +281,17 @@ function analysisPrompt(res: ResolutionFull): string {
     .map(s => `### ${s.title} (${s.target}) [${s.status}]\n${s.result_text?.slice(0, 2000) ?? "no output"}`)
     .join("\n\n");
 
+  const userInputs = res.log
+    .filter(e => e.entry_type === "user_input")
+    .map(e => e.content)
+    .join("\n");
+  const userContext = userInputs ? `\n\nADDITIONAL CONTEXT FROM USER:\n${userInputs}` : "";
+
   return `You are analyzing diagnostic results for a Synology NAS issue.
 
 ISSUE: ${res.resolution.title}
 DESCRIPTION: ${res.resolution.description}
+${userContext}
 
 DIAGNOSTIC RESULTS:
 ${stepResults}
@@ -288,7 +299,10 @@ ${stepResults}
 AVAILABLE TOOLS (if you need more diagnostics):
 ${toolCatalogText()}
 
-Analyze these results. Respond ONLY with valid JSON:
+Analyze these results. If you are not confident in the root cause, request more diagnostics.
+It is better to run a second round of diagnostics than to propose a fix based on incomplete information.
+
+Respond ONLY with valid JSON:
 {
   "needs_more_diagnostics": false,
   "additional_steps": [],
@@ -318,12 +332,19 @@ ${writeTools}
 AVAILABLE DIAGNOSTIC TOOLS (for verification after fix):
 ${toolCatalogText()}
 
-Propose a fix and verification steps. Respond ONLY with valid JSON:
+IMPORTANT RULES:
+1. Propose the MINIMUM viable fix. Usually 1-3 steps maximum. Do NOT propose 10+ steps.
+2. Steps should be numbered in the order they must be executed.
+3. If there are multiple independent problems, propose a fix for the MOST CRITICAL one first. We can iterate.
+4. After this fix is applied, we will verify and can do another round if problems remain.
+5. Every fix_step and verification_step MUST have a "title" field. Never omit it.
+
+Respond ONLY with valid JSON:
 {
-  "fix_summary": "Plain English: what we are going to do and why",
+  "fix_summary": "Plain English: what we are going to do and why, in what order",
   "risk_assessment": "What could go wrong",
   "fix_steps": [
-    { "title": "Step name", "target": "edgesynology2", "tool_name": "restart_synology_drive_sharesync", "reason": "Why", "risk": "medium", "filter": null }
+    { "title": "Step 1: Restart ShareSync", "target": "edgesynology2", "tool_name": "restart_synology_drive_sharesync", "reason": "Why", "risk": "medium", "filter": null }
   ],
   "verification_steps": [
     { "title": "Verify ShareSync running", "target": "edgesynology2", "tool_name": "check_sharesync_status", "reason": "Confirm fix worked", "lookback_hours": 1, "filter": null }
@@ -341,15 +362,18 @@ function verificationPrompt(res: ResolutionFull): string {
 
 ISSUE: ${res.resolution.title}
 FIX APPLIED: ${res.resolution.fix_summary}
+ORIGINAL DIAGNOSIS: ${res.resolution.diagnosis_summary}
 
 VERIFICATION RESULTS:
 ${verResults}
 
-Did the fix work? Respond ONLY with valid JSON:
+Did the fix resolve the issue? If only partially, say so — we can do another round of diagnostics and fixes.
+
+Respond ONLY with valid JSON:
 {
   "fixed": true,
   "verification_summary": "Plain English: what the verification shows",
-  "remaining_concerns": ""
+  "remaining_concerns": "Any issues still present, or empty string if fully fixed"
 }`;
 }
 
@@ -360,6 +384,10 @@ async function handlePlanning(
   userId: string,
   state: ResolutionFull
 ): Promise<void> {
+  // Guard: if diagnostic steps already exist for this attempt, skip (race condition protection)
+  const existingDiag = state.steps.filter(s => s.category === "diagnostic");
+  if (existingDiag.length > 0 && state.resolution.attempt_count === 0) return;
+
   const context = await fetchSystemContext(supabase, state.resolution.lookback_hours);
 
   const { data: plan, error } = await callMinimaxJSON<PlanResponse>(
@@ -378,13 +406,18 @@ async function handlePlanning(
     return;
   }
 
-  // Determine next batch number
   const maxBatch = state.steps.reduce((max, s) => Math.max(max, s.batch), -1);
   const batch = maxBatch + 1;
 
-  const stepInputs = plan.steps.map(raw =>
-    materializeStepInput(raw, "diagnostic", state.resolution.auto_approve_reads, state.resolution.lookback_hours)
-  ).filter(s => s.status !== "skipped");
+  const stepInputs = plan.steps
+    .map(raw => materializeStepInput(raw, "diagnostic", state.resolution.auto_approve_reads, state.resolution.lookback_hours))
+    .filter((s): s is StepInput => s !== null);
+
+  if (stepInputs.length === 0) {
+    await appendLog(supabase, userId, state.resolution.id, "error", "AI returned diagnostic steps but none had valid tool names.");
+    await updateResolution(supabase, userId, state.resolution.id, { phase: "stuck", stuck_reason: "Could not create valid diagnostic steps." });
+    return;
+  }
 
   await createSteps(supabase, userId, state.resolution.id, batch, stepInputs);
   await appendLog(supabase, userId, state.resolution.id, "plan", plan.plan_summary);
@@ -399,14 +432,9 @@ async function handleDiagnosing(
   const currentBatch = Math.max(...state.steps.filter(s => s.category === "diagnostic").map(s => s.batch), 0);
   const batchSteps = state.steps.filter(s => s.category === "diagnostic" && s.batch === currentBatch);
 
-  // Check for steps needing approval
   const pending = batchSteps.filter(s => s.status === "planned");
-  if (pending.length > 0) {
-    // Waiting for user approval — do nothing
-    return;
-  }
+  if (pending.length > 0) return; // Waiting for user approval
 
-  // Find next approved step to run
   const nextApproved = batchSteps.find(s => s.status === "approved");
   if (nextApproved) {
     await updateStepStatus(supabase, userId, nextApproved.id, "running");
@@ -422,7 +450,7 @@ async function handleDiagnosing(
     return;
   }
 
-  // All steps done — move to analyzing
+  // All steps done
   await updateResolution(supabase, userId, state.resolution.id, { phase: "analyzing" });
 }
 
@@ -431,7 +459,6 @@ async function handleAnalyzing(
   userId: string,
   state: ResolutionFull
 ): Promise<void> {
-  // Reload to get latest step results
   const fresh = await loadResolution(supabase, userId, state.resolution.id);
   if (!fresh) return;
 
@@ -441,11 +468,13 @@ async function handleAnalyzing(
     const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
     const batch = maxBatch + 1;
 
-    const stepInputs = analysis.additional_steps.map(raw =>
-      materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours)
-    );
+    const stepInputs = analysis.additional_steps
+      .map(raw => materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours))
+      .filter((s): s is StepInput => s !== null);
 
-    await createSteps(supabase, userId, fresh.resolution.id, batch, stepInputs);
+    if (stepInputs.length > 0) {
+      await createSteps(supabase, userId, fresh.resolution.id, batch, stepInputs);
+    }
     await appendLog(supabase, userId, fresh.resolution.id, "analysis",
       `Need more information. ${analysis.diagnosis_summary}`);
     await updateResolution(supabase, userId, fresh.resolution.id, { phase: "diagnosing" });
@@ -465,6 +494,14 @@ async function handleProposingFix(
   userId: string,
   state: ResolutionFull
 ): Promise<void> {
+  // Guard: if fix steps already exist, skip (race condition protection)
+  const existingFix = state.steps.filter(s => s.category === "fix");
+  if (existingFix.length > 0) {
+    // Steps already created — just transition
+    await updateResolution(supabase, userId, state.resolution.id, { phase: "awaiting_fix_approval" });
+    return;
+  }
+
   const fresh = await loadResolution(supabase, userId, state.resolution.id);
   if (!fresh) return;
 
@@ -473,14 +510,14 @@ async function handleProposingFix(
   const fixBatch = maxBatch + 1;
 
   // Fix steps — always require approval
-  const fixInputs = proposal.fix_steps.map(raw =>
-    materializeStepInput({ ...raw, lookback_hours: undefined, filter: raw.filter }, "fix", false, fresh.resolution.lookback_hours)
-  );
+  const fixInputs = (proposal.fix_steps ?? [])
+    .map(raw => materializeStepInput({ ...raw, lookback_hours: undefined }, "fix", false, fresh.resolution.lookback_hours))
+    .filter((s): s is StepInput => s !== null);
 
   // Verification steps — auto-approve reads
-  const verifyInputs = proposal.verification_steps.map(raw =>
-    materializeStepInput(raw, "verification", true, fresh.resolution.lookback_hours)
-  );
+  const verifyInputs = (proposal.verification_steps ?? [])
+    .map(raw => materializeStepInput(raw, "verification", true, fresh.resolution.lookback_hours))
+    .filter((s): s is StepInput => s !== null);
 
   if (fixInputs.length > 0) {
     await createSteps(supabase, userId, fresh.resolution.id, fixBatch, fixInputs);
@@ -504,7 +541,6 @@ async function handleApplyingFix(
 ): Promise<void> {
   const fixSteps = state.steps.filter(s => s.category === "fix");
 
-  // Find next approved fix step
   const nextApproved = fixSteps.find(s => s.status === "approved");
   if (nextApproved) {
     await updateStepStatus(supabase, userId, nextApproved.id, "running");
@@ -520,6 +556,14 @@ async function handleApplyingFix(
     return;
   }
 
+  // Check if any planned fix steps remain (user approved some but not all)
+  const pendingFix = fixSteps.filter(s => s.status === "planned");
+  if (pendingFix.length > 0) {
+    // Go back to awaiting approval for the remaining steps
+    await updateResolution(supabase, userId, state.resolution.id, { phase: "awaiting_fix_approval" });
+    return;
+  }
+
   // All fix steps done — move to verifying
   await updateResolution(supabase, userId, state.resolution.id, { phase: "verifying" });
 }
@@ -531,7 +575,6 @@ async function handleVerifying(
 ): Promise<void> {
   const verifySteps = state.steps.filter(s => s.category === "verification");
 
-  // Execute any approved verification steps
   const nextApproved = verifySteps.find(s => s.status === "approved");
   if (nextApproved) {
     await updateStepStatus(supabase, userId, nextApproved.id, "running");
@@ -543,7 +586,6 @@ async function handleVerifying(
     return;
   }
 
-  // Check if any are still planned (need approval — shouldn't happen since verification is auto-approved)
   if (verifySteps.some(s => s.status === "planned")) return;
 
   // All verification done — analyze results
@@ -552,7 +594,7 @@ async function handleVerifying(
 
   const verdict = await callRemediation<VerificationResponse>(verificationPrompt(fresh));
 
-  if (verdict.fixed) {
+  if (verdict.fixed && !verdict.remaining_concerns) {
     await updateResolution(supabase, userId, fresh.resolution.id, {
       phase: "resolved",
       verification_result: verdict.verification_summary,
@@ -561,7 +603,6 @@ async function handleVerifying(
     await appendLog(supabase, userId, fresh.resolution.id, "verification",
       `Issue resolved. ${verdict.verification_summary}`);
 
-    // Auto-resolve the source problem if applicable
     if (fresh.resolution.origin_type === "problem" && fresh.resolution.origin_id) {
       await supabase
         .from("smon_analyzed_problems")
@@ -569,24 +610,26 @@ async function handleVerifying(
         .eq("id", fresh.resolution.origin_id);
     }
   } else {
+    // Not fully fixed — go back to diagnosing for another round
     const newAttempt = fresh.resolution.attempt_count + 1;
     if (newAttempt >= fresh.resolution.max_attempts) {
       await updateResolution(supabase, userId, fresh.resolution.id, {
         phase: "stuck",
         attempt_count: newAttempt,
         verification_result: verdict.verification_summary,
-        stuck_reason: `Fix did not work after ${newAttempt} attempt(s). ${verdict.remaining_concerns}`,
+        stuck_reason: `Fix did not fully work after ${newAttempt} attempt(s). ${verdict.remaining_concerns}`,
       });
       await appendLog(supabase, userId, fresh.resolution.id, "stuck",
-        `Fix did not work. ${verdict.verification_summary}. ${verdict.remaining_concerns}`);
+        `Fix did not fully work. ${verdict.verification_summary}. ${verdict.remaining_concerns}`);
     } else {
+      // Go back to planning for another round of diagnose → fix → verify
       await updateResolution(supabase, userId, fresh.resolution.id, {
         phase: "planning",
         attempt_count: newAttempt,
         verification_result: verdict.verification_summary,
       });
       await appendLog(supabase, userId, fresh.resolution.id, "verification",
-        `Fix did not work. Trying again (attempt ${newAttempt + 1}). ${verdict.remaining_concerns}`);
+        `Partially fixed. Starting another round (attempt ${newAttempt + 1}). ${verdict.remaining_concerns}`);
     }
   }
 }
@@ -598,12 +641,19 @@ export async function tick(
   userId: string,
   resolutionId: string
 ): Promise<ResolutionFull | null> {
-  const state = await loadResolution(supabase, userId, resolutionId);
-  if (!state) return null;
+  // Prevent concurrent ticks on the same resolution
+  if (activeTicks.has(resolutionId)) {
+    return loadResolution(supabase, userId, resolutionId);
+  }
 
-  const { phase } = state.resolution;
+  activeTicks.add(resolutionId);
 
   try {
+    const state = await loadResolution(supabase, userId, resolutionId);
+    if (!state) return null;
+
+    const { phase } = state.resolution;
+
     switch (phase) {
       case "planning":
         await handlePlanning(supabase, userId, state);
@@ -623,7 +673,6 @@ export async function tick(
       case "verifying":
         await handleVerifying(supabase, userId, state);
         break;
-      // Terminal phases — no action
       case "awaiting_fix_approval":
       case "resolved":
       case "stuck":
@@ -633,8 +682,9 @@ export async function tick(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     await appendLog(supabase, userId, resolutionId, "error", `Agent error: ${message}`);
+  } finally {
+    activeTicks.delete(resolutionId);
   }
 
-  // Return fresh state
   return loadResolution(supabase, userId, resolutionId);
 }

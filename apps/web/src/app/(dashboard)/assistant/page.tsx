@@ -313,8 +313,8 @@ export default function AssistantPage() {
                   <PendingActions
                     steps={pendingDiagnosticSteps}
                     loading={loading}
-                    onApproveAll={(ids) => approveSteps(ids, "approve")}
-                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                    onApprove={(ids) => approveSteps(ids, "approve")}
+                    onReject={(ids) => approveSteps(ids, "reject")}
                   />
                 </div>
               )}
@@ -325,8 +325,8 @@ export default function AssistantPage() {
                   <PendingActions
                     steps={pendingFixSteps}
                     loading={loading}
-                    onApproveAll={(ids) => approveSteps(ids, "approve")}
-                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                    onApprove={(ids) => approveSteps(ids, "approve")}
+                    onReject={(ids) => approveSteps(ids, "reject")}
                   />
                 </div>
               )}
@@ -337,27 +337,30 @@ export default function AssistantPage() {
                   <PendingActions
                     steps={verificationSteps}
                     loading={loading}
-                    onApproveAll={(ids) => approveSteps(ids, "approve")}
-                    onRejectAll={(ids) => approveSteps(ids, "reject")}
+                    onApprove={(ids) => approveSteps(ids, "approve")}
+                    onReject={(ids) => approveSteps(ids, "reject")}
                   />
                 </div>
               )}
 
-              {/* User context input — show when stuck or when user wants to add info */}
-              {(phase === "stuck" || phase === "diagnosing" || phase === "awaiting_fix_approval") && (
+              {/* User input — available at all active phases for questions or context */}
+              {phase !== "resolved" && phase !== "cancelled" && (
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h3 className="text-sm font-semibold mb-2">
-                    {phase === "stuck" ? "Help the agent try again" : "Add context"}
+                    {phase === "stuck"
+                      ? "Help the agent try again"
+                      : "Ask a question or add context"}
                   </h3>
+                  <p className="text-xs text-muted-foreground mb-2">
+                    {phase === "stuck"
+                      ? "Provide additional info so the agent can try a different approach."
+                      : "Ask about the findings, suggest a different approach, or add information the agent should know."}
+                  </p>
                   <div className="flex gap-2">
                     <input
                       value={contextMessage}
                       onChange={(e) => setContextMessage(e.target.value)}
-                      placeholder={
-                        phase === "stuck"
-                          ? "Provide additional info so the agent can try a different approach..."
-                          : "Add more context about the problem..."
-                      }
+                      placeholder="Type a question or provide additional context..."
                       className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendContext(); } }}
                     />
