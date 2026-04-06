@@ -812,25 +812,29 @@ function getUserContext(res: ResolutionFull): string {
 }
 
 function getHistoryContext(res: ResolutionFull): string {
-  if (res.resolution.attempt_count === 0) return "";
-  const fixHistory = res.steps
-    .filter(s => s.category === "fix")
-    .map(s => `- ${s.title}: ${s.status}${s.result_text ? ` (${s.result_text.slice(0, 200)})` : ""}`)
-    .join("\n");
+  // Always include diagnostics already run — never gate on attempt_count.
+  // This prevents the planner from re-proposing tools that were already executed
+  // when replanning after stuck or after a rejected fix.
+  const ranDiag = res.steps.filter(s => s.category === "diagnostic" && (s.status === "completed" || s.status === "failed"));
+  const diagNote = ranDiag.length > 0
+    ? `\nDIAGNOSTICS ALREADY RUN — DO NOT RE-PROPOSE THESE:\n${ranDiag.map(s => `- ${s.tool_name} on ${s.target}: ${s.status}`).join("\n")}`
+    : "";
+
+  const diagSummary = res.resolution.diagnosis_summary
+    ? `\nCurrent diagnosis: ${res.resolution.diagnosis_summary.slice(0, 600)}`
+    : "";
+
+  const fixHistory = res.steps.filter(s => s.category === "fix");
+  const fixNote = fixHistory.length > 0
+    ? `\nFIXES ALREADY TRIED:\n${fixHistory.map(s => `- ${s.title} on ${s.target}: ${s.status}${s.result_text ? ` — ${s.result_text.slice(0, 150)}` : ""}`).join("\n")}`
+    : "";
+
   const verNote = res.resolution.verification_result
     ? `\nVerification result: ${res.resolution.verification_result}`
     : "";
-  const diagHistory = res.steps
-    .filter(s => s.category === "diagnostic" && (s.status === "completed" || s.status === "failed"))
-    .map(s => `- ${s.tool_name} on ${s.target}: ${s.status}`)
-    .join("\n");
-  const diagNote = diagHistory
-    ? `\nDIAGNOSTICS ALREADY RUN (do NOT re-propose these):\n${diagHistory}`
-    : "";
-  const diagSummary = res.resolution.diagnosis_summary
-    ? `\nPrevious diagnosis: ${res.resolution.diagnosis_summary.slice(0, 500)}`
-    : "";
-  return `\nPREVIOUS ATTEMPT ${res.resolution.attempt_count} RESULT:${diagSummary}${diagNote}\nFix actions tried:\n${fixHistory}${verNote}`;
+
+  const parts = [diagSummary, diagNote, fixNote, verNote].filter(Boolean);
+  return parts.length > 0 ? `\nCONTEXT FROM THIS INVESTIGATION SO FAR:${parts.join("")}\n` : "";
 }
 
 function planningPrompt(res: ResolutionFull, context: Record<string, unknown>): string {
