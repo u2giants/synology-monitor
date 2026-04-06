@@ -49,7 +49,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "key and value are required strings." }, { status: 400 });
     }
 
-    const allowedKeys = ["diagnosis_model", "remediation_model"];
+    const allowedKeys = ["diagnosis_model", "remediation_model", "second_opinion_model"];
     if (!allowedKeys.includes(key)) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
     }

@@ -40,3 +40,8 @@ export async function getRemediationModel(): Promise<string> {
   const settings = await loadSettings();
   return settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
 }
+
+export async function getSecondOpinionModel(): Promise<string> {
+  const settings = await loadSettings();
+  return settings.second_opinion_model || "anthropic/claude-sonnet-4";
+}

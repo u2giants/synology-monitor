@@ -7,7 +7,7 @@
  */
 
 import { callMinimaxJSON } from "./minimax";
-import { getRemediationModel } from "./ai-settings";
+import { getRemediationModel, getSecondOpinionModel } from "./ai-settings";
 import { runNasScript, getNasConfigs } from "./nas";
 import {
   TOOL_DEFINITIONS,
@@ -153,9 +153,9 @@ interface VerificationResponse {
   remaining_concerns: string;
 }
 
-async function callRemediation<T>(prompt: string): Promise<T> {
+async function callModel<T>(prompt: string, modelOverride?: string): Promise<T> {
   const client = getOpenAIClient();
-  const model = await getRemediationModel();
+  const model = modelOverride ?? await getRemediationModel();
 
   const response = await client.chat.completions.create({
     model,
@@ -167,6 +167,17 @@ async function callRemediation<T>(prompt: string): Promise<T> {
   const text = response.choices?.[0]?.message?.content ?? "";
   const cleaned = text.replace(/^```json\s*/i, "").replace(/\s*```$/, "").trim();
   return JSON.parse(cleaned) as T;
+}
+
+/** Call the primary remediation model */
+async function callRemediation<T>(prompt: string): Promise<T> {
+  return callModel<T>(prompt);
+}
+
+/** Call the second opinion model */
+async function callSecondOpinion<T>(prompt: string): Promise<T> {
+  const model = await getSecondOpinionModel();
+  return callModel<T>(prompt, model);
 }
 
 // --- Step materialization with null-safety ---
@@ -441,15 +452,30 @@ async function handlePlanning(
 
   const context = await fetchSystemContext(supabase, state.resolution.lookback_hours);
 
-  const { data: plan, error } = await callMinimaxJSON<PlanResponse>(
+  // Try the fast diagnosis model first
+  let plan: PlanResponse | null = null;
+  const { data: fastPlan, error: fastError } = await callMinimaxJSON<PlanResponse>(
     "You are a Synology NAS diagnostic planner. Respond ONLY with valid JSON.",
     planningPrompt(state, context)
   );
 
-  if (error || !plan || !plan.steps?.length) {
+  if (fastPlan && fastPlan.steps?.length >= 2) {
+    plan = fastPlan;
+  } else {
+    // Escalate to the stronger remediation model for a better plan
+    await appendLog(supabase, userId, state.resolution.id, "plan",
+      `Diagnosis model returned ${fastPlan?.steps?.length ?? 0} steps. Escalating to stronger model for a more thorough plan.`);
+    try {
+      plan = await callRemediation<PlanResponse>(planningPrompt(state, context));
+    } catch {
+      plan = fastPlan; // Fall back to whatever the fast model returned
+    }
+  }
+
+  if (!plan || !plan.steps?.length) {
     await appendLog(supabase, userId, state.resolution.id, "error",
-      "Failed to generate a diagnostic plan. The AI could not determine what to check.",
-      error ?? "No steps returned");
+      "Failed to generate a diagnostic plan. Neither AI model could determine what to check.",
+      fastError ?? "No steps returned");
     await updateResolution(supabase, userId, state.resolution.id, {
       phase: "stuck",
       stuck_reason: "Could not generate a diagnostic plan. Try adding more context about the issue.",
@@ -513,7 +539,61 @@ async function handleAnalyzing(
   const fresh = await loadResolution(supabase, userId, state.resolution.id);
   if (!fresh) return;
 
-  const analysis = await callRemediation<AnalysisResponse>(analysisPrompt(fresh));
+  const primaryAnalysis = await callRemediation<AnalysisResponse>(analysisPrompt(fresh));
+
+  let analysis = primaryAnalysis;
+
+  // If primary model isn't confident, get a second opinion from a different model
+  if (analysis.confidence !== "high") {
+    await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+      `Primary model confidence: ${analysis.confidence}. Requesting second opinion from a different AI model.`);
+
+    try {
+      const secondPrompt = `${analysisPrompt(fresh)}
+
+IMPORTANT: A different AI model already analyzed this and concluded:
+- Diagnosis: ${analysis.diagnosis_summary}
+- Root cause: ${analysis.root_cause}
+- Confidence: ${analysis.confidence}
+${analysis.needs_more_diagnostics ? `- It recommended more diagnostics: ${JSON.stringify(analysis.additional_steps)}` : ""}
+
+You are a second opinion. Do you agree with this diagnosis? If you have a different theory or see something the first model missed, say so. If you agree, you can raise the confidence level.`;
+
+      const secondOpinion = await callSecondOpinion<AnalysisResponse>(secondPrompt);
+
+      // Use whichever analysis has higher confidence, or merge insights
+      if (secondOpinion.confidence === "high" || (secondOpinion.confidence === "medium" && analysis.confidence === "low")) {
+        const mergedSummary = secondOpinion.diagnosis_summary !== analysis.diagnosis_summary
+          ? `${secondOpinion.diagnosis_summary}\n\n(First opinion: ${analysis.diagnosis_summary})`
+          : secondOpinion.diagnosis_summary;
+
+        analysis = {
+          ...secondOpinion,
+          diagnosis_summary: mergedSummary,
+          additional_steps: [
+            ...(analysis.additional_steps ?? []),
+            ...(secondOpinion.additional_steps ?? []),
+          ],
+        };
+
+        await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+          `Second opinion raised confidence to ${secondOpinion.confidence}. ${secondOpinion.root_cause !== analysis.root_cause ? `Different root cause suggested: ${secondOpinion.root_cause}` : "Agrees with primary diagnosis."}`);
+      } else {
+        await appendLog(supabase, userId, fresh.resolution.id, "analysis",
+          `Second opinion also at ${secondOpinion.confidence} confidence. ${secondOpinion.diagnosis_summary}`);
+
+        // Merge any additional diagnostic suggestions from both
+        analysis.additional_steps = [
+          ...(analysis.additional_steps ?? []),
+          ...(secondOpinion.additional_steps ?? []),
+        ];
+        if (secondOpinion.needs_more_diagnostics) analysis.needs_more_diagnostics = true;
+      }
+    } catch (err) {
+      await appendLog(supabase, userId, fresh.resolution.id, "error",
+        `Second opinion model failed: ${err instanceof Error ? err.message : "unknown error"}. Proceeding with primary analysis.`);
+    }
+  }
 
   // If AI wants more diagnostics OR confidence is not high, loop back
   const needsMore = analysis.needs_more_diagnostics || analysis.confidence !== "high";
@@ -522,7 +602,16 @@ async function handleAnalyzing(
     const maxBatch = fresh.steps.reduce((max, s) => Math.max(max, s.batch), -1);
     const batch = maxBatch + 1;
 
-    const stepInputs = analysis.additional_steps
+    // Deduplicate additional steps by tool_name+target
+    const seen = new Set<string>();
+    const dedupedSteps = (analysis.additional_steps ?? []).filter(s => {
+      const key = `${s.tool_name}:${s.target}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const stepInputs = dedupedSteps
       .map(raw => materializeStepInput(raw, "diagnostic", fresh.resolution.auto_approve_reads, fresh.resolution.lookback_hours))
       .filter((s): s is StepInput => s !== null);
 
@@ -540,14 +629,14 @@ async function handleAnalyzing(
     await updateResolution(supabase, userId, fresh.resolution.id, {
       phase: "stuck",
       diagnosis_summary: analysis.diagnosis_summary,
-      stuck_reason: `Diagnosis confidence is low. The agent needs more information to proceed safely. Root cause hypothesis: ${analysis.root_cause}`,
+      stuck_reason: `Both AI models have low confidence in the diagnosis. The agent needs more information to proceed safely. Root cause hypothesis: ${analysis.root_cause}`,
     });
     await appendLog(supabase, userId, fresh.resolution.id, "analysis",
-      `Low confidence diagnosis. Pausing for user input.\n\n${analysis.diagnosis_summary}`);
+      `Low confidence diagnosis even after second opinion. Pausing for user input.\n\n${analysis.diagnosis_summary}`);
     return;
   }
 
-  // High or medium confidence with no more steps to run — proceed to fix proposal
+  // High or medium confidence — proceed to fix proposal
   await updateResolution(supabase, userId, fresh.resolution.id, {
     phase: "proposing_fix",
     diagnosis_summary: analysis.diagnosis_summary,

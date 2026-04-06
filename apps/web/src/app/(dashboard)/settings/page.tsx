@@ -11,6 +11,7 @@ export default function SettingsPage() {
   const [pushEnabled, setPushEnabled] = useState(false);
   const [diagnosisModel, setDiagnosisModel] = useState("");
   const [remediationModel, setRemediationModel] = useState("");
+  const [secondOpinionModel, setSecondOpinionModel] = useState("");
   const [modelsSaving, setModelsSaving] = useState(false);
   const [modelsSaved, setModelsSaved] = useState(false);
   const [availableModels, setAvailableModels] = useState<{ id: string; name: string }[]>([]);
@@ -26,8 +27,9 @@ export default function SettingsPage() {
       .then((res) => res.json())
       .then((data) => {
         if (data.settings) {
-          setDiagnosisModel(data.settings.diagnosis_model ?? "minimax/minimax-m2.7");
+          setDiagnosisModel(data.settings.diagnosis_model ?? "google/gemini-2.5-flash");
           setRemediationModel(data.settings.remediation_model ?? "openai/gpt-5.4");
+          setSecondOpinionModel(data.settings.second_opinion_model ?? "anthropic/claude-sonnet-4");
         }
       })
       .catch(() => {});
@@ -154,12 +156,24 @@ export default function SettingsPage() {
           <div>
             <label className="block text-sm font-medium mb-1">
               Remediation Model
-              <span className="font-normal text-muted-foreground ml-1">(proposes fixes, runs in NAS Copilot)</span>
+              <span className="font-normal text-muted-foreground ml-1">(proposes fixes, analyzes results, verifies)</span>
             </label>
             <ModelSelect
               value={remediationModel}
               models={availableModels}
               onChange={(v) => { setRemediationModel(v); setModelsSaved(false); }}
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Second Opinion Model
+              <span className="font-normal text-muted-foreground ml-1">(consulted when primary can&apos;t reach high confidence)</span>
+            </label>
+            <ModelSelect
+              value={secondOpinionModel}
+              models={availableModels}
+              onChange={(v) => { setSecondOpinionModel(v); setModelsSaved(false); }}
             />
           </div>
 
@@ -179,6 +193,11 @@ export default function SettingsPage() {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ key: "remediation_model", value: remediationModel }),
+                  }),
+                  fetch("/api/settings", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key: "second_opinion_model", value: secondOpinionModel }),
                   }),
                 ]);
                 setModelsSaved(true);

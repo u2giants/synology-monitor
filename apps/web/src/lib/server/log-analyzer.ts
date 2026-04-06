@@ -56,7 +56,7 @@ interface MinimaxAnalysisResponse {
 const SYSTEM_PROMPT = `You are a Synology NAS diagnostic AI. You receive raw alerts, error logs, and sync events from two Synology DS1621xs+ NAS devices (edgesynology1 and edgesynology2) that sync data between each other using Synology Drive ShareSync.
 
 Your job is to:
-1. Identify the ROOT CAUSE of each distinct problem. Multiple alerts/log entries may stem from the same root cause — group them together.
+1. Identify the ROOT CAUSE of each distinct problem. Multiple alerts/log entries may stem from the same root cause — group them aggressively. If 20 sync errors are all caused by the same Drive service crash, that is ONE problem with 20 symptoms, not 20 problems. Err on the side of grouping too much rather than too little.
 2. For each distinct root cause, produce:
    - A plain-English title (no technical jargon, understandable by a non-technical business owner)
    - A plain-English explanation of what is happening and why
@@ -196,6 +196,50 @@ function formatDataForPrompt(
 }
 
 /**
+ * After storing new problems, link related ones by shared root cause.
+ * Two problems are related if they share affected NAS + similar technical diagnosis.
+ */
+async function linkRelatedProblems(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  newProblems: AnalyzedProblem[],
+  runId: string
+) {
+  // Fetch all open problems (including ones just inserted in this run)
+  const { data: allOpen } = await supabase
+    .from("smon_analyzed_problems")
+    .select("id, slug, title, affected_nas, technical_diagnosis, analysis_run_id")
+    .eq("status", "open");
+
+  if (!allOpen || allOpen.length < 2) return;
+
+  // Group by overlapping affected_nas — problems on the same NAS are potentially related
+  const groups: Map<string, typeof allOpen> = new Map();
+  for (const problem of allOpen) {
+    const nasKey = ((problem.affected_nas as string[]) ?? []).sort().join(",") || "unknown";
+    const group = groups.get(nasKey) ?? [];
+    group.push(problem);
+    groups.set(nasKey, group);
+  }
+
+  // For each group with 2+ problems, store the relationship as a metadata update
+  for (const [, group] of groups) {
+    if (group.length < 2) continue;
+    const relatedIds = group.map(p => p.id);
+
+    for (const problem of group) {
+      const otherIds = relatedIds.filter(id => id !== problem.id);
+      if (otherIds.length > 0) {
+        // Store related problem IDs — UI can use this to show "related problems"
+        await supabase
+          .from("smon_analyzed_problems")
+          .update({ related_problem_ids: otherIds })
+          .eq("id", problem.id);
+      }
+    }
+  }
+}
+
+/**
  * Store analysis results in database
  */
 async function storeAnalysisResult(
@@ -255,6 +299,9 @@ async function storeAnalysisResult(
 
   // Auto-resolve old problems that don't appear in new analysis
   await autoResolveOldProblems(supabase, result.problems, runId);
+
+  // Link related problems by shared root cause indicators
+  await linkRelatedProblems(supabase, result.problems, runId);
 
   return runId;
 }
