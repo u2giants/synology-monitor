@@ -113,13 +113,18 @@ export function AlertList({ alerts, limit, onAlertClick }: AlertListProps) {
         );
       })}
       {limit && alerts.length > limit && (
-        <Link
-          href="/sync-triage"
-          className="flex items-center justify-center gap-2 py-2 text-sm text-primary hover:underline"
-        >
-          View sync events in Sync Triage
-          <ExternalLink className="h-4 w-4" />
-        </Link>
+        <div className="space-y-1">
+          <div className="text-center text-xs text-muted-foreground">
+            Showing {limit} of {alerts.length} active alerts
+          </div>
+          <Link
+            href="/sync-triage"
+            className="flex items-center justify-center gap-2 py-2 text-sm text-primary hover:underline"
+          >
+            Open full triage view
+            <ExternalLink className="h-4 w-4" />
+          </Link>
+        </div>
       )}
     </div>
   );

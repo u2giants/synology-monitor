@@ -75,6 +75,8 @@ export default function AssistantPage() {
     const resolutionId = searchParams.get("resolutionId");
     const problemId = searchParams.get("problemId");
     const alertId = searchParams.get("alertId") ?? searchParams.get("alert_id");
+    const title = searchParams.get("title");
+    const message = searchParams.get("message");
 
     if (resolutionId) {
       createdOnce.current = true;
@@ -96,6 +98,21 @@ export default function AssistantPage() {
     if (alertId) {
       createdOnce.current = true;
       createResolution({ originType: "alert", originId: alertId }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+      return;
+    }
+
+    if (title || message) {
+      createdOnce.current = true;
+      createResolution({
+        originType: "manual",
+        title: title ?? "Imported issue",
+        description: message ?? title ?? "Imported issue context",
+      }).then((id) => {
         if (id) {
           fetchList();
           router.replace(`/assistant?resolutionId=${id}`);

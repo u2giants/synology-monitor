@@ -113,9 +113,9 @@ export default function OverviewPage() {
             {alertsLoading ? (
               <div className="text-sm text-muted-foreground">Loading...</div>
             ) : (
-              <AlertList 
-                alerts={alerts} 
-                limit={5} 
+              <AlertList
+                alerts={alerts}
+                limit={15}
                 onAlertClick={setSelectedAlert}
               />
             )}
