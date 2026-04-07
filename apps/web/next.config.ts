@@ -7,7 +7,8 @@ function gitInfo() {
     const date = execSync("git log -1 --format=%cI", { encoding: "utf8" }).trim();
     return { sha, date };
   } catch {
-    return { sha: "unknown", date: new Date().toISOString() };
+    const sha = process.env.BUILD_SHA?.slice(0, 7) ?? "unknown";
+    return { sha, date: new Date().toISOString() };
   }
 }
 
