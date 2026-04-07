@@ -1,43 +1,50 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Bot,
-  Loader2,
-  Plus,
   AlertTriangle,
+  Bot,
   CheckCircle2,
-  XCircle,
+  ChevronRight,
+  Loader2,
+  MessageSquare,
+  Play,
+  Plus,
   Send,
-  ToggleLeft,
-  ToggleRight,
   Trash2,
-  ChevronDown,
-  ChevronUp,
+  Wrench,
+  XCircle,
 } from "lucide-react";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, formatETFull, timeAgo } from "@/lib/utils";
 import {
   useResolution,
   type Resolution,
   type ResolutionFull,
   type ResolutionMessage,
+  type ResolutionStep,
 } from "@/hooks/use-resolution";
-import { PhaseStepper } from "@/components/resolution/phase-stepper";
-import { PendingActions } from "@/components/resolution/pending-actions";
-import { ActivityLog } from "@/components/resolution/activity-log";
 
 const severityConfig = {
-  critical: { icon: AlertTriangle, className: "text-critical" },
-  warning: { icon: AlertTriangle, className: "text-warning" },
-  info: { icon: CheckCircle2, className: "text-primary" },
+  critical: { icon: AlertTriangle, className: "text-critical", badge: "bg-critical/10 text-critical border-critical/20" },
+  warning: { icon: AlertTriangle, className: "text-warning", badge: "bg-warning/10 text-warning border-warning/20" },
+  info: { icon: CheckCircle2, className: "text-primary", badge: "bg-primary/10 text-primary border-primary/20" },
+};
+
+const statusLabels: Record<Resolution["status"], string> = {
+  open: "Open",
+  running: "Working",
+  waiting_on_user: "Waiting on you",
+  waiting_for_approval: "Awaiting approval",
+  resolved: "Resolved",
+  stuck: "Blocked",
+  cancelled: "Cancelled",
 };
 
 export default function AssistantPage() {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const autoCreateDone = useRef(false);
-
+  const createdOnce = useRef(false);
   const {
     resolutions,
     current,
@@ -48,38 +55,35 @@ export default function AssistantPage() {
     createResolution,
     approveSteps,
     sendMessage,
+    continueResolution,
     cancelResolution,
-    toggleAutoApprove,
     deleteResolution,
   } = useResolution();
 
+  const [showNewForm, setShowNewForm] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
-  const [contextMessage, setContextMessage] = useState("");
-  const [showNewForm, setShowNewForm] = useState(false);
-  const [showActivityLog, setShowActivityLog] = useState(false);
+  const [draft, setDraft] = useState("");
 
-  // Load list on mount
   useEffect(() => {
     fetchList();
   }, [fetchList]);
 
-  // Handle URL params for auto-creation
   useEffect(() => {
-    if (autoCreateDone.current || loading) return;
+    if (createdOnce.current || loading) return;
 
     const resolutionId = searchParams.get("resolutionId");
     const problemId = searchParams.get("problemId");
-    const alertId = searchParams.get("alertId");
+    const alertId = searchParams.get("alertId") ?? searchParams.get("alert_id");
 
     if (resolutionId) {
-      autoCreateDone.current = true;
+      createdOnce.current = true;
       loadResolution(resolutionId);
       return;
     }
 
     if (problemId) {
-      autoCreateDone.current = true;
+      createdOnce.current = true;
       createResolution({ originType: "problem", originId: problemId }).then((id) => {
         if (id) {
           fetchList();
@@ -90,7 +94,7 @@ export default function AssistantPage() {
     }
 
     if (alertId) {
-      autoCreateDone.current = true;
+      createdOnce.current = true;
       createResolution({ originType: "alert", originId: alertId }).then((id) => {
         if (id) {
           fetchList();
@@ -98,7 +102,7 @@ export default function AssistantPage() {
         }
       });
     }
-  }, [searchParams, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [createResolution, fetchList, loadResolution, loading, router, searchParams]);
 
   async function handleCreate() {
     if (!newTitle.trim()) return;
@@ -107,38 +111,34 @@ export default function AssistantPage() {
       title: newTitle.trim(),
       description: newDescription.trim() || newTitle.trim(),
     });
-    if (id) {
-      setNewTitle("");
-      setNewDescription("");
-      setShowNewForm(false);
-      fetchList();
-      router.replace(`/assistant?resolutionId=${id}`);
-    }
+    if (!id) return;
+    setNewTitle("");
+    setNewDescription("");
+    setShowNewForm(false);
+    await fetchList();
+    router.replace(`/assistant?resolutionId=${id}`);
   }
 
-  async function handleSendContext() {
-    if (!contextMessage.trim()) return;
-    await sendMessage(contextMessage.trim());
-    setContextMessage("");
+  async function handleSend() {
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    setDraft("");
+    await sendMessage(trimmed);
+    await fetchList();
   }
 
-  const pendingDiagnosticSteps = current?.steps.filter(
-    (s) => s.category === "diagnostic" && ["planned", "approved", "running", "completed", "failed"].includes(s.status)
-  ) ?? [];
-
-  const pendingFixSteps = current?.steps.filter((s) => s.category === "fix") ?? [];
-  const verificationSteps = current?.steps.filter((s) => s.category === "verification") ?? [];
-  const phase = current?.resolution.phase ?? "";
+  const pendingActions = useMemo(
+    () => current?.steps.filter((step) => step.status === "proposed") ?? [],
+    [current]
+  );
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">NAS Issue Resolution</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            AI agent that diagnoses and fixes NAS problems end-to-end.
-          </p>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold">Issue Agent</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          One persistent conversation per issue. The agent owns the diagnosis, remembers every result, and asks for approval only when it has one exact action to run.
+        </p>
       </div>
 
       {error && (
@@ -147,14 +147,13 @@ export default function AssistantPage() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-        {/* Left sidebar */}
+      <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
         <aside className="space-y-3">
           <div className="rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <h2 className="text-sm font-semibold">Issues</h2>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Issue Threads</h2>
               <button
-                onClick={() => setShowNewForm(!showNewForm)}
+                onClick={() => setShowNewForm((value) => !value)}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -163,46 +162,46 @@ export default function AssistantPage() {
             </div>
 
             {showNewForm && (
-              <div className="space-y-2 mb-3 p-3 rounded-lg border border-border bg-background">
+              <div className="mb-3 space-y-2 rounded-lg border border-border bg-background p-3">
                 <input
                   value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="What's the problem?"
+                  onChange={(event) => setNewTitle(event.target.value)}
+                  placeholder="Issue title"
                   className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
                 />
                 <textarea
                   value={newDescription}
-                  onChange={(e) => setNewDescription(e.target.value)}
-                  placeholder="More details (optional)..."
-                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm min-h-16 focus:border-primary focus:outline-none"
+                  onChange={(event) => setNewDescription(event.target.value)}
+                  placeholder="What do you know so far?"
+                  className="min-h-20 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
                 />
                 <button
                   onClick={handleCreate}
                   disabled={loading || !newTitle.trim()}
                   className="w-full rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin mx-auto" /> : "Start Resolution"}
+                  Start issue
                 </button>
               </div>
             )}
 
             {resolutions.length === 0 ? (
               <div className="text-xs text-muted-foreground">
-                No issues yet. Click New to report a problem, or use "Fix this" on the dashboard.
+                No issue threads yet. Create one manually or run issue detection from the dashboard.
               </div>
             ) : (
-              <div className="space-y-1.5 max-h-[60vh] overflow-y-auto">
-                {resolutions.map((r) => (
-                  <ResolutionListItem
-                    key={r.id}
-                    resolution={r}
-                    active={current?.resolution.id === r.id}
+              <div className="space-y-1.5">
+                {resolutions.map((resolution) => (
+                  <IssueListItem
+                    key={resolution.id}
+                    resolution={resolution}
+                    active={current?.resolution.id === resolution.id}
                     onClick={() => {
-                      loadResolution(r.id);
-                      router.replace(`/assistant?resolutionId=${r.id}`);
+                      loadResolution(resolution.id);
+                      router.replace(`/assistant?resolutionId=${resolution.id}`);
                     }}
                     onDelete={() => {
-                      deleteResolution(r.id);
+                      deleteResolution(resolution.id);
                       router.replace("/assistant");
                     }}
                   />
@@ -212,121 +211,62 @@ export default function AssistantPage() {
           </div>
         </aside>
 
-        {/* Main area */}
         <section className="space-y-4">
           {!current ? (
             <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted-foreground">
-              <Bot className="h-10 w-10 mx-auto mb-3 opacity-40" />
-              <p className="text-sm">Select an issue from the sidebar, or create a new one.</p>
-              <p className="text-xs mt-1">You can also click "Fix this" on the dashboard problems list.</p>
+              <Bot className="mx-auto mb-3 h-10 w-10 opacity-40" />
+              <p className="text-sm">Select an issue thread or create a new one.</p>
             </div>
           ) : (
             <>
-              {/* Header: title + controls */}
-              <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      {(() => {
-                        const sev = severityConfig[current.resolution.severity];
-                        const Icon = sev.icon;
-                        return <Icon className={cn("h-5 w-5", sev.className)} />;
-                      })()}
-                      <h2 className="text-lg font-semibold">{current.resolution.title}</h2>
-                    </div>
-                    {current.resolution.affected_nas.length > 0 && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Affects: {current.resolution.affected_nas.join(", ")}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => toggleAutoApprove(!current.resolution.auto_approve_reads)}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                      title="Auto-approve read-only diagnostics"
-                    >
-                      {current.resolution.auto_approve_reads ? (
-                        <ToggleRight className="h-4 w-4 text-primary" />
-                      ) : (
-                        <ToggleLeft className="h-4 w-4" />
-                      )}
-                      Auto-diag
-                    </button>
-                    {phase !== "resolved" && phase !== "cancelled" && (
-                      <button
-                        onClick={cancelResolution}
-                        className="text-xs text-muted-foreground hover:text-critical"
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <PhaseStepper currentPhase={phase} />
-              </div>
-
-              {/* Chat thread — the primary interface */}
-              <ChatThread
-                current={current}
+              <IssueHeader
+                state={current}
                 loading={loading}
-                contextMessage={contextMessage}
-                onContextMessageChange={setContextMessage}
-                onSend={handleSendContext}
-                phase={phase}
+                onContinue={continueResolution}
+                onCancel={cancelResolution}
               />
 
-              {/* Pending actions */}
-              {(phase === "diagnosing" || phase === "analyzing") && pendingDiagnosticSteps.length > 0 && (
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-semibold mb-3">Diagnostic Steps</h3>
-                  <PendingActions
-                    steps={pendingDiagnosticSteps}
-                    loading={loading}
-                    onApprove={(ids) => approveSteps(ids, "approve")}
-                    onReject={(ids) => approveSteps(ids, "reject")}
-                  />
-                </div>
+              {pendingActions.length > 0 && (
+                <ActionPanel
+                  steps={pendingActions}
+                  loading={loading}
+                  onApprove={(ids) => approveSteps(ids, "approve")}
+                  onReject={(ids) => approveSteps(ids, "reject")}
+                />
               )}
 
-              {(phase === "awaiting_fix_approval" || phase === "applying_fix") && pendingFixSteps.length > 0 && (
+              <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
                 <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-semibold mb-3">Fix Actions</h3>
-                  <PendingActions
-                    steps={pendingFixSteps}
-                    loading={loading}
-                    onApprove={(ids) => approveSteps(ids, "approve")}
-                    onReject={(ids) => approveSteps(ids, "reject")}
-                  />
-                </div>
-              )}
-
-              {phase === "verifying" && verificationSteps.length > 0 && (
-                <div className="rounded-xl border border-border bg-card p-4">
-                  <h3 className="text-sm font-semibold mb-3">Verification</h3>
-                  <PendingActions
-                    steps={verificationSteps}
-                    loading={loading}
-                    onApprove={(ids) => approveSteps(ids, "approve")}
-                    onReject={(ids) => approveSteps(ids, "reject")}
-                  />
-                </div>
-              )}
-
-              {/* Activity log — collapsed by default */}
-              <div className="rounded-xl border border-border bg-card">
-                <button
-                  onClick={() => setShowActivityLog(!showActivityLog)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-sm font-semibold hover:bg-muted/30 rounded-xl"
-                >
-                  <span>Technical Details</span>
-                  {showActivityLog ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                </button>
-                {showActivityLog && (
-                  <div className="px-4 pb-4">
-                    <ActivityLog entries={current.log} />
+                  <div className="mb-3 flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                    <h2 className="text-sm font-semibold">Conversation</h2>
                   </div>
-                )}
+
+                  <div className="space-y-3">
+                    {current.messages.map((message) => (
+                      <MessageBubble key={message.id} message={message} />
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <textarea
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      placeholder="Reply to this issue thread..."
+                      className="min-h-24 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                    />
+                    <button
+                      onClick={handleSend}
+                      disabled={loading || !draft.trim()}
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      Send
+                    </button>
+                  </div>
+                </div>
+
+                <IssueSidebar state={current} />
               </div>
             </>
           )}
@@ -336,116 +276,206 @@ export default function AssistantPage() {
   );
 }
 
-function ChatThread({
-  current,
+function IssueHeader({
+  state,
   loading,
-  contextMessage,
-  onContextMessageChange,
-  onSend,
-  phase,
+  onContinue,
+  onCancel,
 }: {
-  current: ResolutionFull;
+  state: ResolutionFull;
   loading: boolean;
-  contextMessage: string;
-  onContextMessageChange: (v: string) => void;
-  onSend: () => void;
-  phase: string;
+  onContinue: () => void;
+  onCancel: () => void;
 }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const messages = current.messages ?? [];
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
-
-  const isFinished = phase === "resolved" || phase === "cancelled";
-  const isWorking = ["planning", "diagnosing", "analyzing", "proposing_fix", "applying_fix", "verifying"].includes(phase);
+  const config = severityConfig[state.resolution.severity];
+  const Icon = config.icon;
 
   return (
-    <div className="rounded-xl border border-border bg-card flex flex-col">
-      {/* Message list */}
-      <div className="flex flex-col gap-3 p-4 min-h-[200px] max-h-[520px] overflow-y-auto">
-        {messages.length === 0 ? (
-          <div className="flex items-center justify-center h-24 text-sm text-muted-foreground">
-            {isWorking ? (
-              <span className="flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin" /> Agent is working...</span>
-            ) : (
-              <span>Conversation will appear here as the agent works through the issue.</span>
-            )}
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Icon className={cn("h-5 w-5", config.className)} />
+            <h2 className="text-lg font-semibold">{state.resolution.title}</h2>
+            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", config.badge)}>
+              {state.resolution.severity}
+            </span>
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+              {statusLabels[state.resolution.status]}
+            </span>
           </div>
-        ) : (
-          messages.map((msg) => (
-            <ChatBubble key={msg.id} message={msg} />
-          ))
-        )}
-        {/* Typing indicator when agent is actively working */}
-        {isWorking && messages.length > 0 && (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span>Agent is working...</span>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
+          <p className="text-sm text-muted-foreground">{state.resolution.summary}</p>
+          {state.resolution.affected_nas.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Affects: {state.resolution.affected_nas.join(", ")}
+            </p>
+          )}
+        </div>
 
-      {/* Message input */}
-      {!isFinished && (
-        <div className="border-t border-border p-3 flex gap-2">
-          <input
-            value={contextMessage}
-            onChange={(e) => onContextMessageChange(e.target.value)}
-            placeholder={
-              phase === "stuck"
-                ? "Provide additional info to help the agent try again..."
-                : phase === "awaiting_fix_approval"
-                ? "Reject the fix above, or type to redirect the agent..."
-                : "Ask a question, push back, or add context..."
-            }
-            className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } }}
-            disabled={loading}
-          />
+        <div className="flex gap-2">
           <button
-            onClick={onSend}
-            disabled={loading || !contextMessage.trim()}
-            className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            onClick={onContinue}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
           >
-            <Send className="h-4 w-4" />
+            <Play className="h-4 w-4" />
+            Continue
           </button>
+          {state.resolution.status !== "resolved" && state.resolution.status !== "cancelled" && (
+            <button
+              onClick={onCancel}
+              disabled={loading}
+              className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-critical disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          )}
         </div>
-      )}
-    </div>
-  );
-}
-
-function ChatBubble({ message }: { message: ResolutionMessage }) {
-  const isUser = message.role === "user";
-  return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
-      {!isUser && (
-        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center mr-2 mt-0.5">
-          <Bot className="h-4 w-4 text-primary" />
-        </div>
-      )}
-      <div className={cn(
-        "max-w-[80%] rounded-2xl px-4 py-2.5 text-sm",
-        isUser
-          ? "bg-primary text-primary-foreground rounded-tr-sm"
-          : "bg-muted text-foreground rounded-tl-sm"
-      )}>
-        <p className="whitespace-pre-wrap leading-relaxed">{message.content}</p>
-        <p className={cn(
-          "text-[10px] mt-1",
-          isUser ? "text-primary-foreground/60 text-right" : "text-muted-foreground"
-        )}>
-          {timeAgo(message.created_at)}
-        </p>
       </div>
     </div>
   );
 }
 
-function ResolutionListItem({
+function IssueSidebar({ state }: { state: ResolutionFull }) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Working Theory</h3>
+        <p className="mt-2 text-sm">{state.resolution.current_hypothesis || "No stable hypothesis yet."}</p>
+        <div className="mt-3 text-xs text-muted-foreground">
+          Confidence: {state.resolution.hypothesis_confidence}
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">
+          Next step: {state.resolution.next_step || "Awaiting next agent step."}
+        </div>
+      </div>
+
+      {state.resolution.operator_constraints.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">Operator Constraints</h3>
+          <div className="mt-2 space-y-2">
+            {state.resolution.operator_constraints.map((constraint) => (
+              <div key={constraint} className="rounded-md bg-muted px-3 py-2 text-xs">
+                {constraint}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Evidence Timeline</h3>
+        <div className="mt-3 space-y-2">
+          {state.log.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No evidence captured yet.</div>
+          ) : (
+            state.log.slice(-8).reverse().map((entry) => (
+              <div key={entry.id} className="rounded-lg border border-border bg-background p-3">
+                <div className="text-xs font-medium">{entry.title}</div>
+                <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{entry.detail}</p>
+                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(entry.created_at)}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ActionPanel({
+  steps,
+  loading,
+  onApprove,
+  onReject,
+}: {
+  steps: ResolutionStep[];
+  loading: boolean;
+  onApprove: (ids: string[]) => void;
+  onReject: (ids: string[]) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Wrench className="h-4 w-4 text-warning" />
+        <h3 className="text-sm font-semibold">Pending approval</h3>
+      </div>
+      <div className="space-y-3">
+        {steps.map((step) => (
+          <div key={step.id} className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">{step.summary}</div>
+                <div className="text-xs text-muted-foreground">
+                  {step.target} · {step.tool_name} · risk {step.risk}
+                </div>
+                <p className="text-sm text-muted-foreground">{step.reason}</p>
+                <p className="text-xs text-muted-foreground">Expected outcome: {step.expected_outcome}</p>
+                {step.rollback_plan && (
+                  <p className="text-xs text-muted-foreground">Rollback: {step.rollback_plan}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => onApprove([step.id])}
+                  disabled={loading}
+                  className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => onReject([step.id])}
+                  disabled={loading}
+                  className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                Exact command
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap rounded-md bg-black/90 p-3 text-xs text-white/85">
+                {step.command_preview}
+              </pre>
+            </details>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: ResolutionMessage }) {
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-3",
+        isUser
+          ? "ml-8 border-primary/20 bg-primary/5"
+          : isSystem
+            ? "border-border bg-muted/40"
+            : "mr-8 border-border bg-background"
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {isUser ? "You" : isSystem ? "System" : "Agent"}
+        </span>
+        <span className="text-[11px] text-muted-foreground">
+          {formatETFull(message.created_at)}
+        </span>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-sm">{message.content}</p>
+    </div>
+  );
+}
+
+function IssueListItem({
   resolution,
   active,
   onClick,
@@ -456,43 +486,37 @@ function ResolutionListItem({
   onClick: () => void;
   onDelete: () => void;
 }) {
-  const phase = resolution.phase;
-  const isTerminal = phase === "resolved" || phase === "cancelled";
+  const config = severityConfig[resolution.severity];
+  const Icon = config.icon;
 
   return (
-    <div className={cn(
-      "group relative rounded-lg border transition-colors",
-      active
-        ? "border-primary bg-primary/5"
-        : "border-border bg-background hover:bg-muted/40",
-      isTerminal && "opacity-60"
-    )}>
-      <button
-        onClick={onClick}
-        className="w-full px-3 py-2 text-left"
-      >
-        <div className="flex items-center gap-1.5 pr-5">
-          {phase === "resolved" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />
-          ) : phase === "stuck" ? (
-            <AlertTriangle className="h-3.5 w-3.5 text-critical shrink-0" />
-          ) : phase === "cancelled" ? (
-            <XCircle className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-          ) : (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" />
-          )}
-          <span className="text-sm font-medium truncate">{resolution.title}</span>
-        </div>
-        <div className="text-[11px] text-muted-foreground mt-1">
-          {phase} · {timeAgo(resolution.updated_at)}
+    <div
+      className={cn(
+        "group rounded-lg border p-3 transition-colors",
+        active ? "border-primary/30 bg-primary/5" : "border-border bg-background hover:border-primary/20"
+      )}
+    >
+      <button onClick={onClick} className="w-full text-left">
+        <div className="flex items-start gap-2">
+          <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", config.className)} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-medium">{resolution.title}</span>
+              <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+            </div>
+            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{resolution.summary}</p>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              {statusLabels[resolution.status]} · {timeAgo(resolution.updated_at)}
+            </div>
+          </div>
         </div>
       </button>
       <button
-        onClick={(e) => { e.stopPropagation(); onDelete(); }}
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-critical transition-opacity"
-        title="Delete issue"
+        onClick={onDelete}
+        className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-critical"
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        <Trash2 className="h-3 w-3" />
+        Delete
       </button>
     </div>
   );

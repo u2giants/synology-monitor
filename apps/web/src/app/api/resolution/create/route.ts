@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { createResolution } from "@/lib/server/resolution-store";
-import { tick } from "@/lib/server/resolution-agent";
+import { createIssue, loadIssue } from "@/lib/server/issue-store";
+import { runIssueAgent, seedIssueFromOrigin } from "@/lib/server/issue-agent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,33 +14,33 @@ export async function POST(request: Request) {
     if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
 
     const body = await request.json() as {
-      originType: "problem" | "alert" | "manual";
+      originType: "manual" | "alert" | "problem";
       originId?: string;
       title?: string;
       description?: string;
-      lookbackHours?: number;
     };
 
-    let title = body.title ?? "";
-    let description = body.description ?? "";
+    let title = body.title?.trim() ?? "";
+    let seed = body.description?.trim() ?? "";
     let severity: "critical" | "warning" | "info" = "warning";
     let affectedNas: string[] = [];
 
-    // Auto-populate from origin
     if (body.originType === "problem" && body.originId) {
       const { data: problem } = await supabase
         .from("smon_analyzed_problems")
-        .select("title, explanation, severity, affected_nas, technical_diagnosis")
+        .select("title, explanation, technical_diagnosis, severity, affected_nas")
         .eq("id", body.originId)
         .maybeSingle();
 
       if (problem) {
         title = title || problem.title;
-        description = description || `${problem.explanation}\n\nTechnical diagnosis: ${problem.technical_diagnosis}`;
-        severity = problem.severity ?? "warning";
+        seed = seed || `${problem.explanation}\n\nTechnical diagnosis: ${problem.technical_diagnosis}`;
+        severity = problem.severity ?? severity;
         affectedNas = (problem.affected_nas as string[]) ?? [];
       }
-    } else if (body.originType === "alert" && body.originId) {
+    }
+
+    if (body.originType === "alert" && body.originId) {
       const { data: alert } = await supabase
         .from("smon_alerts")
         .select("title, message, severity")
@@ -49,31 +49,33 @@ export async function POST(request: Request) {
 
       if (alert) {
         title = title || alert.title;
-        description = description || alert.message;
-        severity = alert.severity ?? "warning";
+        seed = seed || alert.message || alert.title;
+        severity = alert.severity ?? severity;
       }
     }
 
-    if (!title) title = "Manual issue report";
-    if (!description) description = title;
+    if (!title) title = "Untitled issue";
+    if (!seed) seed = title;
 
-    const resolutionId = await createResolution(supabase, user.id, {
+    const issueId = await createIssue(supabase, user.id, {
       originType: body.originType,
-      originId: body.originId,
+      originId: body.originId ?? null,
       title,
-      description,
+      summary: seed,
       severity,
       affectedNas,
-      lookbackHours: body.lookbackHours,
     });
 
-    // Immediately start planning
-    const state = await tick(supabase, user.id, resolutionId);
+    const existing = await loadIssue(supabase, user.id, issueId);
+    if (existing && existing.messages.length === 0) {
+      await seedIssueFromOrigin(supabase, user.id, issueId, seed);
+    }
 
-    return NextResponse.json({ resolutionId, state });
+    const state = await runIssueAgent(supabase, user.id, issueId);
+    return NextResponse.json({ resolutionId: issueId, state });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Failed to create resolution." },
+      { error: error instanceof Error ? error.message : "Failed to create issue." },
       { status: 500 }
     );
   }

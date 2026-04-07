@@ -130,7 +130,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     description: "Write. Rename a problematic file by appending .old to its name.",
     write: true,
     buildPreview: (_target, input) => {
-      const filePath = input.filter || "/volume1/SharedDrive/problematic_file.txt";
+      const filePath = input.filter?.trim();
+      if (!filePath) {
+        throw new Error("rename_file_to_old requires an exact file path.");
+      }
       return `mv "${filePath}" "${filePath}.old" && echo "Renamed successfully"`;
     },
   },
@@ -138,7 +141,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     description: "Write. Remove invalid characters from a filename that breaks ShareSync.",
     write: true,
     buildPreview: (_target, input) => {
-      const filePath = input.filter || "/volume1/SharedDrive/file_with_invalid_chars.txt";
+      const filePath = input.filter?.trim();
+      if (!filePath) {
+        throw new Error("remove_invalid_chars requires an exact file path.");
+      }
       return `dir=$(dirname "${filePath}"); file=$(basename "${filePath}"); newfile=$(echo "$file" | sed 's/[/\\:*?"<>|]/_/g'); [ "$file" != "$newfile" ] && mv "${filePath}" "$dir/$newfile" && echo "Renamed: $file -> $newfile" || echo "No invalid characters found"`;
     },
   },
@@ -146,7 +152,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     description: "Write. Trigger a manual re-sync by restarting ShareSync.",
     write: true,
     buildPreview: (_target, input) => {
-      const folder = input.filter || "/volume1/SharedFolder";
+      const folder = input.filter?.trim();
+      if (!folder) {
+        throw new Error("trigger_sharesync_resync requires the exact ShareSync folder or task identifier.");
+      }
       return `/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
     },
   },

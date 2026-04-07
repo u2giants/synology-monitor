@@ -1,189 +1,118 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useState } from "react";
 
-// Types matching the server-side resolution-store
 export interface Resolution {
   id: string;
-  origin_type: string;
+  origin_type: "manual" | "alert" | "problem" | "detected";
   title: string;
-  description: string;
+  summary: string;
   severity: "critical" | "warning" | "info";
+  status: "open" | "running" | "waiting_on_user" | "waiting_for_approval" | "resolved" | "stuck" | "cancelled";
   affected_nas: string[];
-  phase: string;
-  diagnosis_summary: string | null;
-  root_cause: string | null;
-  fix_summary: string | null;
-  verification_result: string | null;
-  stuck_reason: string | null;
-  attempt_count: number;
-  max_attempts: number;
-  auto_approve_reads: boolean;
-  lookback_hours: number;
+  current_hypothesis: string;
+  hypothesis_confidence: "high" | "medium" | "low";
+  next_step: string;
+  conversation_summary: string;
+  operator_constraints: string[];
+  blocked_tools: string[];
+  last_agent_message: string | null;
+  last_user_message: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
 }
 
+export interface ResolutionMessage {
+  id: string;
+  resolution_id?: string;
+  issue_id?: string;
+  role: "user" | "agent" | "system";
+  content: string;
+  created_at: string;
+}
+
 export interface ResolutionStep {
   id: string;
-  resolution_id: string;
-  step_order: number;
-  batch: number;
-  category: "diagnostic" | "fix" | "verification";
-  title: string;
-  target: string;
+  issue_id: string;
+  kind: "diagnostic" | "remediation";
+  status: "proposed" | "approved" | "rejected" | "running" | "completed" | "failed" | "skipped";
+  target: string | null;
   tool_name: string;
   command_preview: string;
+  summary: string;
   reason: string;
+  expected_outcome: string;
+  rollback_plan: string;
   risk: "low" | "medium" | "high";
   requires_approval: boolean;
-  status: string;
   result_text: string | null;
+  approval_token: string | null;
   created_at: string;
+  completed_at: string | null;
 }
 
 export interface ResolutionLogEntry {
   id: string;
-  entry_type: string;
-  content: string;
-  technical_detail: string | null;
-  created_at: string;
-}
-
-export interface ResolutionMessage {
-  id: string;
-  resolution_id: string;
-  role: "user" | "agent";
-  content: string;
+  source_kind: string;
+  title: string;
+  detail: string;
   created_at: string;
 }
 
 export interface ResolutionFull {
   resolution: Resolution;
+  messages: ResolutionMessage[];
   steps: ResolutionStep[];
   log: ResolutionLogEntry[];
-  messages: ResolutionMessage[];
 }
 
-// Phases where the agent is actively working (should poll)
-const ACTIVE_PHASES = new Set([
-  "planning", "diagnosing", "analyzing", "proposing_fix", "applying_fix", "verifying",
-]);
-
-// Phases where the agent is waiting for the user
-const WAITING_PHASES = new Set([
-  "awaiting_fix_approval",
-]);
-
-// Phases that are finished (diagnosing also stops when steps need approval)
-const TERMINAL_PHASES = new Set(["resolved", "stuck", "cancelled"]);
+function normalizeState(payload: any): ResolutionFull {
+  return {
+    resolution: payload.issue ?? payload.resolution,
+    messages: payload.messages ?? [],
+    steps: payload.actions ?? payload.steps ?? [],
+    log: payload.evidence ?? payload.log ?? [],
+  };
+}
 
 export function useResolution() {
   const [resolutions, setResolutions] = useState<Resolution[]>([]);
   const [current, setCurrent] = useState<ResolutionFull | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const currentIdRef = useRef<string | null>(null);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
-  // Determine if we should poll based on the current phase and step statuses
-  const shouldPoll = useCallback((state: ResolutionFull): boolean => {
-    const phase = state.resolution.phase;
-    if (TERMINAL_PHASES.has(phase) || WAITING_PHASES.has(phase)) return false;
-
-    // In diagnosing phase, poll only if there are approved or running steps (not just planned)
-    if (phase === "diagnosing") {
-      const diagSteps = state.steps.filter(s => s.category === "diagnostic");
-      const hasApprovedOrRunning = diagSteps.some(s => s.status === "approved" || s.status === "running");
-      const hasPending = diagSteps.some(s => s.status === "planned");
-      if (hasPending && !hasApprovedOrRunning) return false; // Waiting for user approval
-    }
-
-    return ACTIVE_PHASES.has(phase);
-  }, []);
-
-  const doTick = useCallback(async (resolutionId: string): Promise<ResolutionFull | null> => {
-    try {
-      const res = await fetch("/api/resolution/tick", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resolutionId }),
-      });
-      if (!res.ok) throw new Error((await res.json()).error ?? "Tick failed");
-      return await res.json() as ResolutionFull;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const startPolling = useCallback((resolutionId: string) => {
-    stopPolling();
-    currentIdRef.current = resolutionId;
-
-    const poll = async () => {
-      if (currentIdRef.current !== resolutionId) return;
-      const state = await doTick(resolutionId);
-      if (!state || currentIdRef.current !== resolutionId) return;
-
-      setCurrent(state);
-      if (!shouldPoll(state)) stopPolling();
-    };
-
-    pollRef.current = setInterval(poll, 2500);
-  }, [stopPolling, doTick, shouldPoll]);
-
-  // Cleanup on unmount
-  useEffect(() => stopPolling, [stopPolling]);
-
-  // --- Actions ---
 
   const fetchList = useCallback(async () => {
     try {
       const res = await fetch("/api/resolution/list");
-      if (res.ok) {
-        const data = await res.json();
-        setResolutions(data.resolutions ?? []);
-      }
-    } catch {
-      // ignore
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to load issues");
+      const data = await res.json();
+      setResolutions(data.resolutions ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load issues");
     }
   }, []);
 
   const loadResolution = useCallback(async (resolutionId: string) => {
     setLoading(true);
     setError(null);
-    stopPolling();
-    currentIdRef.current = resolutionId;
     try {
       const res = await fetch(`/api/resolution/${resolutionId}`);
-      if (!res.ok) throw new Error((await res.json()).error);
-      const state = await res.json() as ResolutionFull;
-      setCurrent(state);
-
-      if (shouldPoll(state)) {
-        startPolling(resolutionId);
-      }
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to load issue");
+      const data = await res.json();
+      setCurrent(normalizeState(data));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Load failed");
+      setError(err instanceof Error ? err.message : "Failed to load issue");
     } finally {
       setLoading(false);
     }
-  }, [stopPolling, startPolling, shouldPoll]);
+  }, []);
 
   const createResolution = useCallback(async (input: {
-    originType: "problem" | "alert" | "manual";
+    originType: "manual" | "alert" | "problem";
     originId?: string;
     title?: string;
     description?: string;
-    lookbackHours?: number;
   }) => {
     setLoading(true);
     setError(null);
@@ -193,28 +122,23 @@ export function useResolution() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to create issue");
       const data = await res.json();
-      const resolutionId = data.resolutionId as string;
-      setCurrent(data.state as ResolutionFull);
-      currentIdRef.current = resolutionId;
-
-      if (data.state && shouldPoll(data.state)) {
-        startPolling(resolutionId);
-      }
-
-      return resolutionId;
+      const state = normalizeState(data.state);
+      setCurrent(state);
+      return data.resolutionId as string;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Create failed");
+      setError(err instanceof Error ? err.message : "Failed to create issue");
       return null;
     } finally {
       setLoading(false);
     }
-  }, [startPolling, shouldPoll]);
+  }, []);
 
   const approveSteps = useCallback(async (stepIds: string[], decision: "approve" | "reject" = "approve") => {
     if (!current) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch("/api/resolution/approve", {
         method: "POST",
@@ -225,89 +149,92 @@ export function useResolution() {
           decision,
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const state = await res.json() as ResolutionFull;
-      setCurrent(state);
-
-      if (shouldPoll(state)) {
-        startPolling(current.resolution.id);
-      }
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to update action");
+      const data = await res.json();
+      setCurrent(normalizeState(data));
+      await fetchList();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Approve failed");
+      setError(err instanceof Error ? err.message : "Failed to update action");
     } finally {
       setLoading(false);
     }
-  }, [current, startPolling, shouldPoll]);
+  }, [current, fetchList]);
 
   const sendMessage = useCallback(async (message: string) => {
     if (!current) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch("/api/resolution/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ resolutionId: current.resolution.id, message }),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
-      const state = await res.json() as ResolutionFull;
-      setCurrent(state);
-
-      if (shouldPoll(state)) {
-        startPolling(current.resolution.id);
-      }
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to send message");
+      const data = await res.json();
+      setCurrent(normalizeState(data));
+      await fetchList();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Message failed");
+      setError(err instanceof Error ? err.message : "Failed to send message");
     } finally {
       setLoading(false);
     }
-  }, [current, startPolling, shouldPoll]);
+  }, [current, fetchList]);
+
+  const continueResolution = useCallback(async () => {
+    if (!current) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/resolution/tick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolutionId: current.resolution.id }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to continue issue");
+      const data = await res.json();
+      setCurrent(normalizeState(data));
+      await fetchList();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to continue issue");
+    } finally {
+      setLoading(false);
+    }
+  }, [current, fetchList]);
 
   const cancelResolution = useCallback(async () => {
     if (!current) return;
-    stopPolling();
+    setLoading(true);
     try {
       await fetch(`/api/resolution/${current.resolution.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phase: "cancelled" }),
+        body: JSON.stringify({ status: "cancelled" }),
       });
-      setCurrent((prev) =>
-        prev ? { ...prev, resolution: { ...prev.resolution, phase: "cancelled" } } : null
-      );
-    } catch {
-      // ignore
+      setCurrent((prev) => prev ? {
+        ...prev,
+        resolution: { ...prev.resolution, status: "cancelled" },
+      } : null);
+      await fetchList();
+    } finally {
+      setLoading(false);
     }
-  }, [current, stopPolling]);
+  }, [current, fetchList]);
 
   const deleteResolution = useCallback(async (resolutionId: string) => {
+    setLoading(true);
     try {
       await fetch(`/api/resolution/${resolutionId}`, { method: "DELETE" });
-      setResolutions((prev) => prev.filter((r) => r.id !== resolutionId));
-      if (currentIdRef.current === resolutionId) {
-        stopPolling();
-        setCurrent(null);
-        currentIdRef.current = null;
-      }
-    } catch {
-      // ignore
+      setResolutions((prev) => prev.filter((item) => item.id !== resolutionId));
+      setCurrent((prev) => prev?.resolution.id === resolutionId ? null : prev);
+    } finally {
+      setLoading(false);
     }
-  }, [stopPolling]);
+  }, []);
 
-  const toggleAutoApprove = useCallback(async (value: boolean) => {
-    if (!current) return;
-    try {
-      await fetch(`/api/resolution/${current.resolution.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ auto_approve_reads: value }),
-      });
-      setCurrent((prev) =>
-        prev ? { ...prev, resolution: { ...prev.resolution, auto_approve_reads: value } } : null
-      );
-    } catch {
-      // ignore
-    }
-  }, [current]);
+  const toggleAutoApprove = useCallback(async () => {
+    // Kept for API compatibility with the old page. No-op in the new issue agent.
+  }, []);
 
   return {
     resolutions,
@@ -319,6 +246,7 @@ export function useResolution() {
     createResolution,
     approveSteps,
     sendMessage,
+    continueResolution,
     cancelResolution,
     toggleAutoApprove,
     deleteResolution,

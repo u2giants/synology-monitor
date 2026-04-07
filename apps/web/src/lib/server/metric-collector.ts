@@ -7,7 +7,7 @@
  * into AI analysis prompts.
  */
 
-import type { SupabaseClient } from "./resolution-store";
+import type { SupabaseClient } from "./issue-store";
 
 /** Fetch recent custom metric data for a resolution, formatted for an AI prompt. */
 export async function getCustomMetricContext(

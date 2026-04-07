@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { tick } from "@/lib/server/resolution-agent";
+import { runIssueAgent } from "@/lib/server/issue-agent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,13 +15,13 @@ export async function POST(request: Request) {
     const { resolutionId } = await request.json() as { resolutionId: string };
     if (!resolutionId) return NextResponse.json({ error: "resolutionId required." }, { status: 400 });
 
-    const state = await tick(supabase, user.id, resolutionId);
-    if (!state) return NextResponse.json({ error: "Resolution not found." }, { status: 404 });
+    const state = await runIssueAgent(supabase, user.id, resolutionId);
+    if (!state) return NextResponse.json({ error: "Issue not found." }, { status: 404 });
 
     return NextResponse.json(state);
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Tick failed." },
+      { error: error instanceof Error ? error.message : "Agent run failed." },
       { status: 500 }
     );
   }
