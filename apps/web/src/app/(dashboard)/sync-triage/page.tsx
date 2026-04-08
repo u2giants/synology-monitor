@@ -645,7 +645,7 @@ export default function SyncTriagePage() {
             ) : (
               <>
                 <Sparkles className="h-4 w-4" />
-                Analyze {selectedLogIds.size} with Copilot
+                Open {selectedLogIds.size} in Issue Agent
               </>
             )}
           </button>
@@ -825,7 +825,7 @@ export default function SyncTriagePage() {
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                 >
                   <Wrench className="h-4 w-4" />
-                  Analyze with Copilot
+                  Open in Issue Agent
                 </a>
                 <a
                   href="/ai-insights"

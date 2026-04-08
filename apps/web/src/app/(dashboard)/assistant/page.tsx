@@ -163,6 +163,18 @@ export default function AssistantPage() {
     () => current?.steps.filter((step) => step.status === "proposed") ?? [],
     [current]
   );
+  const activeJobs = useMemo(
+    () => current?.jobs.filter((job) => job.status === "queued" || job.status === "running") ?? [],
+    [current]
+  );
+  const failedJobs = useMemo(
+    () => current?.jobs.filter((job) => job.status === "failed").slice(0, 3) ?? [],
+    [current]
+  );
+  const capabilityGaps = useMemo(
+    () => current?.capabilities.filter((capability) => capability.state !== "supported") ?? [],
+    [current]
+  );
 
   return (
     <div className="space-y-6">
@@ -258,6 +270,12 @@ export default function AssistantPage() {
                 onCancel={cancelResolution}
               />
 
+              <IssueStatusSummary
+                activeJobs={activeJobs}
+                failedJobs={failedJobs}
+                capabilityGaps={capabilityGaps}
+              />
+
               {pendingActions.length > 0 && (
                 <ActionPanel
                   steps={pendingActions}
@@ -303,6 +321,60 @@ export default function AssistantPage() {
             </>
           )}
         </section>
+      </div>
+    </div>
+  );
+}
+
+function IssueStatusSummary({
+  activeJobs,
+  failedJobs,
+  capabilityGaps,
+}: {
+  activeJobs: ResolutionJob[];
+  failedJobs: ResolutionJob[];
+  capabilityGaps: ResolutionCapability[];
+}) {
+  if (activeJobs.length === 0 && failedJobs.length === 0 && capabilityGaps.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3">
+      <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+          <Loader2 className={cn("h-4 w-4", activeJobs.length > 0 && "animate-spin")} />
+          Background worker
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {activeJobs.length > 0
+            ? `${activeJobs.length} job${activeJobs.length === 1 ? "" : "s"} queued or running for this issue. The backend worker owns progression now.`
+            : "No queued or running jobs for this issue right now."}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+          <AlertTriangle className="h-4 w-4" />
+          Telemetry visibility
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {capabilityGaps.length > 0
+            ? `${capabilityGaps.length} capability gap${capabilityGaps.length === 1 ? "" : "s"} may limit diagnosis on this issue.`
+            : "No known telemetry capability gaps are attached to this issue."}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-critical">
+          <XCircle className="h-4 w-4" />
+          Workflow failures
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {failedJobs.length > 0
+            ? `${failedJobs.length} job${failedJobs.length === 1 ? "" : "s"} failed recently. Review the workflow panel below for exact errors.`
+            : "No recent worker failures recorded for this issue."}
+        </p>
       </div>
     </div>
   );
@@ -432,6 +504,29 @@ function IssueSidebar({ state }: { state: ResolutionFull }) {
           ) : (
             state.jobs.slice(0, 6).map((job) => (
               <JobCard key={job.id} job={job} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">State Transitions</h3>
+        <div className="mt-3 space-y-2">
+          {state.transitions.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No recorded state transitions yet.</div>
+          ) : (
+            state.transitions.slice(0, 6).map((transition) => (
+              <div key={transition.id} className="rounded-lg border border-border bg-background p-3">
+                <div className="text-xs font-medium">
+                  {(transition.from_status ?? "none").replaceAll("_", " ")}{" "}
+                  <ChevronRight className="mx-1 inline h-3 w-3" />
+                  {transition.to_status.replaceAll("_", " ")}
+                </div>
+                {transition.reason && (
+                  <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{transition.reason}</p>
+                )}
+                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(transition.created_at)}</div>
+              </div>
             ))
           )}
         </div>

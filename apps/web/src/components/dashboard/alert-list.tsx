@@ -207,7 +207,7 @@ export function AlertDetailModal({ alert, onClose }: AlertDetailModalProps) {
               className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
             >
               <Wrench className="h-4 w-4" />
-              Analyze with Copilot
+              Open in Issue Agent
             </Link>
             <Link
               href="/sync-triage"
