@@ -123,6 +123,18 @@ func (s *Sender) QueueCustomMetricData(p CustomMetricDataPayload) {
 	s.queue("smon_custom_metric_data", p)
 }
 
+func (s *Sender) QueueScheduledTask(p ScheduledTaskPayload) {
+	s.queue("smon_scheduled_tasks", p)
+}
+
+func (s *Sender) QueueBackupTask(p BackupTaskPayload) {
+	s.queue("smon_backup_tasks", p)
+}
+
+func (s *Sender) QueueSnapshotReplica(p SnapshotReplicaPayload) {
+	s.queue("smon_snapshot_replicas", p)
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {

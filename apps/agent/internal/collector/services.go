@@ -7,7 +7,9 @@ package collector
 import (
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/synology-monitor/agent/internal/sender"
@@ -31,13 +33,22 @@ var monitoredServices = []string{
 }
 
 type ServiceHealthCollector struct {
-	sender   *sender.Sender
-	nasID    string
-	interval time.Duration
+	sender       *sender.Sender
+	nasID        string
+	interval     time.Duration
+	mu           sync.Mutex
+	prevStatus   map[string]string
+	restartCount map[string]int
 }
 
 func NewServiceHealthCollector(s *sender.Sender, nasID string, interval time.Duration) *ServiceHealthCollector {
-	return &ServiceHealthCollector{sender: s, nasID: nasID, interval: interval}
+	return &ServiceHealthCollector{
+		sender:       s,
+		nasID:        nasID,
+		interval:     interval,
+		prevStatus:   make(map[string]string),
+		restartCount: make(map[string]int),
+	}
 }
 
 func (c *ServiceHealthCollector) Run(stop <-chan struct{}) {
@@ -60,14 +71,67 @@ func (c *ServiceHealthCollector) Run(stop <-chan struct{}) {
 func (c *ServiceHealthCollector) collect() {
 	now := time.Now().UTC()
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	for _, svc := range monitoredServices {
 		status := c.checkService(svc)
+		prev := c.prevStatus[svc]
+
+		// Detect transitions
+		if prev != "" && prev != status {
+			if prev == "running" && status == "stopped" {
+				c.restartCount[svc]++
+				c.sender.QueueLog(sender.LogPayload{
+					NasID:    c.nasID,
+					Source:   "service_restart",
+					Severity: "warning",
+					Message:  svc + " stopped",
+					Metadata: map[string]interface{}{
+						"service":       svc,
+						"event":         "stopped",
+						"restart_count": c.restartCount[svc],
+					},
+					LoggedAt: now,
+				})
+			} else if prev == "stopped" && status == "running" {
+				c.sender.QueueLog(sender.LogPayload{
+					NasID:    c.nasID,
+					Source:   "service_restart",
+					Severity: "info",
+					Message:  svc + " restarted",
+					Metadata: map[string]interface{}{
+						"service":       svc,
+						"event":         "restarted",
+						"restart_count": c.restartCount[svc],
+					},
+					LoggedAt: now,
+				})
+			}
+		}
+
 		c.sender.QueueServiceHealth(sender.ServiceHealthPayload{
 			NasID:       c.nasID,
 			ServiceName: svc,
 			Status:      status,
 			CapturedAt:  now,
 		})
+
+		// Emit uptime as a companion metric
+		if uptime := c.getServiceUptime(svc); uptime > 0 {
+			c.sender.QueueMetric(sender.MetricPayload{
+				NasID: c.nasID,
+				Type:  "service_uptime",
+				Value: float64(uptime),
+				Unit:  "seconds",
+				Metadata: map[string]interface{}{
+					"service": svc,
+				},
+				RecordedAt: now,
+			})
+		}
+
+		c.prevStatus[svc] = status
 	}
 
 	// Also check for any recently restarted services via uptime
@@ -107,6 +171,25 @@ func (c *ServiceHealthCollector) checkService(name string) string {
 		return "running"
 	}
 	return "not_found"
+}
+
+// getServiceUptime returns the uptime in seconds of the oldest matching process,
+// or 0 if the process is not found or the command fails.
+func (c *ServiceHealthCollector) getServiceUptime(name string) int64 {
+	out, err := exec.Command("sh", "-c",
+		"ps -o etimes= -p $(pgrep -n -f '"+name+"' 2>/dev/null) 2>/dev/null | head -1").Output()
+	if err != nil {
+		return 0
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (c *ServiceHealthCollector) checkRecentRestarts(now time.Time) {

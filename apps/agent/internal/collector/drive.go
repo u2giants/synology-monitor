@@ -201,6 +201,36 @@ func (c *DriveCollector) collectShareSyncTasks() {
 				SpeedBPS:         t.SpeedBPS,
 				IndexingQueue:    t.IndexingQueue,
 			})
+
+			// Send root-cause detail as structured log for AI querying
+			if t.RemoteHost != "" || t.LocalShareName != "" || t.Direction != "" {
+				severity := "info"
+				if t.Status == "error" || strings.Contains(strings.ToLower(t.LastError), "fail") {
+					severity = "error"
+				} else if t.RetryCount > 3 {
+					severity = "warning"
+				}
+				c.sender.QueueLog(sender.LogPayload{
+					NasID:    c.nasID,
+					Source:   "sharesync_detail",
+					Severity: severity,
+					Message:  "ShareSync task=" + t.Name + " status=" + t.Status,
+					Metadata: map[string]interface{}{
+						"task_id":      t.ID,
+						"task_name":    t.Name,
+						"remote_host":  t.RemoteHost,
+						"direction":    t.Direction,
+						"local_share":  t.LocalShareName,
+						"remote_share": t.RemoteShareName,
+						"task_uuid":    t.TaskUUID,
+						"enabled":      t.Enabled,
+						"status":       t.Status,
+						"retry_count":  t.RetryCount,
+						"last_error":   t.LastError,
+					},
+					LoggedAt: now,
+				})
+			}
 		}
 		log.Printf("[drive] collected %d ShareSync tasks via API", len(tasks))
 		return

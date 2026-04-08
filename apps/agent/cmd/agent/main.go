@@ -159,6 +159,30 @@ func main() {
 		sysExtrasCollector.Run(stop)
 	}()
 
+	// Start scheduled task collector (all tasks, outcomes, next run)
+	schedTaskCollector := collector.NewScheduledTaskCollector(dsmClient, s, cfg.NasID, 5*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		schedTaskCollector.Run(stop)
+	}()
+
+	// Start Hyper Backup state collector
+	hyperBackupCollector := collector.NewHyperBackupCollector(dsmClient, s, cfg.NasID, 5*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hyperBackupCollector.Run(stop)
+	}()
+
+	// Start storage pool / RAID scrub / snapshot replication collector
+	storagePoolCollector := collector.NewStoragePoolCollector(dsmClient, s, cfg.NasID)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		storagePoolCollector.Run(stop)
+	}()
+
 	// Start custom metric collector (polls smon_custom_metric_schedules for AI-requested collections)
 	customCollector := collector.NewCustomCollector(s, cfg.NasName, cfg.SupabaseURL, cfg.SupabaseServiceKey)
 	wg.Add(1)

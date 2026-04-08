@@ -188,3 +188,51 @@ type NetConnectionPayload struct {
 	ConnCount  int       `json:"conn_count"`
 	Username   string    `json:"username,omitempty"`
 }
+
+// ScheduledTaskPayload is a row in smon_scheduled_tasks
+type ScheduledTaskPayload struct {
+	NasID       string    `json:"nas_id"`
+	TaskID      int       `json:"task_id"`
+	TaskName    string    `json:"task_name"`
+	TaskType    string    `json:"task_type,omitempty"`
+	Owner       string    `json:"owner,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	Status      string    `json:"status,omitempty"`
+	LastRunTime string    `json:"last_run_time,omitempty"`
+	NextRunTime string    `json:"next_run_time,omitempty"`
+	LastResult  int       `json:"last_result"`
+	CapturedAt  time.Time `json:"captured_at"`
+}
+
+// BackupTaskPayload is a row in smon_backup_tasks
+type BackupTaskPayload struct {
+	NasID            string    `json:"nas_id"`
+	TaskID           string    `json:"task_id"`
+	TaskName         string    `json:"task_name"`
+	Enabled          bool      `json:"enabled"`
+	Status           string    `json:"status,omitempty"`
+	LastResult       string    `json:"last_result,omitempty"`
+	LastRunTime      string    `json:"last_run_time,omitempty"`
+	NextRunTime      string    `json:"next_run_time,omitempty"`
+	DestType         string    `json:"dest_type,omitempty"`
+	DestName         string    `json:"dest_name,omitempty"`
+	TotalBytes       int64     `json:"total_bytes,omitempty"`
+	TransferredBytes int64     `json:"transferred_bytes,omitempty"`
+	SpeedBPS         int64     `json:"speed_bps,omitempty"`
+	CapturedAt       time.Time `json:"captured_at"`
+}
+
+// SnapshotReplicaPayload is a row in smon_snapshot_replicas
+type SnapshotReplicaPayload struct {
+	NasID       string    `json:"nas_id"`
+	TaskID      string    `json:"task_id"`
+	TaskName    string    `json:"task_name,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	SrcShare    string    `json:"src_share,omitempty"`
+	DstShare    string    `json:"dst_share,omitempty"`
+	DstHost     string    `json:"dst_host,omitempty"`
+	LastResult  string    `json:"last_result,omitempty"`
+	LastRunTime string    `json:"last_run_time,omitempty"`
+	NextRunTime string    `json:"next_run_time,omitempty"`
+	CapturedAt  time.Time `json:"captured_at"`
+}

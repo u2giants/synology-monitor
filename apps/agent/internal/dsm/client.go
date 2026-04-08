@@ -600,6 +600,12 @@ type ShareSyncTask struct {
 	TransferredBytes int64  `json:"transferred_bytes"`
 	SpeedBPS         int64  `json:"speed"`
 	IndexingQueue    int    `json:"indexing_queue"`
+	RemoteHost       string `json:"remote_host"`
+	Direction        string `json:"direction"`
+	LocalShareName   string `json:"local_share_name"`
+	RemoteShareName  string `json:"remote_share_name"`
+	TaskUUID         string `json:"task_uuid"`
+	Enabled          bool   `json:"enabled"`
 }
 
 // GetShareSyncTasks attempts to query ShareSync task list via DSM API.
@@ -754,13 +760,15 @@ func (c *Client) GetRecentSystemLogs(limit int) ([]SystemLogEntry, error) {
 
 // ScheduledTask represents a DSM task scheduler entry.
 type ScheduledTask struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Enable   bool   `json:"enable"`
-	NextTime string `json:"next_trigger_time"`
-	LastRun  string `json:"last_run_time"`
-	Status   string `json:"status"`
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	Enable     bool   `json:"enable"`
+	NextTime   string `json:"next_trigger_time"`
+	LastRun    string `json:"last_run_time"`
+	Status     string `json:"status"`
+	Owner      string `json:"owner"`
+	LastResult int    `json:"last_result"`
 }
 
 // GetRunningScheduledTasks returns task scheduler entries that are currently
@@ -790,4 +798,141 @@ func (c *Client) GetRunningScheduledTasks() ([]ScheduledTask, error) {
 		}
 	}
 	return running, nil
+}
+
+// GetAllScheduledTasks returns ALL task scheduler entries without filtering.
+// Returns nil (no error) when the API is unavailable.
+func (c *Client) GetAllScheduledTasks() ([]ScheduledTask, error) {
+	data, err := c.request("SYNO.Core.TaskScheduler", 4, "list", url.Values{
+		"sort_by":    {"next_trigger_time"},
+		"sort_order": {"ASC"},
+		"limit":      {"200"},
+		"offset":     {"0"},
+	})
+	if err != nil {
+		return nil, nil // not fatal
+	}
+
+	var response struct {
+		Tasks []ScheduledTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return nil, nil
+	}
+
+	return response.Tasks, nil
+}
+
+// === Hyper Backup API ===
+
+// BackupTask represents a Hyper Backup task.
+type BackupTask struct {
+	ID               string `json:"task_id"`
+	Name             string `json:"task_name"`
+	Enabled          bool   `json:"enabled"`
+	Status           string `json:"status"`
+	LastResult       string `json:"last_result"`
+	LastRunTime      string `json:"last_run_time"`
+	NextRunTime      string `json:"next_run_time"`
+	DestType         string `json:"dest_type"`
+	DestName         string `json:"dest_name"`
+	TotalBytes       int64  `json:"total_size"`
+	TransferredBytes int64  `json:"transferred_size"`
+	SpeedBPS         int64  `json:"speed"`
+}
+
+// GetHyperBackupTasks tries SYNO.Backup.Task v1 list, then
+// SYNO.Core.Backup.Task v1 list. Returns nil/nil if both fail.
+func (c *Client) GetHyperBackupTasks() ([]BackupTask, error) {
+	for _, apiSpec := range []struct {
+		api     string
+		version int
+		method  string
+	}{
+		{"SYNO.Backup.Task", 1, "list"},
+		{"SYNO.Core.Backup.Task", 1, "list"},
+	} {
+		data, err := c.request(apiSpec.api, apiSpec.version, apiSpec.method, url.Values{
+			"limit":  {"-1"},
+			"offset": {"0"},
+		})
+		if err != nil {
+			continue
+		}
+
+		var wrapped struct {
+			Tasks []BackupTask `json:"tasks"`
+			Items []BackupTask `json:"items"`
+			List  []BackupTask `json:"list"`
+		}
+		if err := json.Unmarshal(data, &wrapped); err != nil {
+			continue
+		}
+		tasks := wrapped.Tasks
+		if len(tasks) == 0 {
+			tasks = wrapped.Items
+		}
+		if len(tasks) == 0 {
+			tasks = wrapped.List
+		}
+		return tasks, nil
+	}
+
+	return nil, nil
+}
+
+// === Snapshot Replication API ===
+
+// SnapshotReplicaTask represents a snapshot replication task.
+type SnapshotReplicaTask struct {
+	ID           string `json:"task_id"`
+	Name         string `json:"task_name"`
+	Status       string `json:"status"`
+	SrcShareName string `json:"src_share_name"`
+	DstShareName string `json:"dst_share_name"`
+	DstHost      string `json:"dst_host"`
+	LastResult   string `json:"last_result"`
+	LastRunTime  string `json:"last_run_time"`
+	NextRunTime  string `json:"next_run_time"`
+}
+
+// GetSnapshotReplicationTasks tries SYNO.Core.Share.Snapshot.ReplicaTask v1
+// list, then SYNO.SynologyDrive.SnapshotReplication v1 list.
+// Returns nil/nil if both fail.
+func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
+	for _, apiSpec := range []struct {
+		api     string
+		version int
+		method  string
+	}{
+		{"SYNO.Core.Share.Snapshot.ReplicaTask", 1, "list"},
+		{"SYNO.SynologyDrive.SnapshotReplication", 1, "list"},
+	} {
+		data, err := c.request(apiSpec.api, apiSpec.version, apiSpec.method, url.Values{
+			"limit":  {"-1"},
+			"offset": {"0"},
+		})
+		if err != nil {
+			continue
+		}
+
+		var wrapped struct {
+			Tasks []SnapshotReplicaTask `json:"tasks"`
+			Items []SnapshotReplicaTask `json:"items"`
+			List  []SnapshotReplicaTask `json:"list"`
+		}
+		if err := json.Unmarshal(data, &wrapped); err != nil {
+			continue
+		}
+		tasks := wrapped.Tasks
+		if len(tasks) == 0 {
+			tasks = wrapped.Items
+		}
+		if len(tasks) == 0 {
+			tasks = wrapped.List
+		}
+		return tasks, nil
+	}
+
+	return nil, nil
 }

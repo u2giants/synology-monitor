@@ -9,6 +9,7 @@ package collector
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -17,10 +18,11 @@ import (
 )
 
 type ShareHealthCollector struct {
-	dsmClient *dsm.Client
-	sender    *sender.Sender
-	nasID     string
-	interval  time.Duration
+	dsmClient    *dsm.Client
+	sender       *sender.Sender
+	nasID        string
+	interval     time.Duration
+	logWatermark time.Time
 }
 
 func NewShareHealthCollector(dsmClient *dsm.Client, s *sender.Sender, nasID string, interval time.Duration) *ShareHealthCollector {
@@ -76,7 +78,7 @@ func (c *ShareHealthCollector) collectShares(now time.Time) {
 			"path":        share.Path,
 			"description": share.Description,
 			"encrypted":   share.Encryption > 0,
-			"recycle_bin":  share.RecycleBinEnabled,
+			"recycle_bin": share.RecycleBinEnabled,
 		}
 		// Merge additional fields if present
 		for k, v := range share.Additional {
@@ -92,6 +94,90 @@ func (c *ShareHealthCollector) collectShares(now time.Time) {
 			LoggedAt: now,
 		})
 	}
+
+	c.collectShareQuotas(shares, now)
+}
+
+// collectShareQuotas inspects each share's quota fields and emits usage metrics
+// and log entries when usage is high.
+func (c *ShareHealthCollector) collectShareQuotas(shares []dsm.ShareInfo, now time.Time) {
+	for _, share := range shares {
+		if len(share.Additional) == 0 {
+			continue
+		}
+
+		// Extract quota_value (total) and quota_used from the Additional map.
+		quotaBytes := toInt64(share.Additional["quota_value"])
+		if quotaBytes == 0 {
+			quotaBytes = toInt64(share.Additional["quota"])
+		}
+		usedBytes := toInt64(share.Additional["quota_used"])
+
+		if quotaBytes <= 0 {
+			continue
+		}
+
+		pct := float64(usedBytes) / float64(quotaBytes) * 100.0
+		if pct < 0 {
+			pct = 0
+		}
+
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID: c.nasID,
+			Type:  "share_quota_usage",
+			Value: pct,
+			Unit:  "percent",
+			Metadata: map[string]interface{}{
+				"share_name":  share.Name,
+				"quota_bytes": quotaBytes,
+				"used_bytes":  usedBytes,
+			},
+			RecordedAt: now,
+		})
+
+		if pct < 85 {
+			continue
+		}
+
+		severity := "warning"
+		if pct >= 95 {
+			severity = "error"
+		}
+
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "share_quota",
+			Severity: severity,
+			Message:  fmt.Sprintf("Share %q quota at %.1f%% (%d / %d bytes)", share.Name, pct, usedBytes, quotaBytes),
+			Metadata: map[string]interface{}{
+				"share_name":  share.Name,
+				"quota_bytes": quotaBytes,
+				"used_bytes":  usedBytes,
+				"pct":         pct,
+			},
+			LoggedAt: now,
+		})
+	}
+}
+
+// toInt64 converts a map value to int64, supporting float64 and string.
+func toInt64(v interface{}) int64 {
+	if v == nil {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return int64(val)
+	case int64:
+		return val
+	case int:
+		return int64(val)
+	case string:
+		var n int64
+		fmt.Sscanf(val, "%d", &n)
+		return n
+	}
+	return 0
 }
 
 func (c *ShareHealthCollector) collectPackages(now time.Time) {
@@ -140,14 +226,43 @@ func (c *ShareHealthCollector) collectPackages(now time.Time) {
 	}
 }
 
+// logTimeFormats are the formats we attempt when parsing the DSM log entry
+// time string (DSM versions vary).
+var logTimeFormats = []string{
+	"2006/01/02 15:04:05",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+}
+
 func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
-	logs, err := c.dsmClient.GetRecentSystemLogs(50)
+	logs, err := c.dsmClient.GetRecentSystemLogs(200)
 	if err != nil {
 		log.Printf("[share-health] system logs API failed: %v", err)
 		return
 	}
 
+	var newest time.Time
+
 	for _, entry := range logs {
+		// Parse the entry timestamp
+		var entryTime time.Time
+		for _, fmt2 := range logTimeFormats {
+			if t, err2 := time.Parse(fmt2, entry.Time); err2 == nil {
+				entryTime = t
+				break
+			}
+		}
+
+		// Skip entries we have already processed
+		if !entryTime.IsZero() && !entryTime.After(c.logWatermark) {
+			continue
+		}
+
+		// Track the newest timestamp seen this cycle
+		if entryTime.After(newest) {
+			newest = entryTime
+		}
+
 		severity := "info"
 		if entry.Level >= 4 {
 			severity = "error"
@@ -173,13 +288,23 @@ func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
 			msg = string(b)
 		}
 
+		loggedAt := now
+		if !entryTime.IsZero() {
+			loggedAt = entryTime
+		}
+
 		c.sender.QueueLog(sender.LogPayload{
 			NasID:    c.nasID,
 			Source:   "dsm_system_log",
 			Severity: severity,
 			Message:  msg,
 			Metadata: meta,
-			LoggedAt: now,
+			LoggedAt: loggedAt,
 		})
+	}
+
+	// Advance watermark to avoid reprocessing the same entries
+	if newest.After(c.logWatermark) {
+		c.logWatermark = newest
 	}
 }
