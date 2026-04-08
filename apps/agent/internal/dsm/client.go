@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -723,11 +724,46 @@ func (c *Client) GetInstalledPackages() ([]PackageInfo, error) {
 // SystemLogEntry represents a log from DSM's structured log system.
 type SystemLogEntry struct {
 	Time     string `json:"time"`
-	Level    int    `json:"level"`
+	Level    LogLevel `json:"level"`
 	Message  string `json:"msg"`
 	Who      string `json:"who"`
 	Descr    string `json:"descr"`
 	LogName  string `json:"logname"`
+}
+
+// LogLevel accepts DSM log severity values encoded as either numbers or strings.
+type LogLevel int
+
+func (l *LogLevel) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		*l = 0
+		return nil
+	}
+
+	var asInt int
+	if err := json.Unmarshal(data, &asInt); err == nil {
+		*l = LogLevel(asInt)
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		switch strings.ToLower(strings.TrimSpace(asString)) {
+		case "emerg", "panic", "alert", "crit", "critical", "err", "error":
+			*l = 4
+		case "warning", "warn":
+			*l = 3
+		case "notice", "info", "information":
+			*l = 2
+		case "debug":
+			*l = 1
+		default:
+			*l = 0
+		}
+		return nil
+	}
+
+	return fmt.Errorf("parsing log level: unsupported value %s", string(data))
 }
 
 // GetRecentSystemLogs returns recent system logs via the DSM API.
@@ -781,18 +817,28 @@ func (c *Client) GetRunningScheduledTasks() ([]ScheduledTask, error) {
 		"offset":     {"0"},
 	})
 	if err != nil {
-		return nil, nil // not fatal
+		return nil, err
 	}
 
 	var response struct {
 		Tasks []ScheduledTask `json:"tasks"`
+		Items []ScheduledTask `json:"items"`
+		List  []ScheduledTask `json:"list"`
 	}
 	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("parsing scheduled tasks: %w", err)
+	}
+
+	tasks := response.Tasks
+	if len(tasks) == 0 {
+		tasks = response.Items
+	}
+	if len(tasks) == 0 {
+		tasks = response.List
 	}
 
 	var running []ScheduledTask
-	for _, t := range response.Tasks {
+	for _, t := range tasks {
 		if t.Status == "running" {
 			running = append(running, t)
 		}
@@ -810,17 +856,27 @@ func (c *Client) GetAllScheduledTasks() ([]ScheduledTask, error) {
 		"offset":     {"0"},
 	})
 	if err != nil {
-		return nil, nil // not fatal
+		return nil, err
 	}
 
 	var response struct {
 		Tasks []ScheduledTask `json:"tasks"`
+		Items []ScheduledTask `json:"items"`
+		List  []ScheduledTask `json:"list"`
 	}
 	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("parsing scheduled tasks: %w", err)
 	}
 
-	return response.Tasks, nil
+	tasks := response.Tasks
+	if len(tasks) == 0 {
+		tasks = response.Items
+	}
+	if len(tasks) == 0 {
+		tasks = response.List
+	}
+
+	return tasks, nil
 }
 
 // === Hyper Backup API ===
@@ -844,6 +900,8 @@ type BackupTask struct {
 // GetHyperBackupTasks tries SYNO.Backup.Task v1 list, then
 // SYNO.Core.Backup.Task v1 list. Returns nil/nil if both fail.
 func (c *Client) GetHyperBackupTasks() ([]BackupTask, error) {
+	var errs []string
+
 	for _, apiSpec := range []struct {
 		api     string
 		version int
@@ -857,6 +915,7 @@ func (c *Client) GetHyperBackupTasks() ([]BackupTask, error) {
 			"offset": {"0"},
 		})
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s v%d %s: %v", apiSpec.api, apiSpec.version, apiSpec.method, err))
 			continue
 		}
 
@@ -866,6 +925,7 @@ func (c *Client) GetHyperBackupTasks() ([]BackupTask, error) {
 			List  []BackupTask `json:"list"`
 		}
 		if err := json.Unmarshal(data, &wrapped); err != nil {
+			errs = append(errs, fmt.Sprintf("%s v%d %s parse: %v", apiSpec.api, apiSpec.version, apiSpec.method, err))
 			continue
 		}
 		tasks := wrapped.Tasks
@@ -878,7 +938,10 @@ func (c *Client) GetHyperBackupTasks() ([]BackupTask, error) {
 		return tasks, nil
 	}
 
-	return nil, nil
+	if len(errs) == 0 {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("hyper backup API unavailable: %s", strings.Join(errs, "; "))
 }
 
 // === Snapshot Replication API ===
@@ -900,6 +963,8 @@ type SnapshotReplicaTask struct {
 // list, then SYNO.SynologyDrive.SnapshotReplication v1 list.
 // Returns nil/nil if both fail.
 func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
+	var errs []string
+
 	for _, apiSpec := range []struct {
 		api     string
 		version int
@@ -913,6 +978,7 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 			"offset": {"0"},
 		})
 		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s v%d %s: %v", apiSpec.api, apiSpec.version, apiSpec.method, err))
 			continue
 		}
 
@@ -922,6 +988,7 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 			List  []SnapshotReplicaTask `json:"list"`
 		}
 		if err := json.Unmarshal(data, &wrapped); err != nil {
+			errs = append(errs, fmt.Sprintf("%s v%d %s parse: %v", apiSpec.api, apiSpec.version, apiSpec.method, err))
 			continue
 		}
 		tasks := wrapped.Tasks
@@ -934,5 +1001,8 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 		return tasks, nil
 	}
 
-	return nil, nil
+	if len(errs) == 0 {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("snapshot replication API unavailable: %s", strings.Join(errs, "; "))
 }

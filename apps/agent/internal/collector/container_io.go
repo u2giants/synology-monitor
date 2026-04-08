@@ -155,10 +155,14 @@ func (c *ContainerIOCollector) collect(emit bool) {
 func readCgroupIO(containerID string) (readBytes, writeBytes, readOps, writeOps int64, ok bool) {
 	for _, root := range []string{"/host/sys", "/sys"} {
 		// --- cgroup v1 ---
-		v1Path := fmt.Sprintf("%s/fs/cgroup/blkio/docker/%s/blkio.throttle.io_service_bytes", root, containerID)
+		v1Dir := fmt.Sprintf("%s/fs/cgroup/blkio/docker/%s", root, containerID)
+		v1Path := fmt.Sprintf("%s/blkio.throttle.io_service_bytes", v1Dir)
 		if rb, wb, rok, wok := parseCgroupV1Bytes(v1Path); rok || wok {
-			opsPath := fmt.Sprintf("%s/fs/cgroup/blkio/docker/%s/blkio.throttle.io_serviced", root, containerID)
+			opsPath := fmt.Sprintf("%s/blkio.throttle.io_serviced", v1Dir)
 			ro, wo, _, _ := parseCgroupV1Bytes(opsPath)
+			return rb, wb, ro, wo, true
+		}
+		if rb, wb, ro, wo, err := parseProcIOFromTasks(v1Dir + "/tasks"); err == nil {
 			return rb, wb, ro, wo, true
 		}
 
@@ -171,6 +175,61 @@ func readCgroupIO(containerID string) (readBytes, writeBytes, readOps, writeOps 
 	}
 
 	return 0, 0, 0, 0, false
+}
+
+// parseProcIOFromTasks falls back to per-process IO counters when Synology's
+// blkio cgroup only exposes task membership without throttle files.
+func parseProcIOFromTasks(tasksPath string) (readBytes, writeBytes, readOps, writeOps int64, err error) {
+	f, err := os.Open(tasksPath)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	defer f.Close()
+
+	found := false
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		pid := strings.TrimSpace(scanner.Text())
+		if pid == "" {
+			continue
+		}
+
+		stats, readErr := os.ReadFile(fmt.Sprintf("/host/proc/%s/io", pid))
+		if readErr != nil {
+			stats, readErr = os.ReadFile(fmt.Sprintf("/proc/%s/io", pid))
+			if readErr != nil {
+				continue
+			}
+		}
+
+		found = true
+		for _, line := range strings.Split(string(stats), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 {
+				continue
+			}
+			key := strings.TrimSuffix(fields[0], ":")
+			val, parseErr := strconv.ParseInt(fields[1], 10, 64)
+			if parseErr != nil {
+				continue
+			}
+			switch key {
+			case "read_bytes":
+				readBytes += val
+			case "write_bytes":
+				writeBytes += val
+			case "syscr":
+				readOps += val
+			case "syscw":
+				writeOps += val
+			}
+		}
+	}
+
+	if !found {
+		return 0, 0, 0, 0, fmt.Errorf("no task io stats in %s", filepath.Base(tasksPath))
+	}
+	return readBytes, writeBytes, readOps, writeOps, nil
 }
 
 // parseCgroupV1Bytes parses blkio.throttle.io_service_bytes (or io_serviced).
