@@ -13,6 +13,8 @@ import {
   updateIssue,
   updateIssueAction,
 } from "@/lib/server/issue-store";
+import { listCapabilityState, upsertCapabilityState } from "@/lib/server/capability-store";
+import { attachFactToIssue, deriveFactsFromTelemetry, listIssueFacts, upsertFact } from "@/lib/server/fact-store";
 import {
   TOOL_DEFINITIONS,
   buildApprovalToken,
@@ -113,6 +115,79 @@ function collectResult<T>(
     return [] as T[];
   }
   return result.data ?? [];
+}
+
+async function resolveNasUnitIds(
+  supabase: SupabaseClient,
+  nasNames: string[],
+) {
+  if (nasNames.length === 0) return [] as Array<{ id: string; name: string; hostname: string | null }>;
+  const { data, error } = await supabase
+    .from("smon_nas_units")
+    .select("id, name, hostname")
+    .or(nasNames.map((nas) => `name.eq.${nas},hostname.eq.${nas}`).join(","));
+
+  if (error) {
+    throw new Error(`Failed to resolve NAS units: ${error.message}`);
+  }
+
+  return (data ?? []) as Array<{ id: string; name: string; hostname: string | null }>;
+}
+
+async function syncTelemetryCapabilities(
+  supabase: SupabaseClient,
+  issue: IssueFull["issue"],
+  telemetry: Record<string, unknown>,
+) {
+  const nasUnits = await resolveNasUnitIds(supabase, issue.affected_nas);
+  if (nasUnits.length === 0) {
+    return [];
+  }
+
+  const telemetryErrors = Array.isArray(telemetry.telemetry_errors) ? telemetry.telemetry_errors as string[] : [];
+  const capabilities = [
+    { key: "can_list_scheduled_tasks", label: "scheduled_tasks_with_issues" },
+    { key: "can_list_hyperbackup_tasks", label: "backup_tasks" },
+    { key: "can_list_snapshot_replication", label: "snapshot_replicas" },
+    { key: "can_read_container_io", label: "container_io_top" },
+    { key: "can_read_issue_telemetry", label: "logs" },
+  ] as const;
+
+  for (const nas of nasUnits) {
+    for (const capability of capabilities) {
+      const matchingError = telemetryErrors.find((entry) => entry.startsWith(`${capability.label}:`));
+      await upsertCapabilityState(supabase, {
+        nasId: nas.id,
+        capabilityKey: capability.key,
+        state: matchingError ? "degraded" : "supported",
+        sourceKind: "issue_worker",
+        evidence: matchingError ? "Telemetry query failed during issue run." : "Telemetry query succeeded during issue run.",
+        rawError: matchingError ?? null,
+        metadata: {
+          issue_id: issue.id,
+          issue_title: issue.title,
+        },
+      });
+    }
+  }
+
+  return listCapabilityState(supabase, nasUnits.map((nas) => nas.id));
+}
+
+async function syncIssueFacts(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  telemetry: Record<string, unknown>,
+) {
+  const derivedFacts = deriveFactsFromTelemetry(state.issue, telemetry);
+
+  for (const fact of derivedFacts) {
+    const factId = await upsertFact(supabase, fact);
+    await attachFactToIssue(supabase, userId, state.issue.id, factId);
+  }
+
+  return listIssueFacts(supabase, userId, state.issue.id);
 }
 
 async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull["issue"]) {
@@ -326,6 +401,8 @@ ${JSON.stringify(summarizeActionHistory(state.actions), null, 2)}
 
 Live telemetry field guide:
 - alerts / logs: Active alerts and recent error/warning log lines.
+- normalized_facts: Deterministically extracted facts from telemetry. Prefer these for stable reasoning before raw logs.
+- capability_state: Per-NAS capability registry entries. degraded or unsupported means you do not have full visibility for that subsystem.
 - top_processes: Processes ranked by CPU/mem/IO at last sample.
 - disk_io: Per-disk read_bps, write_bps, await_ms (latency), util_pct. await_ms > 100ms or util_pct > 80% = disk is saturated.
 - scheduled_tasks_with_issues: DSM Task Scheduler jobs where last_result != 0 (non-zero exit = script failure) or status = 'error'. These are silent failures — no alert is raised anywhere else. Use check_scheduled_tasks to get live details.
@@ -563,7 +640,28 @@ export async function runIssueAgent(
     }
 
     const telemetry = await gatherTelemetryContext(supabase, state.issue);
-    const decision = await callDecisionModel(state, telemetry);
+    const [facts, capability_state] = await Promise.all([
+      syncIssueFacts(supabase, userId, state, telemetry),
+      syncTelemetryCapabilities(supabase, state.issue, telemetry),
+    ]);
+    const enrichedTelemetry = {
+      ...telemetry,
+      normalized_facts: facts.map((fact) => ({
+        fact_type: fact.fact_type,
+        severity: fact.severity,
+        title: fact.title,
+        detail: fact.detail,
+        value: fact.value,
+      })),
+      capability_state: capability_state.map((record) => ({
+        nas_id: record.nas_id,
+        capability_key: record.capability_key,
+        state: record.state,
+        evidence: record.evidence,
+        raw_error: record.raw_error,
+      })),
+    };
+    const decision = await callDecisionModel(state, enrichedTelemetry);
 
     const mergedConstraints = mergeStringLists(
       state.issue.operator_constraints,

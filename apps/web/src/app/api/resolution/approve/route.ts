@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { loadIssue, updateIssue, updateIssueAction } from "@/lib/server/issue-store";
-import { runIssueAgent } from "@/lib/server/issue-agent";
+import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
 import { verifyApprovalToken, type NasTarget } from "@/lib/server/tools";
 
 export const runtime = "nodejs";
@@ -47,7 +47,9 @@ export async function POST(request: Request) {
       status: body.decision === "approve" ? "running" : "waiting_on_user",
     });
 
-    const updated = await runIssueAgent(supabase, user.id, body.resolutionId);
+    await queueIssueRun(supabase, user.id, body.resolutionId, "approval_decision", { decision: body.decision, step_ids: body.stepIds });
+    await drainIssueQueue(supabase, user.id, { limit: 1 });
+    const updated = await loadIssue(supabase, user.id, body.resolutionId);
     return NextResponse.json(updated);
   } catch (error) {
     return NextResponse.json(

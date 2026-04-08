@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { listIssues, loadIssue } from "@/lib/server/issue-store";
 import { runIssueDetection } from "@/lib/server/issue-detector";
-import { runIssueAgent } from "@/lib/server/issue-agent";
+import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,8 +26,9 @@ export async function POST(request: NextRequest) {
 
     const issueIds = await runIssueDetection(supabase, user.id, lookbackMinutes);
     for (const issueId of issueIds.slice(0, 5)) {
-      await runIssueAgent(supabase, user.id, issueId);
+      await queueIssueRun(supabase, user.id, issueId, "detect_issue", { lookback_minutes: lookbackMinutes });
     }
+    await drainIssueQueue(supabase, user.id, { limit: 5 });
 
     const issues = await fetchDetectedIssues(user.id);
     return NextResponse.json({

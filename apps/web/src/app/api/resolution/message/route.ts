@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { appendIssueEvidence, appendIssueMessage, updateIssue } from "@/lib/server/issue-store";
-import { runIssueAgent } from "@/lib/server/issue-agent";
+import { appendIssueEvidence, appendIssueMessage, loadIssue, updateIssue } from "@/lib/server/issue-store";
+import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,7 +40,9 @@ export async function POST(request: Request) {
 
     await updateIssue(supabase, user.id, resolutionId, { status: "running" });
 
-    const state = await runIssueAgent(supabase, user.id, resolutionId);
+    await queueIssueRun(supabase, user.id, resolutionId, "user_message", { message: trimmed });
+    await drainIssueQueue(supabase, user.id, { limit: 1 });
+    const state = await loadIssue(supabase, user.id, resolutionId);
     return NextResponse.json(state);
   } catch (error) {
     return NextResponse.json(

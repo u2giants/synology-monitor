@@ -93,6 +93,17 @@ export interface IssueFull {
   actions: IssueAction[];
 }
 
+export interface IssueStateTransition {
+  id: string;
+  issue_id: string;
+  user_id: string;
+  from_status: IssueStatus | null;
+  to_status: IssueStatus;
+  reason: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface CreateIssueInput {
   originType: Issue["origin_type"];
   originId?: string | null;
@@ -235,6 +246,17 @@ export async function updateIssue(
     resolved_at: string | null;
   }>
 ) {
+  let previousStatus: IssueStatus | null = null;
+  if (updates.status) {
+    const { data: current } = await supabase
+      .from("smon_issues")
+      .select("status")
+      .eq("id", issueId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    previousStatus = (current?.status as IssueStatus | undefined) ?? null;
+  }
+
   const { error } = await supabase
     .from("smon_issues")
     .update({ ...updates, updated_at: new Date().toISOString() })
@@ -242,6 +264,18 @@ export async function updateIssue(
     .eq("user_id", userId);
 
   if (error) throw new Error(`Failed to update issue: ${error.message}`);
+
+  if (updates.status && previousStatus !== updates.status) {
+    await recordIssueTransition(
+      supabase,
+      userId,
+      issueId,
+      previousStatus,
+      updates.status,
+      "issue_update",
+      { changed_fields: Object.keys(updates) },
+    );
+  }
 }
 
 export async function appendIssueMessage(
@@ -339,6 +373,27 @@ export async function updateIssueAction(
 export async function deleteIssue(supabase: SupabaseClient, userId: string, issueId: string) {
   const { error } = await supabase.from("smon_issues").delete().eq("id", issueId).eq("user_id", userId);
   if (error) throw new Error(`Failed to delete issue: ${error.message}`);
+}
+
+export async function recordIssueTransition(
+  supabase: SupabaseClient,
+  userId: string,
+  issueId: string,
+  fromStatus: IssueStatus | null,
+  toStatus: IssueStatus,
+  reason: string,
+  metadata: Record<string, unknown> = {},
+) {
+  const { error } = await supabase.from("smon_issue_state_transitions").insert({
+    issue_id: issueId,
+    user_id: userId,
+    from_status: fromStatus,
+    to_status: toStatus,
+    reason,
+    metadata,
+  });
+
+  if (error) throw new Error(`Failed to record issue transition: ${error.message}`);
 }
 
 function normalizeIssue(row: Record<string, unknown>): Issue {
