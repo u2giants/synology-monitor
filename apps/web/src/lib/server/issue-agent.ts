@@ -67,6 +67,9 @@ const ALLOWED_DIAGNOSTIC_TOOLS: CopilotToolName[] = [
   "tail_drive_server_log",
   "search_drive_server_log",
   "get_resource_snapshot",
+  "check_scheduled_tasks",
+  "check_backup_status",
+  "check_container_io",
 ];
 
 const ALLOWED_REMEDIATION_TOOLS: CopilotToolName[] = [
@@ -89,36 +92,117 @@ function getOpenAIClient() {
   });
 }
 
+// Keep only the most recent row per unique field value (e.g. per task_id).
+function dedupeLatestByField<T extends Record<string, unknown>>(items: T[], field: keyof T): T[] {
+  const seen = new Set<unknown>();
+  return items.filter((item) => {
+    const key = item[field];
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull["issue"]) {
-  const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const since6h  = new Date(Date.now() -  6 * 60 * 60 * 1000).toISOString();
+  const since30m = new Date(Date.now() -      30 * 60 * 1000).toISOString();
+  const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const nasFilter = issue.affected_nas.length > 0 ? issue.affected_nas : null;
 
-  const [alertsResult, logsResult, processResult, diskResult] = await Promise.all([
+  const [
+    alertsResult,
+    logsResult,
+    processResult,
+    diskResult,
+    scheduledTasksResult,
+    backupTasksResult,
+    snapshotReplicasResult,
+    containerIOResult,
+    syncTasksResult,
+    ioMetricsResult,
+  ] = await Promise.all([
     supabase
       .from("smon_alerts")
       .select("id, source, severity, title, message, created_at")
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(12),
+
     supabase
       .from("smon_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
-      .gte("ingested_at", since)
+      .gte("ingested_at", since6h)
       .in("severity", ["critical", "error", "warning"])
       .order("ingested_at", { ascending: false })
       .limit(80),
+
     supabase
       .from("smon_process_snapshots")
       .select("nas_id, captured_at, name, username, cpu_pct, mem_pct, write_bps, parent_service")
-      .gte("captured_at", since)
+      .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
+
     supabase
       .from("smon_disk_io_stats")
       .select("nas_id, captured_at, device, read_bps, write_bps, await_ms, util_pct")
-      .gte("captured_at", since)
+      .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
+
+    // Scheduled tasks that failed (non-zero exit) or are in error state
+    supabase
+      .from("smon_scheduled_tasks")
+      .select("nas_id, task_id, task_name, task_type, owner, enabled, status, last_run_time, next_run_time, last_result, captured_at")
+      .gte("captured_at", since48h)
+      .or("last_result.neq.0,status.eq.error")
+      .order("captured_at", { ascending: false })
+      .limit(20),
+
+    // Backup task state — most recent snapshot per task
+    supabase
+      .from("smon_backup_tasks")
+      .select("nas_id, task_id, task_name, enabled, status, last_result, last_run_time, next_run_time, dest_type, dest_name, total_bytes, transferred_bytes, speed_bps, captured_at")
+      .gte("captured_at", since6h)
+      .order("captured_at", { ascending: false })
+      .limit(30),
+
+    // Snapshot replication state — most recent per task
+    supabase
+      .from("smon_snapshot_replicas")
+      .select("nas_id, task_id, task_name, status, src_share, dst_share, dst_host, last_result, last_run_time, next_run_time, captured_at")
+      .gte("captured_at", since6h)
+      .order("captured_at", { ascending: false })
+      .limit(20),
+
+    // Container I/O — top writers in last 30 min
+    supabase
+      .from("smon_container_io")
+      .select("nas_id, captured_at, container_name, read_bps, write_bps, read_ops, write_ops")
+      .gte("captured_at", since30m)
+      .order("write_bps", { ascending: false })
+      .limit(15),
+
+    // ShareSync tasks with backlog or errors
+    supabase
+      .from("smon_sync_task_snapshots")
+      .select("nas_id, captured_at, task_id, task_name, status, backlog_count, backlog_bytes, current_file, retry_count, last_error, speed_bps")
+      .gte("captured_at", since6h)
+      .order("captured_at", { ascending: false })
+      .limit(15),
+
+    // I/O-related metrics: iowait, NFS traffic, VM page pressure
+    supabase
+      .from("smon_metrics")
+      .select("nas_id, type, value, unit, metadata, recorded_at")
+      .gte("recorded_at", since30m)
+      .in("type", [
+        "cpu_iowait_pct",
+        "nfs_read_bps", "nfs_write_bps", "nfs_calls_ps",
+        "vm_pgpgout_ps", "vm_swap_out_ps", "vm_swap_in_ps",
+      ])
+      .order("recorded_at", { ascending: false })
+      .limit(40),
   ]);
 
   const alerts = alertsResult.data ?? [];
@@ -133,6 +217,13 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     logs,
     top_processes: processResult.data ?? [],
     disk_io: diskResult.data ?? [],
+    // New: structured task and I/O data
+    scheduled_tasks_with_issues: scheduledTasksResult.data ?? [],
+    backup_tasks: dedupeLatestByField(backupTasksResult.data ?? [], "task_id"),
+    snapshot_replicas: dedupeLatestByField(snapshotReplicasResult.data ?? [], "task_id"),
+    container_io_top: containerIOResult.data ?? [],
+    sharesync_tasks: dedupeLatestByField(syncTasksResult.data ?? [], "task_id"),
+    io_pressure_metrics: ioMetricsResult.data ?? [],
   };
 }
 
@@ -217,6 +308,17 @@ ${JSON.stringify(summarizeEvidence(state), null, 2)}
 
 Recent actions:
 ${JSON.stringify(summarizeActionHistory(state.actions), null, 2)}
+
+Live telemetry field guide:
+- alerts / logs: Active alerts and recent error/warning log lines.
+- top_processes: Processes ranked by CPU/mem/IO at last sample.
+- disk_io: Per-disk read_bps, write_bps, await_ms (latency), util_pct. await_ms > 100ms or util_pct > 80% = disk is saturated.
+- scheduled_tasks_with_issues: DSM Task Scheduler jobs where last_result != 0 (non-zero exit = script failure) or status = 'error'. These are silent failures — no alert is raised anywhere else. Use check_scheduled_tasks to get live details.
+- backup_tasks: Hyper Backup task state. last_result = 'error'|'failed'|'warning' = backup broken. Check enabled flag and last_run_time staleness. Use check_backup_status for log details.
+- snapshot_replicas: Snapshot replication task outcomes. last_result != 'success' = replica is stale or broken.
+- container_io_top: Docker containers ranked by write_bps in the last 30 minutes. A container writing > 10 MB/s is likely a primary I/O contributor. Use check_container_io to get cumulative totals and live docker stats.
+- sharesync_tasks: ShareSync tasks. backlog_count > 100 = backed up; retry_count > 5 = persistent failure; status = 'error' = task is broken. last_error gives the exact failure string.
+- io_pressure_metrics: cpu_iowait_pct > 20% means the CPU is blocked waiting on disk (disk, not compute, is the bottleneck). nfs_read_bps / nfs_write_bps = total NFS bytes served. vm_pgpgout_ps > 10000 = memory pressure is forcing dirty pages to disk.
 
 Live telemetry:
 ${JSON.stringify(telemetry, null, 2)}

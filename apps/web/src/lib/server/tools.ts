@@ -21,7 +21,7 @@ export type CopilotToolName =
   | "rename_file_to_old"
   | "remove_invalid_chars"
   | "trigger_sharesync_resync"
-  // --- New diagnostics for share/sync issues ---
+  // --- Diagnostics for share/sync issues ---
   | "check_io_stalls"
   | "check_share_database"
   | "check_drive_package_health"
@@ -30,7 +30,11 @@ export type CopilotToolName =
   | "check_drive_database"
   | "search_all_logs"
   | "find_problematic_files"
-  | "check_filesystem_health";
+  | "check_filesystem_health"
+  // --- I/O attribution and backup diagnostics ---
+  | "check_scheduled_tasks"
+  | "check_backup_status"
+  | "check_container_io";
 
 export interface ToolDefinition {
   description: string;
@@ -322,6 +326,75 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
       "echo ''",
       "echo '=== MDADM RAID STATUS ==='",
       "cat /proc/mdstat 2>/dev/null || echo 'No mdstat available'",
+    ].join("\n"),
+  },
+
+  // === I/O attribution and backup diagnostics ===
+
+  check_scheduled_tasks: {
+    description: "Read-only. Query the DSM task scheduler for all tasks showing last run result (exit code), enabled/disabled status, and next run time. last_result != 0 means the task script failed. Identifies silent cron-style failures in backup/maintenance scripts.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const lines = Math.max(20, Math.min(80, (input.lookbackHours ?? 4) * 10));
+      return [
+        "echo '=== SCHEDULED TASKS (DSM Task Scheduler) ==='",
+        "if [ -f /usr/syno/etc/schedule/synoscheduler.db ]; then",
+        "  sqlite3 /usr/syno/etc/schedule/synoscheduler.db \"SELECT id, name, type, enable, status, last_work_time, next_trigger_time FROM task\" 2>/dev/null | head -40",
+        "else",
+        "  echo 'Scheduler DB not at expected path — trying synoscgi'",
+        "fi",
+        "echo ''",
+        "echo '=== RECENT SCHEDULER ERRORS ==='",
+        `grep -iE 'error|fail|exit [^0]' /var/log/synolog/synoscheduler.log 2>/dev/null | tail -${lines} || echo 'No scheduler log found'`,
+        "echo ''",
+        "echo '=== RUNNING TASKS (DSM API) ==='",
+        "/usr/syno/bin/synoscgi 'SYNO.Core.TaskScheduler' 4 list sort_by=next_trigger_time sort_order=ASC limit=30 2>/dev/null | python3 -m json.tool 2>/dev/null | grep -E 'name|status|last_result|enable' | head -60 || echo 'synoscgi not available'",
+      ].join("\n");
+    },
+  },
+
+  check_backup_status: {
+    description: "Read-only. Check Hyper Backup task status, last result, destination reachability, and recent backup log entries. Identifies failed, aborted, or destination-unreachable backup jobs.",
+    write: false,
+    buildPreview: (_target, input) => {
+      const lines = Math.max(40, Math.min(200, (input.lookbackHours ?? 6) * 20));
+      return [
+        "echo '=== HYPER BACKUP PACKAGE STATUS ==='",
+        "/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
+        "echo ''",
+        "echo '=== BACKUP TASK LIST ==='",
+        "/usr/syno/bin/synobackup --list 2>/dev/null || /usr/syno/bin/hibackup --list 2>/dev/null || echo 'No backup CLI available'",
+        "echo ''",
+        "echo '=== RECENT BACKUP LOG (errors/results) ==='",
+        `grep -iE 'error|fail|warn|complete|success|abort|cancel|destination' /var/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /var/log/synolog/synobackup.log 2>/dev/null || tail -${lines} /var/log/synobackup.log 2>/dev/null || echo 'Backup log not found'`,
+        "echo ''",
+        "echo '=== BACKUP DESTINATION CONNECTIVITY ==='",
+        "ls /volume1/@SynologyHyperBackup* 2>/dev/null || echo 'No HyperBackup vault found on volume1'",
+      ].join("\n");
+    },
+  },
+
+  check_container_io: {
+    description: "Read-only. Show per-Docker-container block I/O from cgroups and live docker stats. Identifies which container is responsible for high disk read/write activity. Use this when disk utilization is high but process-level attribution is unclear.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== DOCKER CONTAINER BLOCK I/O (cgroup v1 — cumulative totals) ==='",
+      "for dir in /sys/fs/cgroup/blkio/docker/*/; do",
+      "  [ -d \"$dir\" ] || continue",
+      "  cid=$(basename \"$dir\")",
+      "  name=$(docker inspect --format '{{.Name}}' \"$cid\" 2>/dev/null | tr -d '/' || echo \"${cid:0:12}\")",
+      "  rb=$(awk '$2==\"Read\"{s+=$3} END{print s+0}' \"$dir/blkio.throttle.io_service_bytes\" 2>/dev/null)",
+      "  wb=$(awk '$2==\"Write\"{s+=$3} END{print s+0}' \"$dir/blkio.throttle.io_service_bytes\" 2>/dev/null)",
+      "  ro=$(awk '$2==\"Read\"{s+=$3} END{print s+0}' \"$dir/blkio.throttle.io_serviced\" 2>/dev/null)",
+      "  wo=$(awk '$2==\"Write\"{s+=$3} END{print s+0}' \"$dir/blkio.throttle.io_serviced\" 2>/dev/null)",
+      "  printf 'Container: %-38s ReadBytes: %-14s WriteBytes: %-14s ReadOps: %-8s WriteOps: %s\\n' \"$name\" \"${rb:-0}\" \"${wb:-0}\" \"${ro:-0}\" \"${wo:-0}\"",
+      "done 2>/dev/null | sort -t':' -k3 -rn | head -20 || echo 'cgroup v1 not available'",
+      "echo ''",
+      "echo '=== DOCKER STATS (live snapshot — BlockIO is cumulative) ==='",
+      "docker stats --no-stream --format 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.BlockIO}}\\t{{.NetIO}}' 2>/dev/null | head -25 || echo 'docker stats unavailable'",
+      "echo ''",
+      "echo '=== TOP PROCESSES INSIDE CONTAINERS (by I/O, if iotop available) ==='",
+      "iotop -b -o -n1 -P 2>/dev/null | head -20 || echo 'iotop not available'",
     ].join("\n"),
   },
 };
