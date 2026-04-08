@@ -224,20 +224,34 @@ export default function SyncTriagePage() {
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
-    
-    // Fetch logs - include all sync-related sources
-    let logsQuery = supabase
+
+    let errorLogsQuery = supabase
       .from("smon_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
       .in("source", syncSources)
+      .in("severity", ["error", "warning", "critical"])
       .order("ingested_at", { ascending: false })
       .limit(1200);
 
-    if (source !== "all") logsQuery = logsQuery.eq("source", source);
+    let driveInfoQuery = supabase
+      .from("smon_logs")
+      .select("id, source, severity, message, logged_at, metadata, ingested_at")
+      .eq("source", "drive_server")
+      .order("ingested_at", { ascending: false })
+      .limit(4000);
 
-    const logsResult = await logsQuery;
-    if (!logsResult.error && logsResult.data) {
-      setLogs((logsResult.data as LogEntry[]).filter(isActionableSyncLog));
+    if (source !== "all") {
+      errorLogsQuery = errorLogsQuery.eq("source", source);
+      driveInfoQuery = driveInfoQuery.eq("source", source);
+    }
+
+    const [errorLogsResult, driveInfoResult] = await Promise.all([errorLogsQuery, driveInfoQuery]);
+    if (!errorLogsResult.error && !driveInfoResult.error) {
+      const combined = [
+        ...((errorLogsResult.data ?? []) as LogEntry[]),
+        ...((driveInfoResult.data ?? []) as LogEntry[]).filter(isActionableSyncLog),
+      ];
+      setLogs(Array.from(new Map(combined.map((log) => [log.id, log])).values()));
     }
 
     // Fetch sync-related alerts (source='ai' or containing sync keywords)

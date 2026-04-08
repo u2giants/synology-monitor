@@ -135,19 +135,46 @@ export async function createIssue(
     metadata: input.metadata ?? {},
   };
 
-  const query = input.fingerprint
-    ? supabase
-        .from("smon_issues")
-        .upsert(payload, { onConflict: "user_id,fingerprint" })
-        .select("id")
-        .single()
-    : supabase
-        .from("smon_issues")
-        .insert(payload)
-        .select("id")
-        .single();
+  if (input.fingerprint) {
+    const { data: existing, error: existingError } = await supabase
+      .from("smon_issues")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("fingerprint", input.fingerprint)
+      .maybeSingle();
 
-  const { data, error } = await query;
+    if (existingError) {
+      throw new Error(`Failed to look up existing issue: ${existingError.message}`);
+    }
+
+    if (existing?.id) {
+      const { error: updateError } = await supabase
+        .from("smon_issues")
+        .update({
+          title: payload.title,
+          summary: payload.summary,
+          severity: payload.severity,
+          affected_nas: payload.affected_nas,
+          metadata: payload.metadata,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .eq("user_id", userId);
+
+      if (updateError) {
+        throw new Error(`Failed to update existing issue: ${updateError.message}`);
+      }
+
+      return existing.id;
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("smon_issues")
+    .insert(payload)
+    .select("id")
+    .single();
+
   if (error || !data) throw new Error(`Failed to create issue: ${error?.message ?? "unknown error"}`);
   return data.id;
 }

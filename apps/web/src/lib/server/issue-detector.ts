@@ -87,7 +87,7 @@ function isActionableInfoLog(message: string) {
 async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: number) {
   const since = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString();
 
-  const [alertsResult, logsResult] = await Promise.all([
+  const [alertsResult, errorLogsResult, driveInfoResult] = await Promise.all([
     supabase
       .from("smon_alerts")
       .select("id, nas_id, source, severity, title, message, details, created_at")
@@ -98,18 +98,28 @@ async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: 
       .from("smon_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since)
+      .in("severity", ["critical", "error", "warning"])
       .order("ingested_at", { ascending: false })
       .limit(1200),
+    supabase
+      .from("smon_logs")
+      .select("id, nas_id, source, severity, message, metadata, ingested_at")
+      .gte("ingested_at", since)
+      .eq("source", "drive_server")
+      .order("ingested_at", { ascending: false })
+      .limit(4000),
   ]);
 
-  const logs = ((logsResult.data ?? []) as LogRow[]).filter((log) => {
-    if (["critical", "error", "warning"].includes(log.severity)) return true;
-    return log.source === "drive_server" && isActionableInfoLog(log.message);
-  });
+  const combinedLogs = [
+    ...((errorLogsResult.data ?? []) as LogRow[]),
+    ...((driveInfoResult.data ?? []) as LogRow[]).filter((log) => isActionableInfoLog(log.message)),
+  ];
+
+  const dedupedLogs = Array.from(new Map(combinedLogs.map((log) => [log.id, log])).values());
 
   return {
     alerts: (alertsResult.data ?? []) as AlertRow[],
-    logs,
+    logs: dedupedLogs,
   };
 }
 
