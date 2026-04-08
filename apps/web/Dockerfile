@@ -52,4 +52,5 @@ ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 3000
 WORKDIR /app/apps/web
-CMD ["npx", "next", "start", "-p", "3000"]
+RUN chmod +x /app/apps/web/docker-entrypoint.sh
+CMD ["/app/apps/web/docker-entrypoint.sh"]

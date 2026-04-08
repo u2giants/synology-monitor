@@ -124,6 +124,18 @@ export default function AssistantPage() {
     }
   }, [createResolution, fetchList, loadResolution, loading, router, searchParams]);
 
+  useEffect(() => {
+    if (!current) return;
+    const hasActiveJobs = current.jobs.some((job) => job.status === "queued" || job.status === "running");
+    if (!hasActiveJobs) return;
+
+    const timer = window.setInterval(() => {
+      loadResolution(current.resolution.id);
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [current, loadResolution]);
+
   async function handleCreate() {
     if (!newTitle.trim()) return;
     const id = await createResolution({

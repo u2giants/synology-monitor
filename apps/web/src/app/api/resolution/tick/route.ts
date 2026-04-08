@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { loadIssue } from "@/lib/server/issue-store";
-import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import { loadIssueViewState } from "@/lib/server/issue-view";
 
 export const runtime = "nodejs";
@@ -18,7 +18,9 @@ export async function POST(request: Request) {
     if (!resolutionId) return NextResponse.json({ error: "resolutionId required." }, { status: 400 });
 
     await queueIssueRun(supabase, user.id, resolutionId, "run_issue", { reason: "manual_tick" });
-    await drainIssueQueue(supabase, user.id, { limit: 1 });
+    if (shouldInlineDrain()) {
+      await drainIssueQueue(supabase, user.id, { limit: 1 });
+    }
     const state = await loadIssue(supabase, user.id, resolutionId);
     if (!state) return NextResponse.json({ error: "Issue not found." }, { status: 404 });
 

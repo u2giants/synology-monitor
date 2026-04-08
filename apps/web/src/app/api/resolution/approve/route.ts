@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { loadIssue, updateIssue, updateIssueAction } from "@/lib/server/issue-store";
-import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import { loadIssueViewState } from "@/lib/server/issue-view";
 import { verifyApprovalToken, type NasTarget } from "@/lib/server/tools";
 
@@ -49,7 +49,9 @@ export async function POST(request: Request) {
     });
 
     await queueIssueRun(supabase, user.id, body.resolutionId, "approval_decision", { decision: body.decision, step_ids: body.stepIds });
-    await drainIssueQueue(supabase, user.id, { limit: 1 });
+    if (shouldInlineDrain()) {
+      await drainIssueQueue(supabase, user.id, { limit: 1 });
+    }
     const updated = await loadIssue(supabase, user.id, body.resolutionId);
     return NextResponse.json(updated ? await loadIssueViewState(supabase, user.id, updated) : null);
   } catch (error) {

@@ -2,7 +2,7 @@ import type { CopilotMessage, LookbackHours, ReasoningEffort } from "@/lib/serve
 import { randomId } from "@/lib/server/tools";
 import { createIssue, loadIssue, updateIssue, updateIssueAction } from "@/lib/server/issue-store";
 import { loadIssueViewState } from "@/lib/server/issue-view";
-import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import type { CopilotRole, StoredEvidenceItem, StoredSession, StoredSessionSummary } from "@/lib/server/copilot-store";
 import type { SupabaseClient } from "@/lib/server/issue-store";
 import { executeApprovedCommand } from "@/lib/server/nas";
@@ -188,7 +188,10 @@ export async function runIssueBackedCopilotChat(
     reasoning_effort: input.reasoningEffort ?? "high",
     lookback_hours: input.lookbackHours ?? 2,
   });
-  await drainIssueQueue(supabase, userId, { limit: 1 });
+  const inlineDrain = shouldInlineDrain();
+  if (inlineDrain) {
+    await drainIssueQueue(supabase, userId, { limit: 1 });
+  }
 
   const next = await loadIssue(supabase, userId, issueId);
   if (!next) {
@@ -196,9 +199,11 @@ export async function runIssueBackedCopilotChat(
   }
 
   const view = await loadIssueViewState(supabase, userId, next);
-  const answer = view.messages.filter((message) => message.role === "agent").slice(-1)[0]?.content
-    ?? view.issue.last_agent_message
-    ?? "No agent response was generated.";
+  const answer = inlineDrain
+    ? view.messages.filter((message) => message.role === "agent").slice(-1)[0]?.content
+      ?? view.issue.last_agent_message
+      ?? "No agent response was generated."
+    : "Your issue has been queued for the backend worker. Refresh in a moment or keep this thread open while the worker processes it.";
 
   return {
     sessionId: issueId,
@@ -261,7 +266,15 @@ export async function executeIssueBackedCopilotAction(
 
     if (issueAction?.issue_id) {
       await queueIssueRun(supabase, userId, issueAction.issue_id, "approval_decision", { action_id: input.actionId, source: "copilot" });
-      await drainIssueQueue(supabase, userId, { limit: 1 });
+      if (shouldInlineDrain()) {
+        await drainIssueQueue(supabase, userId, { limit: 1 });
+      } else {
+        return {
+          ok: true,
+          content: "Approval recorded. The backend worker will execute this action shortly.",
+          exitCode: null,
+        };
+      }
       const refreshed = await supabase
         .from("smon_issue_actions")
         .select("result_text, exit_code, status")

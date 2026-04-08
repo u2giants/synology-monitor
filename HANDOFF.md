@@ -21,14 +21,22 @@ The old “phase machine” approach is gone from the primary architecture. The 
 Key files:
 - [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
 - [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
+- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
+- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
+- [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
+- [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
+- [issue-view.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-view.ts)
+- [copilot-issues.ts](/worksp/monitor/app/apps/web/src/lib/server/copilot-issues.ts)
 - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
 - [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
 - [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
 
 The web app:
 - stores issues, messages, evidence, and actions in Supabase
+- stores normalized facts, capability state, issue jobs, and state transitions
 - queries telemetry on each issue-agent cycle
 - treats missing telemetry as degraded visibility when query errors occur
+- can run in `inline` or `background` issue-worker mode
 
 ### Agent
 
@@ -86,8 +94,19 @@ Extended telemetry is now tracked in-repo and live:
 - `smon_snapshot_replicas`
 - `smon_container_io`
 
+Rebuild foundation tables are also live:
+- `smon_capability_state`
+- `smon_ingestion_health`
+- `smon_ingestion_events`
+- `smon_facts`
+- `smon_fact_sources`
+- `smon_issue_facts`
+- `smon_issue_jobs`
+- `smon_issue_state_transitions`
+
 Migration:
 - [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
+- [00026_rebuild_foundation_schema.sql](/worksp/monitor/app/supabase/migrations/00026_rebuild_foundation_schema.sql)
 
 Important rule:
 - do not add fields to an existing sender payload unless the Supabase table already has those columns
@@ -207,10 +226,32 @@ Observed behavior:
 For one issue:
 1. load issue record, recent messages, actions, evidence
 2. load telemetry context
-3. decide on one next step
-4. persist the reply and any evidence
-5. execute auto-approvable diagnostics
-6. stop at approval boundaries for remediation
+3. derive normalized facts from that telemetry
+4. update capability state for the affected NAS units
+5. decide on one next step
+6. persist the reply and any evidence
+7. execute auto-approvable diagnostics
+8. stop at approval boundaries for remediation
+
+### Issue workflow ownership
+
+Current architecture:
+- routes enqueue issue jobs into `smon_issue_jobs`
+- the backend worker drains those jobs
+- issue transitions are recorded in `smon_issue_state_transitions`
+
+Worker modes:
+- `ISSUE_WORKER_MODE=inline`
+  - request paths enqueue and immediately drain jobs
+  - this is the compatibility mode
+- `ISSUE_WORKER_MODE=background`
+  - request paths enqueue only
+  - `/api/internal/issue-worker/drain` drains jobs with service-role access
+  - `RUN_ISSUE_WORKER=true` starts the loop in the web container via `docker-entrypoint.sh`
+
+Required env for background mode:
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `ISSUE_WORKER_TOKEN`
 
 The system should never treat missing telemetry as proof of health. That principle is now partially enforced in both the web prompt context and the agent collector warning logs.
 

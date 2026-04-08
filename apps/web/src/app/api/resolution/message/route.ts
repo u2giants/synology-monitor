@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { appendIssueEvidence, appendIssueMessage, loadIssue, updateIssue } from "@/lib/server/issue-store";
-import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import { loadIssueViewState } from "@/lib/server/issue-view";
 
 export const runtime = "nodejs";
@@ -42,7 +42,9 @@ export async function POST(request: Request) {
     await updateIssue(supabase, user.id, resolutionId, { status: "running" });
 
     await queueIssueRun(supabase, user.id, resolutionId, "user_message", { message: trimmed });
-    await drainIssueQueue(supabase, user.id, { limit: 1 });
+    if (shouldInlineDrain()) {
+      await drainIssueQueue(supabase, user.id, { limit: 1 });
+    }
     const state = await loadIssue(supabase, user.id, resolutionId);
     return NextResponse.json(state ? await loadIssueViewState(supabase, user.id, state) : null);
   } catch (error) {

@@ -2,6 +2,7 @@ import { runIssueAgent } from "@/lib/server/issue-agent";
 import type { SupabaseClient } from "@/lib/server/issue-store";
 import { loadIssue } from "@/lib/server/issue-store";
 import {
+  claimNextIssueJobGlobal,
   claimNextIssueJob,
   completeIssueJob,
   enqueueIssueJob,
@@ -12,6 +13,10 @@ import {
 
 function buildWorkerId() {
   return `web-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function shouldInlineDrain() {
+  return process.env.ISSUE_WORKER_MODE !== "background";
 }
 
 export async function queueIssueRun(
@@ -61,6 +66,37 @@ export async function drainIssueQueue(
         userId,
         job,
         error instanceof Error ? error.message : "Unknown issue worker failure",
+      );
+      throw error;
+    }
+
+    processed += 1;
+  }
+
+  return processed;
+}
+
+export async function drainIssueQueueGlobal(
+  supabase: SupabaseClient,
+  options: { limit?: number } = {},
+) {
+  const workerId = buildWorkerId();
+  const limit = options.limit ?? 10;
+  let processed = 0;
+
+  while (processed < limit) {
+    const job = await claimNextIssueJobGlobal(supabase, workerId);
+    if (!job) break;
+
+    try {
+      await processIssueJob(supabase, job.user_id, job);
+      await completeIssueJob(supabase, job.user_id, job.id);
+    } catch (error) {
+      await failIssueJob(
+        supabase,
+        job.user_id,
+        job,
+        error instanceof Error ? error.message : "Unknown global issue worker failure",
       );
       throw error;
     }

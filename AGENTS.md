@@ -73,6 +73,12 @@ Canonical compose file:
 Core files:
 - [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
 - [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
+- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
+- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
+- [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
+- [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
+- [issue-view.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-view.ts)
+- [copilot-issues.ts](/worksp/monitor/app/apps/web/src/lib/server/copilot-issues.ts)
 - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
 - [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
 - [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
@@ -81,8 +87,30 @@ The current system is issue-centric:
 - one issue record per problem
 - one thread of messages per issue
 - evidence and actions attached to that issue
+- normalized facts attached to the issue
+- capability state tracked per NAS
+- issue jobs and transitions tracked explicitly
 
 The old phase-machine model is not the authoritative architecture anymore.
+
+### Workflow ownership
+
+The workflow is now backend-owned:
+- request handlers enqueue jobs into `smon_issue_jobs`
+- the issue worker drains jobs
+- transitions are recorded in `smon_issue_state_transitions`
+
+Worker runtime:
+- `inline` mode: request path drains jobs immediately
+- `background` mode: the dedicated worker endpoint drains jobs using service-role Supabase access
+
+Relevant files:
+- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
+- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
+- [admin.ts](/worksp/monitor/app/apps/web/src/lib/supabase/admin.ts)
+- [drain/route.ts](/worksp/monitor/app/apps/web/src/app/api/internal/issue-worker/drain/route.ts)
+- [issue-worker.mjs](/worksp/monitor/app/apps/web/scripts/issue-worker.mjs)
+- [docker-entrypoint.sh](/worksp/monitor/app/apps/web/docker-entrypoint.sh)
 
 ### Issue agent behavior
 
@@ -91,15 +119,20 @@ For one cycle:
 2. load recent issue messages
 3. load recent actions and evidence
 4. gather telemetry context
-5. call the decision model
-6. persist updated issue state, reply, evidence, and actions
-7. run auto-approved diagnostics if appropriate
-8. stop at approval boundaries for remediation
+5. derive normalized facts from telemetry
+6. update per-NAS capability state
+7. call the decision model
+8. persist updated issue state, reply, evidence, and actions
+9. run auto-approved diagnostics if appropriate
+10. stop at approval boundaries for remediation
 
 Important design rule:
 - query failures and missing telemetry must be represented as degraded visibility, not mistaken for subsystem health
 
-That is now enforced in [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts) through `telemetry_errors`.
+That is now enforced through:
+- `telemetry_errors` in [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- persisted normalized facts in [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
+- persisted capability registry rows in [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
 
 ## Agent architecture
 

@@ -13,6 +13,8 @@ The system now has:
 - an issue-centric web app with persistent issue memory
 - a 17-collector Synology agent
 - live extended telemetry tables for tasks, backups, snapshot replication, and container I/O
+- live rebuild-foundation tables for capabilities, facts, jobs, and state transitions
+- a unified issue backend for both the assistant UI and `/api/copilot/*`
 - explicit warning logs when a DSM API is unsupported, instead of silent empty data
 
 The system does not yet have:
@@ -33,6 +35,9 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
   - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
 - The agent reads persistent issue state, recent messages, actions, evidence, and telemetry context on each cycle.
 - Telemetry query failures are now preserved in `telemetry_errors` so the agent can treat missing data as degraded visibility instead of “no problems found”.
+- Telemetry is normalized into facts and capability-state rows before issue reasoning.
+- The issue workflow is now queue-backed through `smon_issue_jobs`.
+- `/api/copilot/*` now routes through the issue backend instead of a separate reasoning/persistence stack.
 
 ### Agent
 
@@ -79,6 +84,15 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
   - `smon_backup_tasks`
   - `smon_snapshot_replicas`
   - `smon_container_io`
+- Live rebuild tables now exist:
+  - `smon_capability_state`
+  - `smon_ingestion_health`
+  - `smon_ingestion_events`
+  - `smon_facts`
+  - `smon_fact_sources`
+  - `smon_issue_facts`
+  - `smon_issue_jobs`
+  - `smon_issue_state_transitions`
 - Live `smon_logs.source` constraint now includes:
   - `scheduled_task`
   - `hyperbackup`
@@ -144,8 +158,9 @@ That made the system lie by omission. The new standard is:
 
 ## Next recommended work
 
-1. Reverse-engineer the exact DSM request shape for `SYNO.Core.TaskScheduler` on these NASes.
-2. Do the same for Hyper Backup task listing.
-3. Confirm whether Snapshot Replication is actually installed and expose that state explicitly.
-4. Finish DSM structured Log Center ingestion so `dsm_system_log` produces rows or explicit unsupported diagnostics every cycle.
-5. Add UI surfacing for telemetry blind-spot warnings so operators can see “unsupported API” directly in the product.
+1. Deploy the web app with `ISSUE_WORKER_MODE=background`, `RUN_ISSUE_WORKER=true`, `SUPABASE_SERVICE_ROLE_KEY`, and `ISSUE_WORKER_TOKEN`.
+2. Remove or archive the old copilot persistence code so it cannot drift back into use.
+3. Reverse-engineer the exact DSM request shape for `SYNO.Core.TaskScheduler` on these NASes.
+4. Do the same for Hyper Backup task listing.
+5. Confirm whether Snapshot Replication is actually installed and expose that state explicitly.
+6. Finish DSM structured Log Center ingestion so `dsm_system_log` produces rows or explicit unsupported diagnostics every cycle.

@@ -119,6 +119,51 @@ export async function claimNextIssueJob(
   return null;
 }
 
+export async function claimNextIssueJobGlobal(
+  supabase: SupabaseClient,
+  workerId: string,
+) {
+  const now = new Date().toISOString();
+  const { data: candidates, error } = await supabase
+    .from("smon_issue_jobs")
+    .select("*")
+    .eq("status", "queued")
+    .lte("run_at", now)
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(10);
+
+  if (error) {
+    throw new Error(`Failed to list global issue jobs: ${error.message}`);
+  }
+
+  for (const candidate of (candidates ?? []) as IssueJob[]) {
+    const { data: updated, error: updateError } = await supabase
+      .from("smon_issue_jobs")
+      .update({
+        status: "running",
+        attempts: candidate.attempts + 1,
+        locked_at: now,
+        locked_by: workerId,
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "queued")
+      .select("*")
+      .maybeSingle();
+
+    if (updateError) {
+      throw new Error(`Failed to claim global issue job: ${updateError.message}`);
+    }
+
+    if (updated) {
+      return updated as IssueJob;
+    }
+  }
+
+  return null;
+}
+
 export async function completeIssueJob(
   supabase: SupabaseClient,
   userId: string,
