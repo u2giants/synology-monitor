@@ -3,8 +3,8 @@ package collector
 // ContainerIOCollector reads cgroup blkio/io stats for each Docker container
 // and emits per-container read/write BPS and IOPS into smon_container_io.
 //
-// Tries cgroups v1 first (/sys/fs/cgroup/blkio/docker/<id>/blkio.throttle.io_service_bytes),
-// falls back to cgroups v2 (/sys/fs/cgroup/system.slice/docker-<id>.scope/io.stat).
+// Tries host-mounted cgroups first (/host/sys/fs/cgroup/...),
+// then falls back to the container's own /sys view.
 
 import (
 	"bufio"
@@ -153,20 +153,21 @@ func (c *ContainerIOCollector) collect(emit bool) {
 // readCgroupIO tries cgroup v1 then v2 for the given container ID.
 // Returns cumulative read/write bytes and ops, plus ok=true on success.
 func readCgroupIO(containerID string) (readBytes, writeBytes, readOps, writeOps int64, ok bool) {
-	// --- cgroup v1 ---
-	v1Path := fmt.Sprintf("/sys/fs/cgroup/blkio/docker/%s/blkio.throttle.io_service_bytes", containerID)
-	if rb, wb, rok, wok := parseCgroupV1Bytes(v1Path); rok || wok {
-		// ops path
-		opsPath := fmt.Sprintf("/sys/fs/cgroup/blkio/docker/%s/blkio.throttle.io_serviced", containerID)
-		ro, wo, _, _ := parseCgroupV1Bytes(opsPath)
-		return rb, wb, ro, wo, true
-	}
+	for _, root := range []string{"/host/sys", "/sys"} {
+		// --- cgroup v1 ---
+		v1Path := fmt.Sprintf("%s/fs/cgroup/blkio/docker/%s/blkio.throttle.io_service_bytes", root, containerID)
+		if rb, wb, rok, wok := parseCgroupV1Bytes(v1Path); rok || wok {
+			opsPath := fmt.Sprintf("%s/fs/cgroup/blkio/docker/%s/blkio.throttle.io_serviced", root, containerID)
+			ro, wo, _, _ := parseCgroupV1Bytes(opsPath)
+			return rb, wb, ro, wo, true
+		}
 
-	// --- cgroup v2 ---
-	v2Path := fmt.Sprintf("/sys/fs/cgroup/system.slice/docker-%s.scope/io.stat", containerID)
-	rb, wb, ro, wo, err := parseCgroupV2(v2Path)
-	if err == nil {
-		return rb, wb, ro, wo, true
+		// --- cgroup v2 ---
+		v2Path := fmt.Sprintf("%s/fs/cgroup/system.slice/docker-%s.scope/io.stat", root, containerID)
+		rb, wb, ro, wo, err := parseCgroupV2(v2Path)
+		if err == nil {
+			return rb, wb, ro, wo, true
+		}
 	}
 
 	return 0, 0, 0, 0, false

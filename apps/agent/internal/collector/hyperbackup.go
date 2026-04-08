@@ -3,6 +3,7 @@ package collector
 import (
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -103,8 +104,13 @@ func (c *HyperBackupCollector) collect() {
 func isFailed(lastResult, status string) bool {
 	lr := strings.ToLower(lastResult)
 	st := strings.ToLower(status)
+	if n, err := strconv.Atoi(strings.TrimSpace(lastResult)); err == nil {
+		return n != 0
+	}
 	return strings.Contains(lr, "fail") ||
 		strings.Contains(lr, "error") ||
+		strings.Contains(lr, "warn") ||
 		strings.Contains(st, "fail") ||
-		strings.Contains(st, "error")
+		strings.Contains(st, "error") ||
+		strings.Contains(st, "warn")
 }

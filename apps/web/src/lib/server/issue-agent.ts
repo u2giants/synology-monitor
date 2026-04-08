@@ -103,6 +103,18 @@ function dedupeLatestByField<T extends Record<string, unknown>>(items: T[], fiel
   });
 }
 
+function collectResult<T>(
+  label: string,
+  result: { data: T[] | null; error: { message: string } | null },
+  telemetryErrors: string[],
+) {
+  if (result.error) {
+    telemetryErrors.push(`${label}: ${result.error.message}`);
+    return [] as T[];
+  }
+  return result.data ?? [];
+}
+
 async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull["issue"]) {
   const since6h  = new Date(Date.now() -  6 * 60 * 60 * 1000).toISOString();
   const since30m = new Date(Date.now() -      30 * 60 * 1000).toISOString();
@@ -205,8 +217,10 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .limit(40),
   ]);
 
-  const alerts = alertsResult.data ?? [];
-  const logs = (logsResult.data ?? []).filter((row) => {
+  const telemetry_errors: string[] = [];
+
+  const alerts = collectResult("alerts", alertsResult, telemetry_errors);
+  const logs = collectResult("logs", logsResult, telemetry_errors).filter((row) => {
     if (!nasFilter?.length) return true;
     const nasValue = typeof row.nas_id === "string" ? row.nas_id : "";
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
@@ -215,15 +229,16 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
   return {
     alerts,
     logs,
-    top_processes: processResult.data ?? [],
-    disk_io: diskResult.data ?? [],
+    telemetry_errors,
+    top_processes: collectResult("top_processes", processResult, telemetry_errors),
+    disk_io: collectResult("disk_io", diskResult, telemetry_errors),
     // New: structured task and I/O data
-    scheduled_tasks_with_issues: scheduledTasksResult.data ?? [],
-    backup_tasks: dedupeLatestByField(backupTasksResult.data ?? [], "task_id"),
-    snapshot_replicas: dedupeLatestByField(snapshotReplicasResult.data ?? [], "task_id"),
-    container_io_top: containerIOResult.data ?? [],
-    sharesync_tasks: dedupeLatestByField(syncTasksResult.data ?? [], "task_id"),
-    io_pressure_metrics: ioMetricsResult.data ?? [],
+    scheduled_tasks_with_issues: collectResult("scheduled_tasks_with_issues", scheduledTasksResult, telemetry_errors),
+    backup_tasks: dedupeLatestByField(collectResult("backup_tasks", backupTasksResult, telemetry_errors), "task_id"),
+    snapshot_replicas: dedupeLatestByField(collectResult("snapshot_replicas", snapshotReplicasResult, telemetry_errors), "task_id"),
+    container_io_top: collectResult("container_io_top", containerIOResult, telemetry_errors),
+    sharesync_tasks: dedupeLatestByField(collectResult("sharesync_tasks", syncTasksResult, telemetry_errors), "task_id"),
+    io_pressure_metrics: collectResult("io_pressure_metrics", ioMetricsResult, telemetry_errors),
   };
 }
 
@@ -319,6 +334,7 @@ Live telemetry field guide:
 - container_io_top: Docker containers ranked by write_bps in the last 30 minutes. A container writing > 10 MB/s is likely a primary I/O contributor. Use check_container_io to get cumulative totals and live docker stats.
 - sharesync_tasks: ShareSync tasks. backlog_count > 100 = backed up; retry_count > 5 = persistent failure; status = 'error' = task is broken. last_error gives the exact failure string.
 - io_pressure_metrics: cpu_iowait_pct > 20% means the CPU is blocked waiting on disk (disk, not compute, is the bottleneck). nfs_read_bps / nfs_write_bps = total NFS bytes served. vm_pgpgout_ps > 10000 = memory pressure is forcing dirty pages to disk.
+- telemetry_errors: any entries here mean a telemetry query failed or a dependent table is missing. Treat this as degraded visibility, not proof that the subsystem is healthy.
 
 Live telemetry:
 ${JSON.stringify(telemetry, null, 2)}

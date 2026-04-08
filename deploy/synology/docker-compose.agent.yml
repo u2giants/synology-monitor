@@ -10,6 +10,7 @@ services:
       TZ: ${TZ:-UTC}
     volumes:
       - /proc:/host/proc:ro          # per-process CPU/mem/IO and disk stats
+      - /sys:/host/sys:ro            # cgroup IO stats, btrfs counters, thermal data
       - /etc/passwd:/host/etc/passwd:ro  # UID→username resolution
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro

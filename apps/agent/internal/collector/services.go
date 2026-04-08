@@ -177,7 +177,7 @@ func (c *ServiceHealthCollector) checkService(name string) string {
 // or 0 if the process is not found or the command fails.
 func (c *ServiceHealthCollector) getServiceUptime(name string) int64 {
 	out, err := exec.Command("sh", "-c",
-		"ps -o etimes= -p $(pgrep -n -f '"+name+"' 2>/dev/null) 2>/dev/null | head -1").Output()
+		"ps -o etimes= -p $(pgrep -o -f '"+name+"' 2>/dev/null) 2>/dev/null | head -1").Output()
 	if err != nil {
 		return 0
 	}
