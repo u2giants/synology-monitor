@@ -1,191 +1,186 @@
 # Synology Agent Deployment
 
-This directory contains deployment assets for running `synology-monitor-agent` on Synology NAS devices.
+Last verified: 2026-04-08 UTC
 
-## Live Deployment State
+This file documents the actual deployment contract for the Synology agent.
 
-Both NAS units are currently running. The live files on each NAS are at:
-```
+## Canonical layout on each NAS
+
+Live directory:
+```text
 /volume1/docker/synology-monitor-agent/
-  compose.yaml   ← copy of docker-compose.agent.yml from this repo
-  .env           ← NAS-specific values (not in repo)
+  compose.yaml
+  .env
 ```
 
-## Quick Start (for a new NAS)
+`compose.yaml` should be kept in sync with:
+- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
 
-1. Copy `docker-compose.agent.yml` to `/volume1/docker/synology-monitor-agent/compose.yaml`
-2. Create `.env` from `nas-1.env.example` (or `nas-2.env.example`) and fill in real values
-3. Run:
-   ```sh
-   DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
-   cd /volume1/docker/synology-monitor-agent
-   $DOCKER compose -f compose.yaml pull
-   $DOCKER compose -f compose.yaml up -d
-   ```
+Docker binary on Synology:
+- `/var/packages/ContainerManager/target/usr/bin/docker`
 
-**Note:** The Docker binary on Synology is at `/var/packages/ContainerManager/target/usr/bin/docker`. It is not on the default PATH in SSH sessions.
+## Deployment model
 
-## Updating to a New Image
+1. Push to `master`
+2. GitHub Actions builds and publishes:
+   - `ghcr.io/u2giants/synology-monitor-agent:latest`
+3. Each NAS must pull and recreate the container
 
-After GitHub Actions publishes a new image:
+The agent does not auto-update itself.
+
+## Required update sequence
+
+Run this on the NAS:
 
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 cd /volume1/docker/synology-monitor-agent
 
-# Force pull the new image
-$DOCKER pull ghcr.io/u2giants/synology-monitor-agent:latest
-
-# Stop and remove the old container (required — compose up -d alone won't switch)
-$DOCKER stop synology-monitor-agent
-$DOCKER rm synology-monitor-agent
-
-# Start with the new image
+$DOCKER compose -f compose.yaml pull
+$DOCKER stop synology-monitor-agent || true
+$DOCKER rm synology-monitor-agent || true
 $DOCKER compose -f compose.yaml up -d
-
-# Confirm new image is running
-$DOCKER inspect synology-monitor-agent --format "{{.Image}}"
-
-# Check logs
-$DOCKER logs synology-monitor-agent 2>&1 | head -50
 ```
 
-**Why stop+rm?** Docker Compose compares the existing container against the compose spec. If the container is already running (even with the wrong image), it will reuse it rather than recreate from the newly pulled image. Stop and remove forces a fresh container creation.
+Why `stop` and `rm` matter:
+- Synology Docker/Container Manager often reuses the existing container definition
+- `compose up -d` alone is not reliable for switching to the newly pulled image
 
-**AGENT_IMAGE_TAG gotcha:** If `.env` contains `AGENT_IMAGE_TAG=sha-<something>` (a pinned SHA), `compose up -d` will use that specific old image even after you pulled `latest`. The value must be `AGENT_IMAGE_TAG=latest` for auto-updates to work.
+## AGENT_IMAGE_TAG rule
 
-## Expected Startup Log (17 collectors)
+`.env` should normally contain:
 
-After starting, the log should show all seventeen collectors:
-
-```
-[docker] collector started (interval: 30s)
-[system] collector started (interval: 30s)
-[process] collector started (interval: 15s)
-[diskstats] collector started (interval: 15s)
-[drive] collector started (interval: 30s)
-[connections] collector started (interval: 30s)
-[storage] collector started (interval: 1m0s)
-[logwatcher] started (interval: 10s, dir: /host/log)
-[share-health] started (every 2m0s)
-[service-health] started (every 1m0s)
-[sys-extras] started (every 30s)
-[custom-collector] started (polling every 60s)
-[security] watcher started
-[schedtasks] collector started (interval: 5m0s)
-[hyperbackup] collector started (interval: 5m0s)
-[storagepool] collector started (mdstat: 60s, snapshots: 5m0s)
-[container-io] collector started (interval: 30s)
-Agent running for NAS: edgesynology1 (...)
+```sh
+AGENT_IMAGE_TAG=latest
 ```
 
-If fewer than 17 collector lines appear, check for startup errors above them.
+If it is pinned to a SHA tag, pulling `latest` will not change the running image.
 
-## Required Environment Variables
+## Required mounts
 
-| Variable | Description |
-|----------|-------------|
-| `NAS_ID` | UUID — must match `smon_nas_units.id`. Validated at startup; agent refuses to start if not a valid UUID. |
-| `NAS_NAME` | Human-readable NAS name (e.g. `edgesynology1`) — used by CustomCollector to filter `smon_custom_metric_schedules` |
-| `DSM_URL` | Default: `https://localhost:5001` |
-| `DSM_USERNAME` | DSM API credentials |
-| `DSM_PASSWORD` | DSM API credentials |
-| `DSM_INSECURE_SKIP_VERIFY` | Default: `true` (for self-signed certs) |
-| `SUPABASE_URL` | `https://qnjimovrsaacneqkggsn.supabase.co` |
-| `SUPABASE_SERVICE_KEY` | Supabase service role key |
-| `AGENT_IMAGE_TAG` | **Must be `latest`** unless intentionally pinning |
+The canonical compose file mounts:
 
-## Collection Interval Variables (optional, defaults shown)
+| Host path | Container path | Why |
+|---|---|---|
+| `/proc` | `/host/proc` | process stats, disk stats, network stats, proc I/O fallback |
+| `/sys` | `/host/sys` | cgroup stats, Btrfs counters, thermal data |
+| `/etc/passwd` | `/host/etc/passwd` | UID to username resolution |
+| `/var/log` | `/host/log` | system logs, Drive logs, backup logs |
+| `/var/packages` | `/host/packages` | Synology package logs |
 
-| Variable | Default | What it controls |
-|----------|---------|-----------------|
-| `METRICS_INTERVAL` | `30s` | System CPU/mem/network |
-| `STORAGE_INTERVAL` | `60s` | Volume and disk health |
-| `LOG_INTERVAL` | `10s` | Log file tailing |
-| `DOCKER_INTERVAL` | `30s` | Container stats |
-| `SECURITY_INTERVAL` | `15m` | Background integrity scans |
-| `PROCESS_INTERVAL` | `15s` | Per-process CPU/mem/disk I/O |
-| `DISKSTATS_INTERVAL` | `15s` | Per-disk IOPS/throughput |
-| `CONNECTIONS_INTERVAL` | `30s` | Active TCP connection counts |
+This `/sys` mount is not optional for the current design. Without it:
+- cgroup-based container I/O becomes incomplete
+- Btrfs error collection cannot work correctly
 
-The following collectors use hardcoded intervals (not configurable via env):
-- Share health: 2 minutes
-- Service health: 60 seconds
-- SysExtras: 30 seconds
-- Custom metrics: 60-second poll (individual schedule intervals are in the DB row)
-- Scheduled tasks: 5 minutes
-- Hyper Backup: 5 minutes
-- Storage pool (mdstat): 60 seconds
-- Storage pool (snapshot replicas): 5 minutes
-- Container I/O: 30 seconds
+## Share mounts
 
-## Volume Mounts
+The compose file mounts explicit shares instead of `/volume1` because Synology Container Manager rejects top-level `/volume1` bind mounts on compose-driven recreates.
 
-The compose file mounts:
+If a share path does not exist on a NAS:
+- either create the share
+- or remove/comment that bind from the NAS-local compose file and matching env references
 
-| Host Path | Container Path | Purpose |
-|-----------|---------------|---------|
-| `/proc` | `/host/proc` | Process stats, disk stats, network connections, iowait, NFS stats |
-| `/sys` | `/host/sys` | Btrfs error counters (`/sys/fs/btrfs`), cgroup I/O (`/sys/fs/cgroup`) |
-| `/etc/passwd` | `/host/etc/passwd` | UID → username resolution |
-| `/var/log` | `/host/log` | System and Drive logs (synowebapi.log, kern.log, etc.) |
-| `/var/packages` | `/host/packages` | Synology package log files |
-| `/volume1/files` | `/host/shares/files` | File monitoring |
-| `/volume1/styleguides` | `/host/shares/styleguides` | File monitoring |
-| `/volume1/users` | `/host/shares/users` | File monitoring |
-| `/volume1/homes` | `/host/shares/homes` | File monitoring |
-| `/volume1/Coldlion` | `/host/shares/Coldlion` | File monitoring |
-| `/volume1/Photography` | `/host/shares/Photography` | File monitoring |
-| `/volume1/freelancers` | `/host/shares/freelancers` | File monitoring |
-| `/volume1/mgmt` | `/host/shares/mgmt` | File monitoring |
-| `/volume1/mac` | `/host/shares/mac` | File monitoring |
-| `/volume1/oldStyleguides` | `/host/shares/oldStyleguides` | File monitoring |
-| `/volume1/@synologydrive` | `/host/shares/@synologydrive` | Drive log parsing |
-| `/volume1/@SynologyDriveShareSync` | `/host/shares/@SynologyDriveShareSync` | ShareSync log parsing |
-| (Docker volume) | `/app/data` | SQLite WAL buffer |
+## Expected startup signals
 
-### Why `/sys` must be mounted
+You should see startup lines for all major collectors, including:
+- `schedtasks`
+- `hyperbackup`
+- `storagepool`
+- `container-io`
+- `share-health`
+- `service-health`
+- `sys-extras`
 
-Three collectors need `/sys`:
-- `sysextras`: reads `/sys/fs/btrfs/<uuid>/` for Btrfs error counters; reads `/sys/class/thermal/thermal_zone*/temp` for CPU temperature
-- `container_io`: reads `/sys/fs/cgroup/blkio/docker/<id>/` (cgroup v1) or `/sys/fs/cgroup/system.slice/docker-<id>.scope/` (cgroup v2) for per-container block I/O
+## Live telemetry expectations
 
-Both paths try `/host/sys` first, then fall back to bare `/sys` if the mount isn't there. However, mounting `/sys` read-only is strongly recommended: without it, container I/O data will be missing and Btrfs errors will not be detected.
+### Confirmed working
 
-### Why explicit shares instead of `/volume1`
+- `smon_container_io` should receive rows after the second 30-second sample
+- `scheduled_task` warnings can appear in `smon_logs`
+- snapshot-replication API warnings can appear in `smon_logs`
 
-Synology Container Manager rejects top-level volume bind mounts like `/volume1:/host/volume1` during compose-managed recreates. Error seen: `Fail to parse share name from [/volume1]`. The Docker CLI accepts it but the Container Manager UI and recreate path do not. The workaround is mounting each named share individually.
+### Not guaranteed to produce rows on current DSM
 
-If a share listed in the compose file does not exist on a specific NAS, the container will fail to start. Comment out or remove binds for missing shares and remove the corresponding path from `WATCH_PATHS`/`CHECKSUM_PATHS` in `.env`.
+The following collectors are deployed, but the current NAS units do not yet fully support their request shapes:
+- scheduled tasks
+- snapshot replication
+- possibly Hyper Backup task listing
+- DSM Log Center structured log listing
 
-## Log Sources
+Important:
+- empty tables do not imply healthy subsystems
+- check `smon_logs` for explicit API-unavailable warnings
 
-The logwatcher tails 13+ log sources by default:
+## Current DSM-specific caveats
 
-| Host file | `smon_logs.source` | Notes |
-|-----------|---------------------|-------|
-| `/var/log/synologydrive.log` | `drive_server` | Main Drive server syslog (200 lines bootstrapped) |
-| `/var/packages/@synologydrive/target/var/log/*.log` | `drive` | Per-folder Drive logs (200 lines bootstrapped) |
-| `/volume1/@synologydrive/*/log/syncfolder.log` | `drive_sharesync` | ShareSync per-folder log |
-| `/var/log/synolog/synowebapi.log` | `webapi` | **"Failed to SYNOShareGet" lives here** (100 lines bootstrapped) |
-| `/var/log/synolog/synostorage.log` | `storage` | Share/volume management (75 lines bootstrapped) |
-| `/var/log/synolog/synoshare.log` | `share` | Share database operations (100 lines bootstrapped) |
-| `/var/log/kern.log` | `kernel` | I/O stalls, SCSI/ATA errors (75 lines bootstrapped) |
-| `/var/log/synolog/synoinfo.log` | `system_info` | DSM config changes |
-| `/var/log/synolog/synoservice.log` | `service` | Service start/stop/crash (100 lines bootstrapped) |
+### Scheduled tasks
 
-On startup, the logwatcher also checks for `.1` rotated files (e.g., `synowebapi.log.1`). If the current file is < 8 KB (just rotated), the `.1` file is read first to backfill recent history.
+Observed on current NAS:
+- `SYNO.Core.TaskScheduler` is advertised
+- current call shape returns `API error code: 103`
 
-Additional sources written via DSM API (not log file tailing):
+Current behavior:
+- no task rows yet
+- warning log emitted instead
 
-| Source | From | Description |
-|--------|------|-------------|
-| `share_config` | sharehealth | Share enumeration |
-| `share_health` | sharehealth | Share DB failures |
-| `package_health` | sharehealth | Package status |
-| `dsm_system_log` | sharehealth | Structured DSM Log Center entries |
-| `kernel_health` | servicehealth | OOM kills and segfaults from dmesg |
-| `service_restart` | servicehealth | Service state transitions |
-| `scheduled_task_failure` | schedtasks | Failed tasks with non-zero exit code |
-| `btrfs_error` | sysextras | Btrfs filesystem error counters |
-| `sharesync_detail` | drive | Per-task ShareSync companion entries |
+### Snapshot replication
+
+Observed on current NAS:
+- current attempted APIs return unsupported/unavailable responses
+
+Current behavior:
+- no snapshot rows yet
+- warning log emitted instead
+
+### Hyper Backup
+
+Current behavior:
+- collector is deployed
+- rows are not yet confirmed on the live NASes
+- failures now surface as warning logs rather than silent emptiness
+
+### DSM structured Log Center entries
+
+Current behavior:
+- parser handles string log levels now
+- live row ingestion is not yet confirmed on the current NASes
+
+## Verification commands
+
+### Confirm running revision
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+$DOCKER ps --format 'table {{.Names}}\t{{.Status}}\t{{.Label "org.opencontainers.image.revision"}}'
+```
+
+### Confirm `/host/sys` exists in the running container
+
+```sh
+$DOCKER exec synology-monitor-agent sh -lc 'ls -d /host/sys /host/sys/fs /host/sys/fs/btrfs 2>/dev/null || true'
+```
+
+### Check recent agent logs
+
+```sh
+$DOCKER logs --tail 120 synology-monitor-agent 2>&1
+```
+
+### Check for explicit blind-spot warnings in Supabase
+
+Look for `smon_logs.source` values such as:
+- `scheduled_task`
+- `hyperbackup`
+- `dsm_system_log`
+- `storage` messages beginning with `Snapshot replication API unavailable:`
+
+## Why the latest deployment changes were made
+
+The extended telemetry work originally had two structural problems:
+- the code emitted data for tables that were not in tracked schema
+- DSM API failures often degraded into “no data” without any warning
+
+The deployment and runtime changes in this repo now enforce:
+- schema exists before emitter code depends on it
+- unsupported DSM APIs surface as warning logs
+- `/sys` is mounted because the collectors now rely on it

@@ -1,106 +1,151 @@
-# NAS Monitor — Plan
+# NAS Monitor — Status Plan
 
-## Current State (April 2026)
+Last verified: 2026-04-08 UTC
 
-The system is production-ready and actively monitoring two Synology NAS units. Both the Go agent and the Next.js web app are deployed and running.
+This document is a reality-based status file, not a wish list. It separates:
+- implemented in code
+- deployed live
+- still unsupported or incomplete
 
----
+## Current outcome
 
-## What is complete
+The system now has:
+- an issue-centric web app with persistent issue memory
+- a 17-collector Synology agent
+- live extended telemetry tables for tasks, backups, snapshot replication, and container I/O
+- explicit warning logs when a DSM API is unsupported, instead of silent empty data
 
-### Go agent (17 collectors)
+The system does not yet have:
+- working scheduled-task snapshots from DSM on these NAS units
+- working snapshot-replication snapshots from DSM on these NAS units
+- confirmed working Hyper Backup task snapshots on these NAS units
+- confirmed structured DSM Log Center event ingestion on these NAS units
 
-All collectors are implemented and running on both NAS units:
+Those remaining gaps are now surfaced as runtime warnings rather than being mistaken for healthy subsystems.
 
-- [x] System: CPU, memory, network, Docker container status (30s)
-- [x] Storage: Volume and disk health via DSM API (60s)
-- [x] Drive: Drive team folders, user activity, ShareSync task parsing (30s)
-- [x] Process: Per-process CPU/mem/disk I/O from /proc (15s)
-- [x] Diskstats: Per-disk IOPS/throughput/await/utilisation from /proc/diskstats (15s)
-- [x] Connections: Active TCP connections grouped by remote IP (30s)
-- [x] Logwatcher: Multi-source log tailing with bootstrap and rotated-file support (10s)
-- [x] Share health: DSM API share enumeration, package health, structured DSM logs, share quotas (2m)
-- [x] Service health: 12 DSM services with restart detection and uptime metrics (60s)
-- [x] SysExtras: Memory pressure, inode, CPU temp, iowait%, NFS stats, VM pressure, Btrfs errors (30s)
-- [x] Custom: AI-requested dynamic collection via smon_custom_metric_schedules (60s poll)
-- [x] Security: Entropy-based ransomware detection, mass-rename, integrity scanning (event-driven)
-- [x] Scheduled tasks: ALL DSM scheduled tasks with exit codes via DSM API (5m) → smon_scheduled_tasks
-- [x] Hyper Backup: Task state and progress via DSM API with dual-API fallback (5m) → smon_backup_tasks
-- [x] Storage pool: RAID scrub/rebuild from /proc/mdstat (60s) + snapshot replication (5m) → smon_snapshot_replicas
-- [x] Container I/O: Per-container block I/O via cgroup v1/v2 with delta computation (30s) → smon_container_io
+## Implemented in code
 
-### Web app (Next.js)
+### Web app
 
-- [x] Dashboard: Live metrics, alerts, service health overview
-- [x] /assistant: NAS Copilot chat with issue agent
-- [x] /sync-triage: Sync error triage UI
-- [x] /ai-insights: Grouped AI analysis runs
-- [x] /settings: AI model configuration
-- [x] Issue agent (issue-agent.ts): conversation-loop agent with MAX_AGENT_CYCLES=2
-- [x] Telemetry context: 10 parallel queries including all new tables
-- [x] Diagnostic tools: 16 tools including check_scheduled_tasks, check_backup_status, check_container_io
-- [x] HMAC-signed approval tokens for remediation actions
-- [x] Admin version banner with build SHA
-- [x] dedupeLatestByField: prevents context flooding from repeated task snapshots
-- [x] Telemetry field guide in agent prompt: thresholds for iowait, backup failures, container I/O
+- Issue-centric architecture implemented in:
+  - [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+  - [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
+  - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
+- The agent reads persistent issue state, recent messages, actions, evidence, and telemetry context on each cycle.
+- Telemetry query failures are now preserved in `telemetry_errors` so the agent can treat missing data as degraded visibility instead of “no problems found”.
 
-### Supabase tables (live)
+### Agent
 
-- [x] smon_nas_units, smon_metrics, smon_logs, smon_alerts
-- [x] smon_storage_snapshots, smon_container_status, smon_service_health
-- [x] smon_process_snapshots, smon_disk_io_stats, smon_net_connections
-- [x] smon_sync_task_snapshots, smon_drive_activities, smon_drive_team_folders
-- [x] smon_security_events, smon_copilot_sessions, smon_copilot_messages, smon_copilot_actions
-- [x] smon_custom_metric_schedules, smon_custom_metric_data
-- [x] smon_issues, smon_issue_actions, smon_issue_messages, smon_issue_evidence
-- [x] smon_ai_analyses, smon_analysis_runs, smon_analyzed_problems
-- [x] smon_scheduled_tasks (new April 2026)
-- [x] smon_backup_tasks (new April 2026)
-- [x] smon_snapshot_replicas (new April 2026)
-- [x] smon_container_io (new April 2026)
+- 17 collectors are wired in [main.go](/worksp/monitor/app/apps/agent/cmd/agent/main.go).
+- Extended telemetry schema is defined in:
+  - [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
+- Container I/O collector now supports:
+  - host-mounted `/host/sys`
+  - Synology cgroup layouts that lack throttle files
+  - fallback to `/proc/<pid>/io`
+  - implementation in [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go)
+- DSM system log levels now parse as either integers or strings in [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go).
+- Scheduled-task / backup / snapshot DSM API failures no longer collapse into silent nil results in [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go).
+- Unsupported telemetry APIs are now surfaced into `smon_logs` from:
+  - [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go)
+  - [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
+  - [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
+  - [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
 
----
+## Deployed live
 
-## What could be improved (not blocking anything)
+### Web
 
-### Agent quality
-- [ ] **Context window management**: the 10 parallel queries can return a lot of data. Add token estimation and trim lower-priority context if approaching model limits.
-- [ ] **Issue auto-detection**: `issue-detector.ts` triggers on alerts, but not all problems generate alerts. Could trigger on log patterns (e.g., repeated `last_result != 0` on a scheduled task).
-- [ ] **Conversation summary pruning**: `conversation_summary` field is updated on each cycle but can grow long. Consider a summarization step every N cycles.
+- Live site: `https://mon.designflow.app`
+- Deployment model:
+  1. push to `master`
+  2. GitHub Actions builds `ghcr.io/u2giants/synology-monitor-web:latest`
+  3. workflow triggers Coolify redeploy
+- This is defined in:
+  - [.github/workflows/web-image.yml](/worksp/monitor/app/.github/workflows/web-image.yml)
 
-### Data collection
-- [ ] **`smon_sync_task_snapshots` is empty**: DSM API error 102 on both NAS units. The ShareSync task API isn't available. Investigation needed: is it a package version issue? A DSM version issue? Can the log-parsing fallback produce structured output that populates this table?
-- [ ] **SMART data freshness**: currently collected by the storage collector but SMART self-tests aren't triggered. Could add a `check_smart` scheduled task.
-- [ ] **Snapshot replication reliability**: `GetSnapshotReplicationTasks()` has a dual-API fallback but may still fail if the package isn't installed. Monitor `smon_snapshot_replicas` for data.
+### Agent
 
-### Operations
-- [ ] **Agent auto-update**: currently requires SSH to each NAS to `docker compose pull && restart`. Could automate with a watchtower container or a deploy webhook.
-- [ ] **WAL persistence**: the SQLite WAL in the agent container at `/app/data/wal.db` is lost when the container is recreated. Should be a named volume or bind mount. Currently the 30s flush interval makes this low-risk.
+- Both NAS units are deployed from:
+  - [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+- Canonical live directory on each NAS:
+  - `/volume1/docker/synology-monitor-agent`
+- `/sys` is now part of the canonical compose spec and must be mounted as `/host/sys:ro`.
 
----
+### Database
 
-## Decision log
+- Live extended tables now exist:
+  - `smon_scheduled_tasks`
+  - `smon_backup_tasks`
+  - `smon_snapshot_replicas`
+  - `smon_container_io`
+- Live `smon_logs.source` constraint now includes:
+  - `scheduled_task`
+  - `hyperbackup`
+  - `service_restart`
+  - `btrfs_error`
+  - `sharesync_detail`
+  - `share_quota`
 
-### April 2026: New collectors added (schedtasks, hyperbackup, storagepool, container_io)
+## Verified live behavior
 
-**Why:** The AI agent had significant blind spots. Silent scheduled task failures, Hyper Backup state, RAID scrub/rebuild progress, and container-level I/O were all completely invisible. These are common root causes for NAS performance and reliability problems.
+- `smon_container_io` is receiving live rows.
+- `scheduled_task` warning logs are reaching `smon_logs`.
+- `storage` warning logs for snapshot API unavailability are reaching `smon_logs`.
+- Both NASes are on the current deployed agent revision as of this verification pass.
 
-**Key design decision — new tables, not new columns:** PostgREST (Supabase's REST layer) returns HTTP 400 if you POST a field that doesn't exist in the table schema. This means you can never add a field to an existing payload struct without first adding it to Supabase via a migration. We chose to create new tables (`smon_scheduled_tasks`, `smon_backup_tasks`, `smon_snapshot_replicas`, `smon_container_io`) rather than trying to extend existing structs with optional fields.
+## Remaining unsupported or incomplete areas
 
-### April 2026: sysextras extended with I/O metrics
+### Scheduled tasks
 
-**Why:** CPU iowait%, NFS server traffic, VM page writeback, and Btrfs errors were not collected. These are critical for distinguishing disk saturation from CPU saturation and identifying memory pressure as a root cause.
+- DSM advertises `SYNO.Core.TaskScheduler`.
+- On the current NAS units, the request shape used by the collector returns `API error code: 103`.
+- Result:
+  - no `smon_scheduled_tasks` rows yet
+  - explicit warning log now emitted instead of silent emptiness
 
-**Key design decision — existing table, new metric types:** Unlike the structured task data, these are scalar metrics that fit naturally into `smon_metrics` as new `type` values. No schema change needed — the `smon_metrics` table already has `type`, `value`, `unit`, and `metadata` fields.
+### Snapshot replication
 
-### April 2026: Logwatcher bootstrap extended
+- Current collector attempts:
+  - `SYNO.Core.Share.Snapshot.ReplicaTask`
+  - `SYNO.SynologyDrive.SnapshotReplication`
+- On the current NAS units, those calls return unsupported or unavailable responses.
+- Result:
+  - no `smon_snapshot_replicas` rows yet
+  - explicit warning log now emitted
 
-**Why:** Log evidence was being lost on agent restart. Drive logs were bootstrapped (last 200 lines) but other sources (backup, webapi, kernel, service, package) were not. Also, rotated log files (`.1`) were never read, losing up to a day of context if a log rotated recently.
+### Hyper Backup
 
-**Key design decision — conditional rotation read:** `bootstrapRotated()` only reads the `.1` file if the current file is < 8 KB. This heuristic detects "freshly rotated" vs "has content" without having to parse timestamps. The threshold is generous — a legitimate fresh log file would be 0 bytes; 8 KB gives headroom for startup messages.
+- Current collector tries `SYNO.Backup.Task` first, then fallback APIs.
+- Live NAS capability and request behavior still need one more pass to determine the exact supported request shape or whether no tasks are configured.
+- Result:
+  - no `smon_backup_tasks` rows verified yet
+  - API failures are now surfaced if present
 
-### April 2026: Issue agent replaces resolution-agent state machine
+### DSM structured system logs
 
-**Why:** The old `resolution-agent.ts` was a complex state machine with 8 phases, a tick-based polling loop, and multiple AI calls per tick. It had persistent bugs: re-proposing rejected fixes, ignoring user messages, re-running the same diagnostics after replanning. These were architectural, not implementation bugs — the state machine model is inherently fragile for a conversational interface.
+- Parsing bug was fixed.
+- On the current NAS units, the collector is no longer crashing, but recent `dsm_system_log` rows have still not been observed in production.
+- This may be:
+  - a DSM response shape mismatch
+  - no recent items in the queried stream
+  - a different method or parameter requirement
 
-**The new approach:** `issue-agent.ts` is a conversation-loop agent. Each cycle gives the AI the full conversation history, all evidence, all past actions, and fresh telemetry — and asks for one decision. The AI's response IS the state. There's no state machine to get stuck in.
+## Why these changes were necessary
+
+The previous state had two bad failure modes:
+- collectors wrote to tables that did not exist
+- unsupported DSM APIs returned empty behavior that looked like “healthy, no data”
+
+That made the system lie by omission. The new standard is:
+- if telemetry is supported and working, store it
+- if telemetry is unsupported or broken, log that fact explicitly
+- never let an empty table imply subsystem health without evidence
+
+## Next recommended work
+
+1. Reverse-engineer the exact DSM request shape for `SYNO.Core.TaskScheduler` on these NASes.
+2. Do the same for Hyper Backup task listing.
+3. Confirm whether Snapshot Replication is actually installed and expose that state explicitly.
+4. Finish DSM structured Log Center ingestion so `dsm_system_log` produces rows or explicit unsupported diagnostics every cycle.
+5. Add UI surfacing for telemetry blind-spot warnings so operators can see “unsupported API” directly in the product.
