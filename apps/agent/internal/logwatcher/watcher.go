@@ -33,7 +33,8 @@ type LogFile struct {
 
 var defaultLogFiles = []LogFile{
 	{Path: "messages", Source: "system"},
-	{Path: "synobackup.log", Source: "system"},
+	{Path: "synolog/synobackup.log", Source: "backup"},
+	{Path: "synobackup.log", Source: "backup"},
 	{Path: "synologydrive.log", Source: "drive_server"},
 	{Path: "synolog/synosecurity.log", Source: "security"},
 	{Path: "synolog/synoconnection.log", Source: "connection"},

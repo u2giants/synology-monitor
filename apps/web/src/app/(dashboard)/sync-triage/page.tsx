@@ -57,6 +57,8 @@ const actionOptions = [
   { value: "create", label: "Create" },
 ];
 
+const syncSources = ["drive", "drive_server", "drive_sharesync", "smb", "webapi", "share", "service", "storage"];
+
 function metaValue(metadata: Record<string, unknown> | null, key: string) {
   const value = metadata?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -89,6 +91,21 @@ function translateMessage(message: string): string {
     }
   }
   return message;
+}
+
+function isActionableSyncLog(log: LogEntry) {
+  if (["error", "warning", "critical"].includes(log.severity)) return true;
+
+  const message = log.message.toLowerCase();
+  return (
+    log.source === "drive_server" &&
+    (
+      message.includes("synologydrive.admin.sharesync") ||
+      message.includes("synologydrive.sharesync") ||
+      message.includes("apiinternalutil.cpp:200 webapi") ||
+      message.includes("_sharesync_list")
+    )
+  );
 }
 
 function deriveSyncIssues(logs: LogEntry[], alerts: Alert[]): DerivedIssue[] {
@@ -140,7 +157,7 @@ function deriveSyncIssues(logs: LogEntry[], alerts: Alert[]): DerivedIssue[] {
     const action = metaValue(log.metadata, "action");
     const message = log.message.toLowerCase();
 
-    if (message.includes("stoit") || message.includes("synoshareget")) {
+    if (message.includes("stoi") || message.includes("synoshareget")) {
       const scope = path || "ShareSync metadata";
       addGroup(`log:sharesync-meta:${scope}`, {
         key: `log:sharesync-meta:${scope}`,
@@ -159,6 +176,19 @@ function deriveSyncIssues(logs: LogEntry[], alerts: Alert[]): DerivedIssue[] {
         key: `log:sync-failure:${scope}`,
         title: `Recurring sync failures in ${scope}`,
         summary: `These rows look like one sync failure cluster with a shared root cause.`,
+        severity: "warning",
+        affectedPath: path,
+        sampleMessage: log.message,
+      });
+      continue;
+    }
+
+    if (message.includes("synologydrive.admin.sharesync") || message.includes("synologydrive.sharesync") || message.includes("_sharesync_list")) {
+      const scope = path || "ShareSync control plane";
+      addGroup(`log:sharesync-api:${scope}`, {
+        key: `log:sharesync-api:${scope}`,
+        title: `ShareSync API failures in ${scope}`,
+        summary: `These rows show DSM's ShareSync admin APIs returning invalid responses repeatedly, which points to a backend ShareSync state problem.`,
         severity: "warning",
         affectedPath: path,
         sampleMessage: log.message,
@@ -199,16 +229,15 @@ export default function SyncTriagePage() {
     let logsQuery = supabase
       .from("smon_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
-      .in("source", ["drive", "drive_server", "drive_sharesync", "smb"])
-      .in("severity", ["error", "warning", "critical"])
+      .in("source", syncSources)
       .order("ingested_at", { ascending: false })
-      .limit(200);
+      .limit(1200);
 
     if (source !== "all") logsQuery = logsQuery.eq("source", source);
 
     const logsResult = await logsQuery;
     if (!logsResult.error && logsResult.data) {
-      setLogs(logsResult.data);
+      setLogs((logsResult.data as LogEntry[]).filter(isActionableSyncLog));
     }
 
     // Fetch sync-related alerts (source='ai' or containing sync keywords)
