@@ -184,6 +184,15 @@ function logFamily(log: LogRow) {
   return "";
 }
 
+function mergesAcrossNas(family: string) {
+  return [
+    "sharesync-metadata-corruption",
+    "sharesync-api-invalid",
+    "drive-not-ready",
+    "sync-failure",
+  ].includes(family);
+}
+
 function groupTitle(family: string, scope: string) {
   switch (family) {
     case "mass-file-rename":
@@ -309,12 +318,19 @@ function buildLogGroups(logs: LogRow[]) {
     const scope = pickScope({ message: log.message, metadata: log.metadata });
     const component = stringValue(log.metadata?.component);
     const scopeKey = normalizeKey(component || scope);
-    const key = `detected:${family}:${scopeKey}:${log.nas_id ?? "global"}`;
+    const key = mergesAcrossNas(family)
+      ? `detected:${family}:${scopeKey}`
+      : `detected:${family}:${scopeKey}:${log.nas_id ?? "global"}`;
+    const severity = family === "sharesync-api-invalid"
+      ? "warning"
+      : family === "drive-not-ready"
+        ? "critical"
+        : mapSeverity(log.severity);
     upsertGroup(groups, key, {
       family,
       title: groupTitle(family, component || scope),
       summary: groupSummary(family, component || scope, 1),
-      severity: mapSeverity(log.severity),
+      severity,
       nasId: log.nas_id,
       scope: component || scope,
       evidence: {

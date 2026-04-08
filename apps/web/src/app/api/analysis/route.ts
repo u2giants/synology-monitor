@@ -21,8 +21,8 @@ export async function POST(request: NextRequest) {
     if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
 
     const body = await request.json().catch(() => ({}));
-    const requested = Number(body.lookbackMinutes) || 60;
-    const lookbackMinutes = Math.min(Math.max(requested, 15), 7200);
+    const requested = Number(body.lookbackMinutes) || 10080;
+    const lookbackMinutes = Math.min(Math.max(requested, 15), 20160);
 
     const issueIds = await runIssueDetection(supabase, user.id, lookbackMinutes);
     for (const issueId of issueIds.slice(0, 5)) {

@@ -38,7 +38,7 @@ export function useAnalysis() {
     }
   }, []);
 
-  const triggerAnalysis = useCallback(async (lookbackMinutes: number = 60) => {
+  const triggerAnalysis = useCallback(async (lookbackMinutes: number = 10080) => {
     setAnalyzing(true);
     setError(null);
     try {

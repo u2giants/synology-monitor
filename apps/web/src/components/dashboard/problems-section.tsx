@@ -11,7 +11,8 @@ const LOOKBACK_OPTIONS = [
   { value: 360, label: "Last 6 hours" },
   { value: 1440, label: "Last 24 hours" },
   { value: 4320, label: "Last 3 days" },
-  { value: 7200, label: "Last 5 days" },
+  { value: 10080, label: "Last 7 days" },
+  { value: 20160, label: "Last 14 days" },
 ];
 
 const severityConfig = {
@@ -36,7 +37,7 @@ export function ProblemsSection() {
   const { loading, analyzing, error, fetchLatestAnalysis, triggerAnalysis } = useAnalysis();
   const [issues, setIssues] = useState<DetectedIssue[]>([]);
   const [runSummary, setRunSummary] = useState<string | null>(null);
-  const [lookbackMinutes, setLookbackMinutes] = useState(60);
+  const [lookbackMinutes, setLookbackMinutes] = useState(10080);
 
   useEffect(() => {
     fetchLatestAnalysis().then((data) => {
