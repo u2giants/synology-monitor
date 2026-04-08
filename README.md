@@ -12,4 +12,7 @@ Historical-only markdown:
 Operational tracker:
 - [INGESTION_BACKLOG.md](/worksp/monitor/app/INGESTION_BACKLOG.md)
 
+Design spec:
+- [rebuild_plan.md](/worksp/monitor/app/rebuild_plan.md)
+
 If a markdown file is not one of the authoritative docs above, treat it as non-source-of-truth unless it explicitly says otherwise.
