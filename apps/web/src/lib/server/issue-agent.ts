@@ -94,6 +94,59 @@ function getOpenAIClient() {
   });
 }
 
+function sanitizeModelJson(text: string) {
+  return text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+function extractFirstJsonObject(text: string) {
+  const sanitized = sanitizeModelJson(text);
+  const start = sanitized.indexOf("{");
+  if (start === -1) return sanitized;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < sanitized.length; i += 1) {
+    const char = sanitized[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+
+    if (depth === 0) {
+      return sanitized.slice(start, i + 1);
+    }
+  }
+
+  return sanitized.slice(start);
+}
+
+function parseAgentDecision(raw: string) {
+  const candidate = extractFirstJsonObject(raw);
+  return JSON.parse(candidate) as AgentDecision;
+}
+
 // Keep only the most recent row per unique field value (e.g. per task_id).
 function dedupeLatestByField<T extends Record<string, unknown>>(items: T[], field: keyof T): T[] {
   const seen = new Set<unknown>();
@@ -468,7 +521,7 @@ Only one of diagnostic_action or remediation_action may be non-null.`;
   });
 
   const raw = response.choices[0]?.message?.content ?? "{}";
-  return JSON.parse(raw) as AgentDecision;
+  return parseAgentDecision(raw);
 }
 
 function actionFingerprint(action: {
