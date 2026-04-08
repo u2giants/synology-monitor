@@ -95,6 +95,13 @@ func main() {
 		dockerCollector.Run(stop)
 	}()
 
+	containerIOCollector := collector.NewContainerIOCollector(dsmClient, s, cfg.NasID, 30*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		containerIOCollector.Run(stop)
+	}()
+
 	// Start Drive Admin collector (team folders, user activity, stats, ShareSync tasks)
 	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
 	wg.Add(1)

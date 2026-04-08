@@ -135,6 +135,10 @@ func (s *Sender) QueueSnapshotReplica(p SnapshotReplicaPayload) {
 	s.queue("smon_snapshot_replicas", p)
 }
 
+func (s *Sender) QueueContainerIO(p ContainerIOPayload) {
+	s.queue("smon_container_io", p)
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {

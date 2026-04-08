@@ -222,6 +222,18 @@ type BackupTaskPayload struct {
 	CapturedAt       time.Time `json:"captured_at"`
 }
 
+// ContainerIOPayload is a row in smon_container_io
+type ContainerIOPayload struct {
+	NasID         string    `json:"nas_id"`
+	CapturedAt    time.Time `json:"captured_at"`
+	ContainerID   string    `json:"container_id"`
+	ContainerName string    `json:"container_name"`
+	ReadBPS       int64     `json:"read_bps"`
+	WriteBPS      int64     `json:"write_bps"`
+	ReadOPS       int64     `json:"read_ops"`
+	WriteOPS      int64     `json:"write_ops"`
+}
+
 // SnapshotReplicaPayload is a row in smon_snapshot_replicas
 type SnapshotReplicaPayload struct {
 	NasID       string    `json:"nas_id"`
