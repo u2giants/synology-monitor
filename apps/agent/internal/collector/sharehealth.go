@@ -238,6 +238,13 @@ func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
 	logs, err := c.dsmClient.GetRecentSystemLogs(200)
 	if err != nil {
 		log.Printf("[share-health] system logs API failed: %v", err)
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "dsm_system_log",
+			Severity: "warning",
+			Message:  "DSM system log API unavailable: " + err.Error(),
+			LoggedAt: now,
+		})
 		return
 	}
 

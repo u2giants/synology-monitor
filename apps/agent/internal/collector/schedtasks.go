@@ -52,6 +52,13 @@ func (c *ScheduledTaskCollector) collect() {
 	tasks, err := c.dsmClient.GetAllScheduledTasks()
 	if err != nil {
 		log.Printf("[schedtasks] API error: %v", err)
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "scheduled_task",
+			Severity: "warning",
+			Message:  "Scheduled task API unavailable: " + err.Error(),
+			LoggedAt: now,
+		})
 		return
 	}
 	if len(tasks) == 0 {

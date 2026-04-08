@@ -207,6 +207,13 @@ func (c *StoragePoolCollector) collectSnapshotReplicas() {
 	tasks, err := c.dsmClient.GetSnapshotReplicationTasks()
 	if err != nil {
 		log.Printf("[storagepool] snapshot replication API error: %v", err)
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "storage",
+			Severity: "warning",
+			Message:  "Snapshot replication API unavailable: " + err.Error(),
+			LoggedAt: now,
+		})
 		return
 	}
 	if len(tasks) == 0 {

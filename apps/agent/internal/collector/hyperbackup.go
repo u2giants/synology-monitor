@@ -53,6 +53,13 @@ func (c *HyperBackupCollector) collect() {
 	tasks, err := c.dsmClient.GetHyperBackupTasks()
 	if err != nil {
 		log.Printf("[hyperbackup] API error: %v", err)
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "hyperbackup",
+			Severity: "warning",
+			Message:  "Hyper Backup API unavailable: " + err.Error(),
+			LoggedAt: now,
+		})
 		return
 	}
 	if len(tasks) == 0 {
