@@ -10,14 +10,15 @@ Read these files first, in order:
 3. `deploy/synology/docker-compose.agent.yml` — canonical compose spec
 4. `deploy/synology/.env.agent.example` — all env vars with defaults
 5. `apps/agent/internal/config/config.go` — config validation logic
+6. `HANDOFF.md` — AI issue agent architecture and current state
 
-## Current Live State (as of 2026-04-06)
+## Current Live State (as of 2026-04-07)
 
 ### Both NAS units are running the current image
 
 - Image: `ghcr.io/u2giants/synology-monitor-agent:latest`
-- All thirteen collectors are active (see startup logs below)
-- All data tables are receiving data
+- All seventeen collectors are active (see startup logs below)
+- All data tables are receiving data including new April 2026 tables
 
 **edgesynology1** (`popdam@100.107.131.35:22`)
 - NAS ID: `4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001`
@@ -27,7 +28,7 @@ Read these files first, in order:
 - NAS ID: `9dbd4646-5f4e-4fa0-8f44-1d0dbe6f1002`
 - Container: `synology-monitor-agent`, status: running
 
-Expected startup log output (all thirteen collectors should appear):
+Expected startup log output (all seventeen collectors should appear):
 ```
 [docker] collector started (interval: 30s)
 [system] collector started (interval: 30s)
@@ -42,6 +43,10 @@ Expected startup log output (all thirteen collectors should appear):
 [sys-extras] started (every 30s)
 [custom-collector] started (polling every 60s)
 [security] watcher started
+[schedtasks] collector started (interval: 5m0s)
+[hyperbackup] collector started (interval: 5m0s)
+[storagepool] collector started (mdstat: 60s, snapshots: 5m0s)
+[container-io] collector started (interval: 30s)
 Agent running for NAS: edgesynology1 (4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001)
 ```
 
@@ -69,6 +74,19 @@ Both `.env` files have:
 - **Project:** `qnjimovrsaacneqkggsn` (dedicated to synology-monitor)
 - **Migrated from:** shared `popdam-prod` project, April 2026
 - **NAS unit UUIDs were preserved** during migration
+
+## New Tables (April 2026)
+
+Four new tables were added and are now receiving data from the new collectors:
+
+| Table | Collector | First data after |
+|-------|-----------|-----------------|
+| `smon_scheduled_tasks` | schedtasks | ~5 min after container start |
+| `smon_backup_tasks` | hyperbackup | ~5 min after container start |
+| `smon_snapshot_replicas` | storagepool | ~5 min after container start |
+| `smon_container_io` | container_io | ~60 sec after container start (first tick is baseline-only) |
+
+If these tables are empty after 10 minutes, check the agent startup log and verify the `/sys` mount is present in the compose file (required for container I/O).
 
 ## Known Operational Quirks
 
@@ -135,28 +153,51 @@ Use `docker start` (detached) or `docker compose up -d` for recovery.
 
 DSM API error 102 = endpoint not available at this DSM version. All three ShareSync
 API variants tried by `drive.go` return 102 on both NAS units. The log-parsing
-fallback runs but currently finds no active tasks. `smon_sync_task_snapshots` will
-be empty until this changes. This is expected and not a bug.
+fallback runs. `smon_sync_task_snapshots` will be empty until this changes. This is
+expected and not a bug. ShareSync detail logs still appear in `smon_logs` source
+`sharesync_detail` from the drive collector's companion log emission.
 
-### 8. First process/disk sample is baseline-only
+### 8. First process/disk/container-IO sample is baseline-only
 
-`ProcessCollector` and `DiskStatsCollector` need two samples to calculate rates.
-The first collection pass stores baseline values only (no rows written to Supabase).
-Data starts appearing after the second tick (~15–30s after startup).
+`ProcessCollector`, `DiskStatsCollector`, and `ContainerIOCollector` need two samples
+to calculate rates. The first collection pass stores baseline values only (no rows
+written to Supabase). Data starts appearing after the second tick:
+- Process and diskstats: ~15s after startup
+- Container I/O: ~30s after startup
 
 ### 9. Custom metric collector uses NAS_NAME, not NAS_ID
 
 The `CustomCollector` polls `smon_custom_metric_schedules` using the `NAS_NAME`
 environment variable (e.g. `edgesynology1`) as the `nas_id` filter — NOT the UUID.
-This allows the web app's resolution agent to target schedules by name without
+This allows the web app's issue agent to target schedules by name without
 needing to manage UUIDs.
 
 ### 10. SSH banner output is a diagnostic symptom
 
 When SSH returns a banner (Synology EULA, legal notice, etc.) and no further output,
-the resolution agent now treats this as a symptom — not normal output — and tries
+the issue agent treats this as a symptom — not normal output — and tries
 alternative diagnostic approaches. Don't mistake banner-only output for a working
 command response.
+
+### 11. Container I/O requires `/sys` mount
+
+`ContainerIOCollector` reads cgroup files from `/sys/fs/cgroup/`. If the `/sys`
+bind mount is missing from the compose file, container I/O data will be absent and
+the collector will silently skip all containers. Check the compose file if
+`smon_container_io` is empty after 60 seconds.
+
+### 12. Btrfs error detection requires `/sys` mount
+
+`sysextras.go` reads `/sys/fs/btrfs/<uuid>/` for error counters. Same dependency as
+container I/O — requires `/sys:/host/sys:ro` in the compose file.
+
+### 13. PostgREST rejects unknown columns (HTTP 400)
+
+If you add a new field to a payload struct in `sender/types.go` without first adding
+the column to Supabase, the sender will get HTTP 400 errors and that table's data
+will be silently lost. Always add the Supabase column before deploying new struct
+fields. The SQLite WAL will retry failed rows, but if the column never gets added,
+the WAL will fill up and eventually the oldest rows will be dropped.
 
 ## Recommended Debugging Workflow
 
@@ -167,8 +208,8 @@ DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 $DOCKER inspect synology-monitor-agent --format "{{.Image}}"
 $DOCKER images ghcr.io/u2giants/synology-monitor-agent
 
-# 2. Check startup logs (all thirteen collectors should appear)
-$DOCKER logs synology-monitor-agent 2>&1 | head -40
+# 2. Check startup logs (all seventeen collectors should appear)
+$DOCKER logs synology-monitor-agent 2>&1 | head -50
 
 # 3. Validate compose config renders correctly
 cd /volume1/docker/synology-monitor-agent
@@ -178,80 +219,12 @@ $DOCKER compose -f compose.yaml config
 $DOCKER ps -a
 $DOCKER inspect synology-monitor-agent
 
-# 5. Verify data in Supabase (run in Supabase SQL Editor)
-SELECT
-  (SELECT COUNT(*) FROM smon_process_snapshots WHERE captured_at > now() - interval '5 min') AS process_rows,
-  (SELECT COUNT(*) FROM smon_disk_io_stats      WHERE captured_at > now() - interval '5 min') AS disk_rows,
-  (SELECT COUNT(*) FROM smon_net_connections    WHERE captured_at > now() - interval '5 min') AS conn_rows,
-  (SELECT COUNT(*) FROM smon_service_health     WHERE captured_at > now() - interval '5 min') AS service_rows,
-  (SELECT COUNT(*) FROM smon_custom_metric_data WHERE captured_at > now() - interval '5 min') AS custom_rows;
+# 5. Check for errors in running logs
+$DOCKER logs synology-monitor-agent 2>&1 | grep -i "error\|panic\|fatal"
+
+# 6. Verify /sys mount is present (needed for container I/O and Btrfs)
+$DOCKER exec synology-monitor-agent ls /host/sys/fs/cgroup 2>/dev/null || echo "/host/sys not mounted"
+
+# 7. Verify /proc mount (needed for process, diskstats, connections, iowait, NFS)
+$DOCKER exec synology-monitor-agent ls /host/proc/diskstats 2>/dev/null || echo "/host/proc not mounted"
 ```
-
-## What Has Changed Over Time (Brief History)
-
-1. **Initial deployment** — basic system/log/security collectors, DSM API polling
-
-2. **Share mount refactor** — replaced `/volume1:/host/volume1:ro` with per-share explicit
-   mounts. Reason: Container Manager UI rejected top-level `/volume1` during recreates.
-   All compose files and env examples updated.
-
-3. **Supabase migration** — moved from shared `popdam-prod` project to dedicated
-   `qnjimovrsaacneqkggsn` project. NAS unit UUIDs preserved. All env references updated.
-
-4. **AI model migration** — replaced `MINIMAX_API_KEY` + `OPENAI_API_KEY` with single
-   `OPENROUTER_API_KEY`. Diagnosis model: `google/gemini-2.5-flash`. Remediation: `openai/gpt-5.4`.
-
-5. **I/O attribution collectors (April 2026)** — added three new collectors:
-   - `process.go` — per-process CPU/mem/disk I/O from `/proc`
-   - `diskstats.go` — per-disk IOPS/throughput/await from `/proc/diskstats`
-   - `connections.go` — active TCP connection counts from `/proc/net/tcp`
-   Added volume mounts: `/proc:/host/proc:ro` and `/etc/passwd:/host/etc/passwd:ro`
-   Created four new Supabase tables via `resource-snapshot-migration.sql`
-   Updated both NAS `.env` files from SHA-pinned tag to `AGENT_IMAGE_TAG=latest`
-
-6. **Drive/ShareSync diagnosis overhaul (April 2026)** — major expansion to fix the AI's
-   inability to diagnose Synology Drive/ShareSync failures:
-
-   **New log sources in logwatcher** (added to `defaultLogFiles`):
-   - `synolog/synowebapi.log` → source `webapi` — **"Failed to SYNOShareGet" lives here**
-   - `synolog/synostorage.log` → source `storage` — share/volume management
-   - `synolog/synoshare.log` → source `share` — share database operations
-   - `kern.log` → source `kernel` — I/O stalls, SCSI/ATA errors
-   - `synolog/synoinfo.log` → source `system_info` — DSM config changes
-   - `synolog/synoservice.log` → source `service` — service start/stop/crash
-
-   **New DSM API integrations** (added to `dsm/client.go`):
-   - `GetShares()` via `SYNO.Core.Share`
-   - `GetInstalledPackages()` via `SYNO.Core.Package`
-   - `GetRecentSystemLogs(limit)` via `SYNO.Core.SyslogClient.Log`
-
-   **New collectors**:
-   - `sharehealth.go` — share DB health, package status, structured DSM logs (2m interval)
-   - `services.go` — DSM service status for 12 key services + kernel OOM/segfault detection (60s)
-   - `sysextras.go` — memory pressure, inode usage, CPU temperature (30s)
-   - `custom.go` — AI-requested custom metric collection (60s poll of Supabase)
-
-   **New Supabase tables** (migrations 00018, 00019, 00020):
-   - `smon_custom_metric_schedules` — AI-requested collection schedules
-   - `smon_custom_metric_data` — results of custom metric collections
-   - `smon_service_health` — DSM service status snapshots
-   - `referenced_count` column in schedules — tracks how often each metric is used
-
-   **Resolution agent overhaul**:
-   - AI personality rewritten as "THE DRIVER" (not a passive passenger)
-   - Three-model architecture (diagnosis + remediation + second opinion)
-   - MAX_DIAGNOSTIC_ROUNDS = 3 to prevent infinite loops
-   - 8 new diagnostic tools for share DB, kernel I/O, Drive database, etc.
-   - Dynamic metric collection: AI can permanently expand what the agent collects
-   - Timing awareness: AI asks if now is a good time before interrupting services
-   - Admin version banner showing build SHA + date
-
-## Things to Watch Out For
-
-- Keep `WATCH_PATHS` and `CHECKSUM_PATHS` aligned with actual mounted share paths in `.env`
-- If a share in compose.yaml doesn't exist on a specific NAS, the container will fail to start — remove that bind and its corresponding path from `WATCH_PATHS`
-- The healthcheck only verifies `/app/data/wal.db` exists — healthy ≠ data flowing
-- `smon_process_snapshots`, `smon_disk_io_stats`, and `smon_net_connections` have no automated cleanup — they will grow indefinitely without a retention job (see `resource-snapshot-migration.sql` comments)
-- If you see the agent writing to Supabase but the web app shows no new data, check RLS policies — all tables need both `authenticated` SELECT and `service_role` INSERT policies
-- The `CustomCollector` uses `NAS_NAME` (human-readable string) not `NAS_ID` (UUID) to filter schedules
-- The second opinion model (`anthropic/claude-sonnet-4`) requires special JSON enforcement — it ignores `response_format` and needs an explicit system message + prompt instruction to return valid JSON

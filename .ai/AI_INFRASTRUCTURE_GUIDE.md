@@ -158,17 +158,29 @@ get_logs(project_id="qnjimovrsaacneqkggsn", service="api")
 - Docker binary: `/var/packages/ContainerManager/target/usr/bin/docker`
 - Agent container dir: `/volume1/docker/synology-monitor-agent/`
 
-**AI architecture (three-model via OpenRouter):**
-- `google/gemini-2.5-flash` — diagnosis / planning
-- `openai/gpt-5.4` — remediation / fix proposals
-- `anthropic/claude-sonnet-4` — second opinion / confidence check
+**AI architecture (two-model via OpenRouter, configurable in Settings):**
+- `google/gemini-2.5-flash` — diagnosis model (used until first diagnostic action completes)
+- `openai/gpt-5.4` — remediation / analysis model (used after diagnostics run)
+
+**Go agent collectors (17 total):**
+- 13 original collectors + 4 new (April 2026): schedtasks, hyperbackup, storagepool, container_io
+- See AGENTS.md for the complete list and table destinations
 
 **Key tables for debugging:**
-- `smon_logs` — all NAS log events (17+ sources including webapi, kernel, share_health)
+- `smon_logs` — all NAS log events (20+ sources including webapi, kernel, share_health, service_restart, btrfs_error)
 - `smon_service_health` — DSM service status (Drive, ShareSync, smbd, etc.)
+- `smon_metrics` — CPU, memory, iowait%, NFS stats, VM pressure, disk I/O
+- `smon_process_snapshots` — top processes by CPU/mem/disk I/O (15s)
+- `smon_disk_io_stats` — per-disk IOPS/throughput/await (15s)
+- `smon_container_io` — per-container block I/O via cgroup (30s) [new]
+- `smon_scheduled_tasks` — all DSM scheduled tasks with last exit code (5m) [new]
+- `smon_backup_tasks` — Hyper Backup task state and progress (5m) [new]
+- `smon_snapshot_replicas` — snapshot replication task state (5m) [new]
 - `smon_custom_metric_schedules` — AI-requested dynamic metric collections
 - `smon_custom_metric_data` — results of those collections
-- `smon_issue_resolutions` — resolution agent state machine state
+- `smon_issues` — active issue records (replaces old smon_issue_resolutions)
+- `smon_issue_actions` — tool calls and remediation steps per issue
+- `smon_issue_messages` — conversation thread between user and agent
 
 ---
 
