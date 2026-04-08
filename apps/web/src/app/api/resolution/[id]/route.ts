@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { deleteIssue, loadIssue, updateIssue } from "@/lib/server/issue-store";
+import { loadIssueViewState } from "@/lib/server/issue-view";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,7 +15,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     const { id } = await params;
     const state = await loadIssue(supabase, user.id, id);
     if (!state) return NextResponse.json({ error: "Not found." }, { status: 404 });
-    return NextResponse.json(state);
+    return NextResponse.json(await loadIssueViewState(supabase, user.id, state));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Load failed." },

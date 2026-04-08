@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { loadIssue } from "@/lib/server/issue-store";
 import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { loadIssueViewState } from "@/lib/server/issue-view";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     const state = await loadIssue(supabase, user.id, resolutionId);
     if (!state) return NextResponse.json({ error: "Issue not found." }, { status: 404 });
 
-    return NextResponse.json(state);
+    return NextResponse.json(await loadIssueViewState(supabase, user.id, state));
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Agent run failed." },

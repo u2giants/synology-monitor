@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { runApprovedAction } from "@/lib/server/copilot";
-import { getCopilotRole, updateActionStatus } from "@/lib/server/copilot-store";
+import { getCopilotRole } from "@/lib/server/copilot-store";
+import { executeIssueBackedCopilotAction } from "@/lib/server/copilot-issues";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -32,26 +32,10 @@ export async function POST(request: Request) {
     };
 
     if (body.decision === "reject") {
-      if (body.actionId) {
-        await updateActionStatus(supabase, user.id, body.actionId, { status: "rejected" });
-      }
-      return NextResponse.json({ ok: true, content: "Action rejected." });
+      return NextResponse.json(await executeIssueBackedCopilotAction(supabase, user.id, body));
     }
 
-    if (body.actionId) {
-      await updateActionStatus(supabase, user.id, body.actionId, { status: "approved" });
-    }
-
-    const result = await runApprovedAction(body.target, body.commandPreview, body.approvalToken);
-
-    if (body.actionId) {
-      await updateActionStatus(supabase, user.id, body.actionId, {
-        status: result.ok ? "executed" : "failed",
-        result: result.content,
-      });
-    }
-
-    return NextResponse.json(result);
+    return NextResponse.json(await executeIssueBackedCopilotAction(supabase, user.id, body));
   } catch (error) {
     return NextResponse.json(
       {

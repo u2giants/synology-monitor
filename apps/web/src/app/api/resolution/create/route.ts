@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createIssue, loadIssue } from "@/lib/server/issue-store";
 import { seedIssueFromOrigin } from "@/lib/server/issue-agent";
 import { drainIssueQueue, queueIssueRun } from "@/lib/server/issue-workflow";
+import { loadIssueViewState } from "@/lib/server/issue-view";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -75,7 +76,7 @@ export async function POST(request: Request) {
     await queueIssueRun(supabase, user.id, issueId, "run_issue", { reason: "issue_created" });
     await drainIssueQueue(supabase, user.id, { limit: 1 });
     const state = await loadIssue(supabase, user.id, issueId);
-    return NextResponse.json({ resolutionId: issueId, state });
+    return NextResponse.json({ resolutionId: issueId, state: state ? await loadIssueViewState(supabase, user.id, state) : null });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to create issue." },

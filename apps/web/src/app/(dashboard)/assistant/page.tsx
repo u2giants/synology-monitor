@@ -20,7 +20,10 @@ import { cn, formatETFull, timeAgo } from "@/lib/utils";
 import {
   useResolution,
   type Resolution,
+  type ResolutionCapability,
+  type ResolutionFact,
   type ResolutionFull,
+  type ResolutionJob,
   type ResolutionMessage,
   type ResolutionStep,
 } from "@/hooks/use-resolution";
@@ -381,6 +384,48 @@ function IssueSidebar({ state }: { state: ResolutionFull }) {
       )}
 
       <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Normalized Facts</h3>
+        <div className="mt-3 space-y-2">
+          {state.facts.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No normalized facts attached yet.</div>
+          ) : (
+            state.facts.slice(0, 8).map((fact) => (
+              <FactCard key={fact.id} fact={fact} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Capability Gaps</h3>
+        <div className="mt-3 space-y-2">
+          {state.capabilities.filter((capability) => capability.state !== "supported").length === 0 ? (
+            <div className="text-xs text-muted-foreground">No known telemetry capability gaps for this issue.</div>
+          ) : (
+            state.capabilities
+              .filter((capability) => capability.state !== "supported")
+              .slice(0, 8)
+              .map((capability) => (
+                <CapabilityCard key={capability.id} capability={capability} />
+              ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Workflow State</h3>
+        <div className="mt-3 space-y-2">
+          {state.jobs.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No queued workflow jobs yet.</div>
+          ) : (
+            state.jobs.slice(0, 6).map((job) => (
+              <JobCard key={job.id} job={job} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Evidence Timeline</h3>
         <div className="mt-3 space-y-2">
           {state.log.length === 0 ? (
@@ -396,6 +441,54 @@ function IssueSidebar({ state }: { state: ResolutionFull }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function FactCard({ fact }: { fact: ResolutionFact }) {
+  const severityClass = fact.severity === "critical"
+    ? "border-critical/20 bg-critical/5"
+    : fact.severity === "warning"
+      ? "border-warning/20 bg-warning/5"
+      : "border-primary/20 bg-primary/5";
+
+  return (
+    <div className={cn("rounded-lg border p-3", severityClass)}>
+      <div className="text-xs font-medium">{fact.title}</div>
+      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{fact.detail}</p>
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        {fact.fact_type} · {timeAgo(fact.observed_at)}
+      </div>
+    </div>
+  );
+}
+
+function CapabilityCard({ capability }: { capability: ResolutionCapability }) {
+  const stateClass = capability.state === "unsupported"
+    ? "border-critical/20 bg-critical/5"
+    : "border-warning/20 bg-warning/5";
+
+  return (
+    <div className={cn("rounded-lg border p-3", stateClass)}>
+      <div className="text-xs font-medium">{capability.capability_key}</div>
+      <p className="mt-1 text-xs text-muted-foreground">{capability.state}</p>
+      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{capability.raw_error || capability.evidence}</p>
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(capability.checked_at)}</div>
+    </div>
+  );
+}
+
+function JobCard({ job }: { job: ResolutionJob }) {
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <div className="text-xs font-medium">{job.job_type}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {job.status} · attempt {job.attempts}
+      </div>
+      {job.last_error && (
+        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{job.last_error}</p>
+      )}
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(job.updated_at)}</div>
     </div>
   );
 }

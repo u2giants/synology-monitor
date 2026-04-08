@@ -1,15 +1,11 @@
 import { NextResponse } from "next/server";
 import {
-  generateCopilotResponse,
   type CopilotMessage,
   type ReasoningEffort,
   type LookbackHours,
 } from "@/lib/server/copilot";
-import {
-  ensureSession,
-  getCopilotRole,
-  persistTurn,
-} from "@/lib/server/copilot-store";
+import { getCopilotRole } from "@/lib/server/copilot-store";
+import { runIssueBackedCopilotChat } from "@/lib/server/copilot-issues";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -71,48 +67,17 @@ export async function POST(request: Request) {
     const reasoningEffort = body.reasoningEffort === "xhigh" ? "xhigh" : "high";
     const lookbackHours = body.lookbackHours === 1 || body.lookbackHours === 6 || body.lookbackHours === 24 ? body.lookbackHours : 2;
 
-    const sessionState = await ensureSession(
-      supabase,
-      user.id,
-      body.sessionId,
-      reasoningEffort,
-      lookbackHours
-    );
-
-    const response = await generateCopilotResponse(
-      body.messages ?? [],
+    const response = await runIssueBackedCopilotChat(supabase, user.id, roleInfo.role, {
+      sessionId: body.sessionId,
+      messages: body.messages ?? [],
       reasoningEffort,
       lookbackHours,
-      roleInfo.role
-    );
-
-    const userMessage = [...(body.messages ?? [])].reverse().find((message) => message.role === "user");
-    const assistantMessageId = crypto.randomUUID();
-    const persistedUserMessageId = crypto.randomUUID();
-    if (sessionState.persistenceEnabled && sessionState.sessionId && userMessage) {
-      await persistTurn(supabase, user.id, {
-        sessionId: sessionState.sessionId,
-        userMessage: {
-          id: persistedUserMessageId,
-          content: userMessage.content,
-          createdAt: new Date().toISOString(),
-        },
-        assistantMessage: {
-          id: assistantMessageId,
-          content: response.answer,
-          createdAt: new Date().toISOString(),
-          evidence: response.evidence,
-        },
-        actions: response.proposedActions,
-      });
-    }
+    });
 
     return NextResponse.json({
       ...response,
-      sessionId: sessionState.sessionId,
-      assistantMessageId,
       role: roleInfo.role,
-      persistenceEnabled: sessionState.persistenceEnabled && roleInfo.persistenceEnabled,
+      persistenceEnabled: roleInfo.persistenceEnabled,
       lookbackHours,
     });
   } catch (error) {

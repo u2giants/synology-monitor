@@ -60,11 +60,53 @@ export interface ResolutionLogEntry {
   created_at: string;
 }
 
+export interface ResolutionFact {
+  id: string;
+  fact_type: string;
+  severity: "info" | "warning" | "critical";
+  status: "active" | "resolved" | "expired";
+  title: string;
+  detail: string;
+  observed_at: string;
+}
+
+export interface ResolutionCapability {
+  id: string;
+  nas_id: string;
+  capability_key: string;
+  state: "supported" | "unsupported" | "unverified" | "degraded";
+  evidence: string;
+  raw_error: string | null;
+  checked_at: string;
+}
+
+export interface ResolutionJob {
+  id: string;
+  job_type: "run_issue" | "user_message" | "approval_decision" | "detect_issue";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResolutionTransition {
+  id: string;
+  from_status: Resolution["status"] | null;
+  to_status: Resolution["status"];
+  reason: string;
+  created_at: string;
+}
+
 export interface ResolutionFull {
   resolution: Resolution;
   messages: ResolutionMessage[];
   steps: ResolutionStep[];
   log: ResolutionLogEntry[];
+  facts: ResolutionFact[];
+  capabilities: ResolutionCapability[];
+  jobs: ResolutionJob[];
+  transitions: ResolutionTransition[];
 }
 
 function normalizeState(payload: any): ResolutionFull {
@@ -73,6 +115,10 @@ function normalizeState(payload: any): ResolutionFull {
     messages: payload.messages ?? [],
     steps: payload.actions ?? payload.steps ?? [],
     log: payload.evidence ?? payload.log ?? [],
+    facts: payload.facts ?? [],
+    capabilities: payload.capabilities ?? [],
+    jobs: payload.jobs ?? [],
+    transitions: payload.transitions ?? [],
   };
 }
 
