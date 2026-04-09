@@ -1,6 +1,6 @@
 # NAS Monitor — Status Plan
 
-Last verified: 2026-04-08 UTC
+Last verified: 2026-04-09 UTC
 
 This document is a reality-based status file, not a wish list. It separates:
 - implemented in code
@@ -16,6 +16,8 @@ The system now has:
 - live rebuild-foundation tables for capabilities, facts, jobs, and state transitions
 - a unified issue backend for both the assistant UI and `/api/copilot/*`
 - explicit warning logs when a DSM API is unsupported, instead of silent empty data
+- first-class `cpu_iowait_pct` visibility in the metrics UI
+- restricted monitor-stack Docker controls in the web UI and tool catalog
 
 The system does not yet have:
 - working scheduled-task snapshots from DSM on these NAS units
@@ -38,6 +40,17 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 - Telemetry is normalized into facts and capability-state rows before issue reasoning.
 - The issue workflow is now queue-backed through `smon_issue_jobs`.
 - `/api/copilot/*` now routes through the issue backend instead of a separate reasoning/persistence stack.
+- `/metrics` now surfaces `cpu_iowait_pct` directly.
+- `/docker` now exposes monitor-stack-only actions through:
+  - [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
+  - [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
+- The tool catalog now includes:
+  - `check_cpu_iowait`
+  - `stop_monitor_agent`
+  - `start_monitor_agent`
+  - `restart_monitor_agent`
+  - `pull_monitor_agent`
+  - `build_monitor_agent`
 
 ### Agent
 
@@ -56,6 +69,7 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
   - [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
   - [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
   - [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
+- `cpu_iowait_pct` continues to be emitted by [sysextras.go](/worksp/monitor/app/apps/agent/internal/collector/sysextras.go) and is now directly exposed to operators.
 
 ## Deployed live
 
@@ -107,6 +121,11 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 - `scheduled_task` warning logs are reaching `smon_logs`.
 - `storage` warning logs for snapshot API unavailability are reaching `smon_logs`.
 - Both NASes are on the current deployed agent revision as of this verification pass.
+
+Implemented in code and awaiting live verification from the newest web deploy:
+- `/metrics` current `cpu_iowait_pct` card
+- `/docker` stop/start/restart/pull/build controls for the monitor stack
+- issue-agent use of `check_cpu_iowait`
 
 ## Remaining unsupported or incomplete areas
 

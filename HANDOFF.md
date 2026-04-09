@@ -1,6 +1,6 @@
 # NAS Monitor — Handoff
 
-Last verified: 2026-04-08 UTC
+Last verified: 2026-04-09 UTC
 
 This file is the shortest accurate handoff for the current system.
 
@@ -37,6 +37,7 @@ The web app:
 - queries telemetry on each issue-agent cycle
 - treats missing telemetry as degraded visibility when query errors occur
 - can run in `inline` or `background` issue-worker mode
+- exposes current iowait and restricted monitor-stack controls to operators
 
 ### Agent
 
@@ -54,6 +55,7 @@ The Go agent:
 - runs 17 collectors
 - buffers writes through a local SQLite WAL
 - flushes to Supabase every 30 seconds
+- emits `cpu_iowait_pct` into `smon_metrics`
 
 ## Deployment truth
 
@@ -113,6 +115,40 @@ Important rule:
 - when in doubt, add a migration first
 
 ## What was fixed in the latest pass
+
+### iowait visibility
+
+`cpu_iowait_pct` was already being collected, but it was not prominent enough in the operator UI and the issue agent lacked an explicit read-only tool for direct checks.
+
+That is now fixed:
+- `/metrics` includes `cpu_iowait_pct` in the CPU chart
+- `/metrics` shows a top-line current iowait card
+- the tool catalog includes `check_cpu_iowait`
+
+Files:
+- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/metrics/page.tsx)
+- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
+- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+
+### Monitor-stack Docker controls
+
+The web app and issue agent can now operate the monitor stack itself.
+
+Allowed actions:
+- stop
+- start
+- restart
+- pull
+- build
+
+Scope restriction:
+- these actions are limited to `/volume1/docker/synology-monitor-agent`
+- they are not general Docker controls for arbitrary NAS containers
+
+Files:
+- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
+- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
+- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
 
 ### Schema contract
 
@@ -183,6 +219,11 @@ Not yet verified as working data streams:
 - `smon_backup_tasks`
 - `smon_snapshot_replicas`
 - `dsm_system_log` rows
+
+Pending live verification from the newest web deploy:
+- `/metrics` current iowait card
+- `/docker` monitor-stack action buttons
+- `check_cpu_iowait` inside a live issue thread
 
 That does not mean those subsystems are healthy. It means the NAS DSM APIs for those collectors still need additional reverse-engineering or package-state detection.
 

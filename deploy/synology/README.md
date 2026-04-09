@@ -1,8 +1,12 @@
 # Synology Agent Deployment
 
-Last verified: 2026-04-08 UTC
+Last verified: 2026-04-09 UTC
 
 This file documents the actual deployment contract for the Synology agent.
+
+It also documents the monitor-stack control assumption used by the web app:
+- monitor write actions target `/volume1/docker/synology-monitor-agent`
+- the web app does not assume arbitrary Docker control outside that stack
 
 ## Canonical layout on each NAS
 
@@ -18,6 +22,16 @@ Live directory:
 
 Docker binary on Synology:
 - `/var/packages/ContainerManager/target/usr/bin/docker`
+
+Monitor-stack control commands used by the web app and issue agent:
+- `docker compose stop`
+- `docker compose up -d`
+- `docker compose restart`
+- `docker compose pull`
+- `docker compose build --pull`
+
+All of them run from:
+- `/volume1/docker/synology-monitor-agent`
 
 ## Deployment model
 
@@ -96,8 +110,13 @@ You should see startup lines for all major collectors, including:
 ### Confirmed working
 
 - `smon_container_io` should receive rows after the second 30-second sample
+- `smon_metrics.type='cpu_iowait_pct'` should continue to receive rows
 - `scheduled_task` warnings can appear in `smon_logs`
 - snapshot-replication API warnings can appear in `smon_logs`
+
+Operator-visible surfaces that depend on that telemetry:
+- `/metrics` CPU chart includes `cpu_iowait_pct`
+- `/metrics` shows a current iowait card
 
 ### Not guaranteed to produce rows on current DSM
 
@@ -165,6 +184,15 @@ $DOCKER exec synology-monitor-agent sh -lc 'ls -d /host/sys /host/sys/fs /host/s
 ```sh
 $DOCKER logs --tail 120 synology-monitor-agent 2>&1
 ```
+
+### Check current CPU iowait manually on the NAS
+
+```sh
+vmstat 1 3 | tail -1
+top -b -n2 -d0.3 2>/dev/null | grep 'Cpu(s)' | tail -1
+```
+
+The web tool `check_cpu_iowait` runs equivalent checks for the issue agent.
 
 ### Check for explicit blind-spot warnings in Supabase
 

@@ -1,6 +1,6 @@
 # Synology Monitor — Architecture Guide
 
-Last verified: 2026-04-08 UTC
+Last verified: 2026-04-09 UTC
 
 This file is the canonical technical overview for this repository.
 
@@ -38,6 +38,7 @@ The Next.js app:
 - groups telemetry into issues
 - stores durable issue threads, evidence, actions, and messages
 - runs the issue agent loop against one issue at a time
+- exposes restricted monitor-stack controls and current iowait visibility to operators
 
 ### Persistence
 
@@ -82,6 +83,7 @@ Core files:
 - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
 - [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
 - [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
+- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
 
 The current system is issue-centric:
 - one issue record per problem
@@ -90,6 +92,7 @@ The current system is issue-centric:
 - normalized facts attached to the issue
 - capability state tracked per NAS
 - issue jobs and transitions tracked explicitly
+- monitor-stack operations are routed through explicit action templates, not generic shell access
 
 The old phase-machine model is not the authoritative architecture anymore.
 
@@ -111,6 +114,30 @@ Relevant files:
 - [drain/route.ts](/worksp/monitor/app/apps/web/src/app/api/internal/issue-worker/drain/route.ts)
 - [issue-worker.mjs](/worksp/monitor/app/apps/web/scripts/issue-worker.mjs)
 - [docker-entrypoint.sh](/worksp/monitor/app/apps/web/docker-entrypoint.sh)
+
+### Tooling and operator control
+
+The web app now exposes two important operational surfaces:
+- direct `cpu_iowait_pct` visibility in `/metrics`
+- restricted monitor-stack Docker actions in `/docker`
+
+Files:
+- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/metrics/page.tsx)
+- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
+- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
+- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
+
+Important tool additions:
+- `check_cpu_iowait`
+- `stop_monitor_agent`
+- `start_monitor_agent`
+- `restart_monitor_agent`
+- `pull_monitor_agent`
+- `build_monitor_agent`
+
+Scope rule:
+- these Docker write actions are limited to `/volume1/docker/synology-monitor-agent`
+- they do not grant arbitrary Docker control over unrelated containers
 
 ### Issue agent behavior
 
@@ -199,6 +226,19 @@ Behavior:
 Status:
 - verified live
 - `smon_container_io` now has rows in production
+
+#### `sysextras`
+
+Implemented in:
+- [sysextras.go](/worksp/monitor/app/apps/agent/internal/collector/sysextras.go)
+
+Behavior:
+- emits `cpu_iowait_pct` into `smon_metrics`
+- that metric is consumed by issue detection, normalized facts, and the metrics UI
+
+Status:
+- verified live
+- now first-class in the operator UI
 
 #### `schedtasks`
 

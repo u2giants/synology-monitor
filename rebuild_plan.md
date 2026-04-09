@@ -1,6 +1,6 @@
 # Rebuild Plan
 
-Last updated: 2026-04-08 UTC
+Last updated: 2026-04-09 UTC
 
 Scope:
 - This file is a target-state build specification.
@@ -161,6 +161,18 @@ Recommended implementation:
 - one active lock per issue
 - retry metadata
 - dead-letter state for persistent failures
+
+### Narrow operator-control principle
+
+The rebuilt system should prefer narrow, audited operational control surfaces over broad shell power.
+
+Current example already implemented:
+- monitor-container controls are restricted to the monitor stack compose directory
+- the product does not expose generic Docker mutation for arbitrary containers
+
+This principle should continue:
+- prefer explicit action templates over broad admin shells
+- when operational control is needed, scope it to the subsystem the product owns
 
 ### 6. Action engine
 
