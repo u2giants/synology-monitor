@@ -128,6 +128,8 @@ export async function planIssueNextStep(input: {
   issue: object;
   hypothesis: HypothesisRankResult;
   telemetry: object;
+  recent_actions: Array<{ tool_name: string; status: string; summary: string; result_text: string }>;
+  completed_diagnostic_count: number;
   allowed_diagnostic_tools: Array<{ tool_name: string; description: string }>;
   allowed_remediation_tools: Array<{ tool_name: string; description: string }>;
 }) {
@@ -164,11 +166,17 @@ Return JSON only:
   } or null
 }
 
-Rules:
+ESCALATION RULES — check these before anything else:
+1. If hypothesis_confidence is "high" AND completed_diagnostic_count >= 2: you MUST propose remediation_action or set status "waiting_on_user". Do NOT propose another diagnostic. The diagnosis is done.
+2. If completed_diagnostic_count >= 4 regardless of confidence: force a final decision — remediation_action, one focused user_question, or status "stuck". No more diagnostics.
+3. Never propose a tool_name that already appears in recent_actions with status "completed" or "failed". Those are done.
+4. If hypothesis already names a specific service restart or file operation AND confidence is medium or high: propose that as remediation_action now.
+5. If the root cause is confirmed by direct evidence in recent_actions results (e.g. logs show the exact error pattern, integrity checks passed): stop gathering evidence and escalate.
+
+Additional rules:
 - Exactly one of user_question, diagnostic_action, remediation_action may be non-null.
 - Never propose a remediation without an exact target.
-- Never repeat a blocked or rejected action unless new evidence materially changes the case.
-- If evidence is thin, prefer one discriminating diagnostic.
+- If evidence is genuinely thin AND escalation rules do not apply, prefer one discriminating diagnostic.
 - If you are blocked by operator knowledge, ask one focused question.
 
 Context:
