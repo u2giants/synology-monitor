@@ -1,40 +1,130 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useNasUnits } from "@/hooks/use-nas-units";
-import { Settings, Bell, Brain, LogOut, Check, Loader2 } from "lucide-react";
+import {
+  Settings,
+  Bell,
+  Brain,
+  LogOut,
+  Check,
+  Loader2,
+  ChevronDown,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
+
+type ModelOption = { id: string; name: string };
+type ModelSettingsState = Record<string, string>;
+
+const STAGE_MODEL_FIELDS = [
+  {
+    key: "extractor_model",
+    label: "Evidence Extraction",
+    description: "Turns noisy telemetry into typed facts. Best fit is cheap, fast, strict JSON output.",
+    placeholder: "minimax/minimax-m2.7",
+  },
+  {
+    key: "cluster_model",
+    label: "Issue Clustering",
+    description: "Groups repeated events into one issue thread. Best fit is cheap/medium semantic grouping.",
+    placeholder: "minimax/minimax-m2.7",
+  },
+  {
+    key: "hypothesis_model",
+    label: "Hypothesis Ranking",
+    description: "Chooses the best current explanation and confidence. This should be the strongest reasoning model.",
+    placeholder: "openai/gpt-5.4",
+  },
+  {
+    key: "planner_model",
+    label: "Next-Step Planning",
+    description: "Selects one next diagnostic or one blocked/user-question outcome.",
+    placeholder: "openai/gpt-5.4",
+  },
+  {
+    key: "remediation_planner_model",
+    label: "Remediation Planning",
+    description: "Refines a concrete fix proposal with exact target, risk, and rollback.",
+    placeholder: "openai/gpt-5.4",
+  },
+  {
+    key: "explainer_model",
+    label: "Operator Explanation",
+    description: "Writes the concise operator-facing update for the issue thread.",
+    placeholder: "minimax/minimax-m2.7",
+  },
+  {
+    key: "verifier_model",
+    label: "Verification",
+    description: "Judges whether the last action helped, failed, or was inconclusive.",
+    placeholder: "openai/gpt-5.4",
+  },
+] as const;
+
+const LEGACY_MODEL_FIELDS = [
+  {
+    key: "diagnosis_model",
+    label: "Legacy Diagnosis Model",
+    description: "Compatibility fallback for older code paths and detection-era settings.",
+    placeholder: "minimax/minimax-m2.7",
+  },
+  {
+    key: "remediation_model",
+    label: "Legacy Remediation Model",
+    description: "Compatibility fallback for older remediation paths and shared defaults.",
+    placeholder: "openai/gpt-5.4",
+  },
+  {
+    key: "second_opinion_model",
+    label: "Second Opinion Model",
+    description: "Optional fallback when a stronger cross-check is needed.",
+    placeholder: "anthropic/claude-sonnet-4",
+  },
+] as const;
+
+const ALL_MODEL_KEYS = [...STAGE_MODEL_FIELDS, ...LEGACY_MODEL_FIELDS].map((field) => field.key);
+
+function buildInitialState() {
+  return Object.fromEntries(ALL_MODEL_KEYS.map((key) => [key, ""])) as ModelSettingsState;
+}
 
 export default function SettingsPage() {
   const { units } = useNasUnits();
   const [pushEnabled, setPushEnabled] = useState(false);
-  const [diagnosisModel, setDiagnosisModel] = useState("");
-  const [remediationModel, setRemediationModel] = useState("");
-  const [secondOpinionModel, setSecondOpinionModel] = useState("");
+  const [modelSettings, setModelSettings] = useState<ModelSettingsState>(buildInitialState);
   const [modelsSaving, setModelsSaving] = useState(false);
   const [modelsSaved, setModelsSaved] = useState(false);
-  const [availableModels, setAvailableModels] = useState<{ id: string; name: string }[]>([]);
+  const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [showLegacyModels, setShowLegacyModels] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     if ("Notification" in window) {
       setPushEnabled(Notification.permission === "granted");
     }
-    // Load AI model settings
+
     fetch("/api/settings")
       .then((res) => res.json())
       .then((data) => {
-        if (data.settings) {
-          setDiagnosisModel(data.settings.diagnosis_model ?? "google/gemini-2.5-flash");
-          setRemediationModel(data.settings.remediation_model ?? "openai/gpt-5.4");
-          setSecondOpinionModel(data.settings.second_opinion_model ?? "anthropic/claude-sonnet-4");
-        }
+        if (!data.settings) return;
+        setModelSettings((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            ALL_MODEL_KEYS.map((key) => [
+              key,
+              data.settings[key] ??
+                current[key] ??
+                (STAGE_MODEL_FIELDS.find((field) => field.key === key)?.placeholder
+                  || LEGACY_MODEL_FIELDS.find((field) => field.key === key)?.placeholder
+                  || ""),
+            ]),
+          ),
+        }));
       })
       .catch(() => {});
 
-    // Load available models via server route (uses OPENROUTER_API_KEY server-side)
     fetch("/api/models")
       .then((res) => res.json())
       .then((data) => {
@@ -43,6 +133,17 @@ export default function SettingsPage() {
       .catch(() => {})
       .finally(() => setModelsLoading(false));
   }, []);
+
+  const stageFields = useMemo(() => STAGE_MODEL_FIELDS, []);
+  const legacyFields = useMemo(() => LEGACY_MODEL_FIELDS, []);
+
+  function updateModel(key: string, value: string) {
+    setModelSettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
+    setModelsSaved(false);
+  }
 
   async function enableNotifications() {
     if (!("Notification" in window)) {
@@ -54,7 +155,6 @@ export default function SettingsPage() {
     setPushEnabled(permission === "granted");
 
     if (permission === "granted") {
-      // Register service worker and subscribe
       if ("serviceWorker" in navigator) {
         const reg = await navigator.serviceWorker.register("/sw.js");
         const sub = await reg.pushManager.subscribe({
@@ -62,13 +162,12 @@ export default function SettingsPage() {
           applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
         });
 
-        // Save subscription to Supabase
         const supabase = createClient();
         const p256dh = btoa(
-          String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")!))
+          String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")!)),
         );
         const auth = btoa(
-          String.fromCharCode(...new Uint8Array(sub.getKey("auth")!))
+          String.fromCharCode(...new Uint8Array(sub.getKey("auth")!)),
         );
 
         await supabase.from("smon_push_subscriptions").upsert({
@@ -88,14 +187,34 @@ export default function SettingsPage() {
     router.refresh();
   }
 
+  async function saveModels() {
+    setModelsSaving(true);
+    setModelsSaved(false);
+    try {
+      await Promise.all(
+        ALL_MODEL_KEYS.map((key) =>
+          fetch("/api/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key, value: modelSettings[key] }),
+          }),
+        ),
+      );
+      setModelsSaved(true);
+    } catch {
+      alert("Failed to save model settings.");
+    } finally {
+      setModelsSaving(false);
+    }
+  }
+
   return (
-    <div className="space-y-6 max-w-2xl">
+    <div className="space-y-6 max-w-4xl">
       <div className="flex items-center gap-2">
         <Settings className="h-6 w-6 text-primary" />
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
-      {/* NAS Units */}
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="font-semibold mb-3">Registered NAS Units</h2>
         {units.length === 0 ? (
@@ -117,18 +236,16 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* AI Models */}
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="font-semibold mb-1 flex items-center gap-2">
           <Brain className="h-4 w-4" />
-          AI Models
+          Stage Models
         </h2>
         <p className="text-xs text-muted-foreground mb-4">
-          Choose which models to use through OpenRouter. Use the model ID format from{" "}
+          Configure the model used for each model-driven stage of the issue workflow. Use OpenRouter model IDs from{" "}
           <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" className="text-primary underline">
             openrouter.ai/models
-          </a>{" "}
-          (e.g. &quot;minimax/minimax-m2.7&quot;, &quot;openai/gpt-4.1&quot;, &quot;anthropic/claude-sonnet-4&quot;).
+          </a>.
         </p>
 
         {modelsLoading ? (
@@ -137,83 +254,65 @@ export default function SettingsPage() {
             Loading available models from OpenRouter...
           </div>
         ) : (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Diagnosis Model
-              <span className="font-normal text-muted-foreground ml-1">(reads logs, analyzes errors, groups by root cause)</span>
-            </label>
-            <ModelSelect
-              value={diagnosisModel}
-              models={availableModels}
-              onChange={(v) => { setDiagnosisModel(v); setModelsSaved(false); }}
-            />
-          </div>
+          <div className="space-y-5">
+            {stageFields.map((field) => (
+              <div key={field.key}>
+                <label className="block text-sm font-medium mb-1">{field.label}</label>
+                <p className="mb-2 text-xs text-muted-foreground">{field.description}</p>
+                <ModelSelect
+                  value={modelSettings[field.key]}
+                  placeholder={field.placeholder}
+                  models={availableModels}
+                  onChange={(value) => updateModel(field.key, value)}
+                />
+              </div>
+            ))}
 
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Remediation Model
-              <span className="font-normal text-muted-foreground ml-1">(proposes fixes, analyzes results, verifies)</span>
-            </label>
-            <ModelSelect
-              value={remediationModel}
-              models={availableModels}
-              onChange={(v) => { setRemediationModel(v); setModelsSaved(false); }}
-            />
-          </div>
+            <div className="rounded-lg border border-border bg-muted/20 p-4">
+              <button
+                type="button"
+                onClick={() => setShowLegacyModels((value) => !value)}
+                className="flex w-full items-center justify-between text-left"
+              >
+                <div>
+                  <div className="text-sm font-medium">Legacy / compatibility model settings</div>
+                  <div className="text-xs text-muted-foreground">
+                    Older fallback keys still used by compatibility paths and defaults.
+                  </div>
+                </div>
+                <ChevronDown className={`h-4 w-4 transition-transform ${showLegacyModels ? "rotate-180" : ""}`} />
+              </button>
 
-          <div>
-            <label className="block text-sm font-medium mb-1">
-              Second Opinion Model
-              <span className="font-normal text-muted-foreground ml-1">(consulted when primary can&apos;t reach high confidence)</span>
-            </label>
-            <ModelSelect
-              value={secondOpinionModel}
-              models={availableModels}
-              onChange={(v) => { setSecondOpinionModel(v); setModelsSaved(false); }}
-            />
-          </div>
+              {showLegacyModels && (
+                <div className="mt-4 space-y-4">
+                  {legacyFields.map((field) => (
+                    <div key={field.key}>
+                      <label className="block text-sm font-medium mb-1">{field.label}</label>
+                      <p className="mb-2 text-xs text-muted-foreground">{field.description}</p>
+                      <ModelSelect
+                        value={modelSettings[field.key]}
+                        placeholder={field.placeholder}
+                        models={availableModels}
+                        onChange={(value) => updateModel(field.key, value)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
 
-          <button
-            disabled={modelsSaving}
-            onClick={async () => {
-              setModelsSaving(true);
-              setModelsSaved(false);
-              try {
-                await Promise.all([
-                  fetch("/api/settings", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ key: "diagnosis_model", value: diagnosisModel }),
-                  }),
-                  fetch("/api/settings", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ key: "remediation_model", value: remediationModel }),
-                  }),
-                  fetch("/api/settings", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ key: "second_opinion_model", value: secondOpinionModel }),
-                  }),
-                ]);
-                setModelsSaved(true);
-              } catch {
-                alert("Failed to save model settings.");
-              } finally {
-                setModelsSaving(false);
-              }
-            }}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          >
-            {modelsSaved ? <Check className="h-4 w-4" /> : null}
-            {modelsSaving ? "Saving..." : modelsSaved ? "Saved" : "Save Models"}
-          </button>
-        </div>
+            <button
+              disabled={modelsSaving}
+              onClick={saveModels}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {modelsSaved ? <Check className="h-4 w-4" /> : null}
+              {modelsSaving ? "Saving..." : modelsSaved ? "Saved" : "Save Models"}
+            </button>
+          </div>
         )}
       </section>
 
-      {/* Notifications */}
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="font-semibold mb-3 flex items-center gap-2">
           <Bell className="h-4 w-4" />
@@ -236,7 +335,6 @@ export default function SettingsPage() {
         )}
       </section>
 
-      {/* Sign out */}
       <section>
         <button
           onClick={handleSignOut}
@@ -253,81 +351,38 @@ export default function SettingsPage() {
 function ModelSelect({
   value,
   models,
+  placeholder,
   onChange,
 }: {
   value: string;
   models: { id: string; name: string }[];
+  placeholder: string;
   onChange: (value: string) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [open, setOpen] = useState(false);
-
-  const filtered = search
-    ? models.filter(
-        (m) =>
-          m.id.toLowerCase().includes(search.toLowerCase()) ||
-          m.name.toLowerCase().includes(search.toLowerCase())
-      )
-    : models;
-
-  const selectedName = models.find((m) => m.id === value)?.name;
-
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="w-full rounded-md border border-border bg-background px-3 py-2 text-left text-sm focus:border-primary focus:outline-none"
-      >
-        <span className="block truncate">
-          {selectedName ? (
-            <>
-              <span className="font-medium">{selectedName}</span>
-              <span className="text-muted-foreground ml-2 text-xs">{value}</span>
-            </>
-          ) : (
-            <span className="text-muted-foreground">{value || "Select a model..."}</span>
-          )}
-        </span>
-      </button>
+    <div className="space-y-2">
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+      />
 
-      {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-md border border-border bg-card shadow-lg">
-          <div className="p-2">
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search models..."
-              autoFocus
-              className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
-            />
-          </div>
-          <div className="max-h-64 overflow-y-auto">
-            {filtered.length === 0 ? (
-              <div className="px-3 py-2 text-sm text-muted-foreground">No models found</div>
-            ) : (
-              filtered.slice(0, 100).map((model) => (
-                <button
-                  key={model.id}
-                  type="button"
-                  onClick={() => {
-                    onChange(model.id);
-                    setOpen(false);
-                    setSearch("");
-                  }}
-                  className={`w-full text-left px-3 py-2 text-sm hover:bg-muted/50 ${
-                    model.id === value ? "bg-primary/10 font-medium" : ""
-                  }`}
-                >
-                  <div className="truncate font-medium">{model.name}</div>
-                  <div className="truncate text-xs text-muted-foreground">{model.id}</div>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-      )}
+      <select
+        value=""
+        onChange={(event) => {
+          if (event.target.value) onChange(event.target.value);
+        }}
+        className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+      >
+        <option value="">Pick from available models…</option>
+        {models.map((model) => (
+          <option key={model.id} value={model.id}>
+            {model.name} ({model.id})
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

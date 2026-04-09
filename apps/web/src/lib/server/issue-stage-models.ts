@@ -1,7 +1,9 @@
 import OpenAI from "openai";
 import {
   getExplainerModel,
-  getReasonerModel,
+  getHypothesisModel,
+  getPlannerModel,
+  getRemediationPlannerModel,
   getVerifierModel,
 } from "@/lib/server/ai-settings";
 import { parseJsonObject } from "@/lib/server/model-json";
@@ -94,7 +96,7 @@ export async function rankIssueHypothesis(input: {
   recent_actions: Array<object>;
   telemetry: object;
 }) {
-  const model = await getReasonerModel();
+  const model = await getHypothesisModel();
   const prompt = `You are ranking the most likely hypothesis for one Synology NAS issue.
 
 Return JSON only:
@@ -129,7 +131,7 @@ export async function planIssueNextStep(input: {
   allowed_diagnostic_tools: Array<{ tool_name: string; description: string }>;
   allowed_remediation_tools: Array<{ tool_name: string; description: string }>;
 }) {
-  const model = await getReasonerModel();
+  const model = await getPlannerModel();
   const prompt = `You are selecting the single best next step for one Synology NAS issue.
 
 Return JSON only:
@@ -168,6 +170,51 @@ Rules:
 - Never repeat a blocked or rejected action unless new evidence materially changes the case.
 - If evidence is thin, prefer one discriminating diagnostic.
 - If you are blocked by operator knowledge, ask one focused question.
+
+Context:
+${JSON.stringify(input, null, 2)}`;
+
+  const parsed = await callStageModel<NextStepPlanResult>(model, prompt);
+  return { model, parsed };
+}
+
+export async function planIssueRemediation(input: {
+  issue: object;
+  hypothesis: HypothesisRankResult;
+  plan: NextStepPlanResult;
+  telemetry: object;
+  allowed_remediation_tools: Array<{ tool_name: string; description: string }>;
+}) {
+  const model = await getRemediationPlannerModel();
+  const prompt = `You are refining a single remediation candidate for one Synology NAS issue.
+
+Return JSON only:
+{
+  "status": "running|waiting_on_user|waiting_for_approval|resolved|stuck",
+  "next_step": "one-sentence next step",
+  "constraints_to_add": ["new durable operator constraints"],
+  "blocked_tools": ["tool names to suppress unless evidence changes"],
+  "evidence_notes": [{"title":"", "detail":""}],
+  "user_question": "one focused user question" or null,
+  "diagnostic_action": null,
+  "remediation_action": {
+    "tool_name": "remove_invalid_chars",
+    "target": "edgesynology1",
+    "summary": "what exact change to make",
+    "reason": "why it is justified now",
+    "expected_outcome": "what should improve",
+    "rollback_plan": "how to revert",
+    "risk": "low|medium|high",
+    "filter": "/exact/path",
+    "lookback_hours": 2
+  } or null
+}
+
+Rules:
+- This stage exists only to refine or refuse remediation.
+- Do not return a diagnostic action.
+- If exact remediation is still unsafe, return remediation_action = null and user_question or blocked status.
+- Never propose a remediation without an exact target.
 
 Context:
 ${JSON.stringify(input, null, 2)}`;

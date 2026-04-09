@@ -16,6 +16,7 @@ import { attachFactToIssue, deriveFactsFromTelemetry, listIssueFacts, upsertFact
 import { recordIssueStageRun } from "@/lib/server/issue-stage-store";
 import {
   explainIssueState,
+  planIssueRemediation,
   planIssueNextStep,
   rankIssueHypothesis,
   verifyIssueAction,
@@ -487,6 +488,49 @@ async function runPlanningStage(
   }
 }
 
+async function runRemediationStage(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  telemetry: Record<string, unknown>,
+  hypothesis: HypothesisRankResult,
+  plan: NextStepPlanResult,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const { model, parsed } = await planIssueRemediation({
+      issue: state.issue,
+      hypothesis,
+      plan,
+      telemetry,
+      allowed_remediation_tools: toolDescriptions(ALLOWED_REMEDIATION_TOOLS),
+    });
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "next_step_plan",
+      status: "completed",
+      modelName: model,
+      modelTier: "remediation_planner",
+      inputSummary: {
+        initial_status: plan.status,
+        had_remediation_candidate: Boolean(plan.remediation_action),
+      },
+      output: parsed as unknown as Record<string, unknown>,
+      startedAt,
+    });
+    return parsed;
+  } catch (error) {
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "next_step_plan",
+      status: "failed",
+      modelTier: "remediation_planner",
+      inputSummary: { issue_status: state.issue.status },
+      errorText: error instanceof Error ? error.message : "Unknown remediation planning error",
+      startedAt,
+    });
+    throw error;
+  }
+}
+
 async function runExplanationStage(
   supabase: SupabaseClient,
   userId: string,
@@ -785,7 +829,10 @@ export async function runIssueAgent(
 
     const telemetry = await refreshIssueContext(supabase, userId, state);
     const hypothesis = await runHypothesisStage(supabase, userId, state, telemetry);
-    const plan = await runPlanningStage(supabase, userId, state, telemetry, hypothesis);
+    let plan = await runPlanningStage(supabase, userId, state, telemetry, hypothesis);
+    if (plan.remediation_action) {
+      plan = await runRemediationStage(supabase, userId, state, telemetry, hypothesis, plan);
+    }
     const explanation = await runExplanationStage(supabase, userId, state, hypothesis, plan);
 
     const { mergedBlockedTools } = await applyHypothesisAndPlan(
