@@ -366,15 +366,17 @@ func normalizeBatchPayloads(payloads []json.RawMessage) ([]byte, error) {
 	return body, nil
 }
 
-// SendHeartbeat updates the NAS unit's last_seen timestamp
-func (s *Sender) SendHeartbeat(nasID, nasName, model, dsmVersion string) {
+// SendHeartbeat updates the NAS unit's last_seen timestamp and agent version.
+func (s *Sender) SendHeartbeat(nasID, nasName, model, dsmVersion, agentVersion, agentBuiltAt string) {
 	payload := map[string]interface{}{
-		"id":          nasID,
-		"name":        nasName,
-		"model":       model,
-		"dsm_version": dsmVersion,
-		"last_seen":   time.Now().UTC(),
-		"status":      "online",
+		"id":             nasID,
+		"name":           nasName,
+		"model":          model,
+		"dsm_version":    dsmVersion,
+		"last_seen":      time.Now().UTC(),
+		"status":         "online",
+		"agent_version":  agentVersion,
+		"agent_built_at": agentBuiltAt,
 	}
 
 	body, _ := json.Marshal(payload)

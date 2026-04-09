@@ -1,5 +1,11 @@
 package main
 
+// Build-time version info — injected via -ldflags by the Dockerfile.
+var (
+	BuildSHA  = "dev"
+	BuildTime = "unknown"
+)
+
 import (
 	"log"
 	"os"
@@ -18,7 +24,7 @@ import (
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Println("Synology Monitor Agent starting...")
+	log.Printf("Synology Monitor Agent starting... (sha=%s built=%s)", BuildSHA, BuildTime)
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -38,6 +44,7 @@ func main() {
 	}
 	defer dsmClient.Logout()
 	log.Println("Connected to DSM API")
+	log.Printf("Agent version: sha=%s built=%s", BuildSHA, BuildTime)
 
 	// Initialize sender (Supabase + SQLite WAL)
 	s, err := sender.New(
@@ -57,9 +64,9 @@ func main() {
 	sysInfo, err := dsmClient.GetSystemInfo()
 	if err != nil {
 		log.Printf("Warning: could not get system info: %v", err)
-		s.SendHeartbeat(cfg.NasID, cfg.NasName, "DS1621xs+", "")
+		s.SendHeartbeat(cfg.NasID, cfg.NasName, "DS1621xs+", "", BuildSHA, BuildTime)
 	} else {
-		s.SendHeartbeat(cfg.NasID, cfg.NasName, sysInfo.Model, sysInfo.FirmwareVer)
+		s.SendHeartbeat(cfg.NasID, cfg.NasName, sysInfo.Model, sysInfo.FirmwareVer, BuildSHA, BuildTime)
 	}
 
 	// Stop channel and wait group for graceful shutdown
