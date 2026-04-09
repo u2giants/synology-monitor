@@ -234,6 +234,29 @@ type ContainerIOPayload struct {
 	WriteOPS      int64     `json:"write_ops"`
 }
 
+// PackageStatusPayload is an upserted row in smon_package_status.
+// Represents the current install/run state of one DSM package.
+type PackageStatusPayload struct {
+	NasID       string    `json:"nas_id"`
+	PackageID   string    `json:"package_id"`
+	DisplayName string    `json:"display_name"`
+	Version     string    `json:"version"`
+	Status      string    `json:"status"`   // running / stopped / broken / etc.
+	PkgType     string    `json:"pkg_type"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
+// DSMErrorPayload is a row in smon_dsm_errors.
+// Represents a warning or error level event from DSM Log Center.
+type DSMErrorPayload struct {
+	NasID    string    `json:"nas_id"`
+	Level    string    `json:"level"`             // warning / error / critical
+	Message  string    `json:"message"`
+	Who      string    `json:"who,omitempty"`
+	LogName  string    `json:"log_name,omitempty"`
+	LoggedAt time.Time `json:"logged_at"`
+}
+
 // SnapshotReplicaPayload is a row in smon_snapshot_replicas
 type SnapshotReplicaPayload struct {
 	NasID       string    `json:"nas_id"`

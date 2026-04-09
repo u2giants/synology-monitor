@@ -187,43 +187,40 @@ func (c *ShareHealthCollector) collectPackages(now time.Time) {
 		return
 	}
 
-	// Only log packages relevant to Drive/sync/file services
-	relevant := map[string]bool{
-		"SynologyDrive":          true,
-		"SynologyDriveShareSync": true,
-		"CloudSync":              true,
-		"HyperBackup":            true,
-		"MinimServer":            true,
-		"Plex Media Server":      true,
-		"Node.js":                true,
-		"Docker":                 true,
-		"ContainerManager":       true,
-	}
-
 	for _, pkg := range packages {
-		if !relevant[pkg.ID] && !relevant[pkg.Name] {
-			continue
-		}
-		severity := "info"
-		if pkg.Status != "running" && pkg.Status != "" {
-			severity = "warning"
-		}
-
-		c.sender.QueueLog(sender.LogPayload{
-			NasID:    c.nasID,
-			Source:   "package_health",
-			Severity: severity,
-			Message:  "package=" + pkg.Name + " version=" + pkg.Version + " status=" + pkg.Status,
-			Metadata: map[string]interface{}{
-				"id":      pkg.ID,
-				"name":    pkg.Name,
-				"version": pkg.Version,
-				"status":  pkg.Status,
-				"type":    pkg.Type,
-			},
-			LoggedAt: now,
+		// Push structured status for every package — gives a complete, queryable
+		// inventory in smon_package_status (upserted so one row per package).
+		c.sender.QueuePackageStatus(sender.PackageStatusPayload{
+			NasID:       c.nasID,
+			PackageID:   pkg.ID,
+			DisplayName: pkg.Name,
+			Version:     pkg.Version,
+			Status:      pkg.Status,
+			PkgType:     pkg.Type,
+			CheckedAt:   now,
 		})
+
+		// Also raise a log entry for non-running packages so the log stream
+		// and existing alerting pipelines continue to work.
+		if pkg.Status != "running" && pkg.Status != "" {
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "package_health",
+				Severity: "warning",
+				Message:  fmt.Sprintf("package %s (%s) status=%s version=%s", pkg.Name, pkg.ID, pkg.Status, pkg.Version),
+				Metadata: map[string]interface{}{
+					"id":      pkg.ID,
+					"name":    pkg.Name,
+					"version": pkg.Version,
+					"status":  pkg.Status,
+					"type":    pkg.Type,
+				},
+				LoggedAt: now,
+			})
+		}
 	}
+
+	log.Printf("[share-health] queued status for %d packages", len(packages))
 }
 
 // logTimeFormats are the formats we attempt when parsing the DSM log entry
@@ -308,6 +305,35 @@ func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
 			Metadata: meta,
 			LoggedAt: loggedAt,
 		})
+
+		// Route warning/error events to the dedicated DSM errors table so they
+		// are queryable without scanning the high-volume general log stream.
+		if entry.Level >= 3 {
+			level := "warning"
+			if entry.Level >= 4 {
+				level = "error"
+			}
+			c.sender.QueueDSMError(sender.DSMErrorPayload{
+				NasID:    c.nasID,
+				Level:    level,
+				Message:  msg,
+				Who:      entry.Who,
+				LogName:  entry.LogName,
+				LoggedAt: loggedAt,
+			})
+		}
+
+		// Raise an alert for error-level DSM events so they appear in the
+		// alerts dashboard and can trigger AI analysis.
+		if entry.Level >= 4 {
+			c.sender.QueueAlert(sender.AlertPayload{
+				NasID:    c.nasID,
+				Severity: "error",
+				Source:   "dsm",
+				Title:    "DSM system error",
+				Message:  msg,
+			})
+		}
 	}
 
 	// Advance watermark to avoid reprocessing the same entries

@@ -139,6 +139,21 @@ func (s *Sender) QueueContainerIO(p ContainerIOPayload) {
 	s.queue("smon_container_io", p)
 }
 
+func (s *Sender) QueuePackageStatus(p PackageStatusPayload) {
+	s.queue("smon_package_status", p)
+}
+
+func (s *Sender) QueueDSMError(p DSMErrorPayload) {
+	s.queue("smon_dsm_errors", p)
+}
+
+// upsertTables lists tables that should use Supabase's merge-duplicates
+// resolution (INSERT … ON CONFLICT DO UPDATE).  The table must have a UNIQUE
+// constraint on its natural key for this to take effect.
+var upsertTables = map[string]bool{
+	"smon_package_status": true,
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -257,10 +272,15 @@ func (s *Sender) flushTable(table string) {
 		return
 	}
 
+	preferHeader := "return=minimal"
+	if upsertTables[table] {
+		preferHeader = "resolution=merge-duplicates,return=minimal"
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", s.serviceKey)
 	req.Header.Set("Authorization", "Bearer "+s.serviceKey)
-	req.Header.Set("Prefer", "return=minimal")
+	req.Header.Set("Prefer", preferHeader)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
