@@ -86,23 +86,14 @@ func (w *Watcher) Close() error {
 func (w *Watcher) Run(stop <-chan struct{}) {
 	log.Println("[security] watcher started")
 
-	// Start inotify watcher in goroutine
-	go w.watchFiles(stop)
-
-	// Run periodic checksum scan — hourly is sufficient because inotify covers
-	// real-time writes; scanning every 15 min caused GB/s of unnecessary read I/O.
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			w.runChecksumScan()
-		case <-stop:
-			log.Println("[security] watcher stopped")
-			return
-		}
-	}
+	// inotify covers real-time writes, renames, and creates — that is sufficient
+	// for ransomware detection and high-entropy file monitoring.
+	//
+	// The periodic full-filesystem checksum scan has been removed: on a NAS with
+	// terabytes of design assets it read every file's content every hour, causing
+	// sustained GB/s of unnecessary disk I/O with no meaningful security benefit
+	// on top of what inotify already provides.
+	w.watchFiles(stop)
 }
 
 func (w *Watcher) watchFiles(stop <-chan struct{}) {
