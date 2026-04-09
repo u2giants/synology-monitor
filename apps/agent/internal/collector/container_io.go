@@ -179,6 +179,16 @@ func readCgroupIO(containerID string) (readBytes, writeBytes, readOps, writeOps 
 
 // parseProcIOFromTasks falls back to per-process IO counters when Synology's
 // blkio cgroup only exposes task membership without throttle files.
+//
+// Synology's kernel reports identical, process-level (TGID) stats for every
+// thread task rather than per-thread stats.  Naively summing all tasks would
+// multiply the real I/O by the number of goroutine threads (e.g. 19×), making
+// a container appear to do 2+ GB/s when it's really ~100 MB/s.
+//
+// Fix: resolve each task PID to its TGID via /proc/{pid}/status and only read
+// the io file once per unique TGID.  This is correct on both kernel behaviours:
+//   - per-thread stats  → unique TGIDs are the main threads; sum them
+//   - per-process stats → deduplicated to one entry per process; sum them
 func parseProcIOFromTasks(tasksPath string) (readBytes, writeBytes, readOps, writeOps int64, err error) {
 	f, err := os.Open(tasksPath)
 	if err != nil {
@@ -186,17 +196,36 @@ func parseProcIOFromTasks(tasksPath string) (readBytes, writeBytes, readOps, wri
 	}
 	defer f.Close()
 
-	found := false
+	// Collect all task PIDs first.
+	var pids []string
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		pid := strings.TrimSpace(scanner.Text())
-		if pid == "" {
+		if pid != "" {
+			pids = append(pids, pid)
+		}
+	}
+	if len(pids) == 0 {
+		return 0, 0, 0, 0, fmt.Errorf("no task io stats in %s", filepath.Base(tasksPath))
+	}
+
+	// Resolve each task to its TGID (main thread / process leader).
+	// On kernels that report per-process stats for all threads, every task has
+	// the same TGID, so we accumulate only once per unique TGID.
+	seen := make(map[string]struct{})
+	found := false
+
+	for _, pid := range pids {
+		tgid := resolveTGID(pid)
+
+		if _, already := seen[tgid]; already {
 			continue
 		}
+		seen[tgid] = struct{}{}
 
-		stats, readErr := os.ReadFile(fmt.Sprintf("/host/proc/%s/io", pid))
+		stats, readErr := os.ReadFile(fmt.Sprintf("/host/proc/%s/io", tgid))
 		if readErr != nil {
-			stats, readErr = os.ReadFile(fmt.Sprintf("/proc/%s/io", pid))
+			stats, readErr = os.ReadFile(fmt.Sprintf("/proc/%s/io", tgid))
 			if readErr != nil {
 				continue
 			}
@@ -230,6 +259,27 @@ func parseProcIOFromTasks(tasksPath string) (readBytes, writeBytes, readOps, wri
 		return 0, 0, 0, 0, fmt.Errorf("no task io stats in %s", filepath.Base(tasksPath))
 	}
 	return readBytes, writeBytes, readOps, writeOps, nil
+}
+
+// resolveTGID returns the TGID (thread-group leader PID) for the given task
+// PID by reading /proc/{pid}/status.  Falls back to pid itself on any error.
+func resolveTGID(pid string) string {
+	for _, root := range []string{"/host/proc", "/proc"} {
+		data, err := os.ReadFile(fmt.Sprintf("%s/%s/status", root, pid))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "Tgid:") {
+				fields := strings.Fields(line)
+				if len(fields) == 2 {
+					return fields[1]
+				}
+			}
+		}
+		break // found the file, just missing Tgid line (shouldn't happen)
+	}
+	return pid // fallback: treat as its own group
 }
 
 // parseCgroupV1Bytes parses blkio.throttle.io_service_bytes (or io_serviced).
