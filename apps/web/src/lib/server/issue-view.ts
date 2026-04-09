@@ -2,12 +2,14 @@ import type { SupabaseClient, IssueFull, IssueStateTransition } from "@/lib/serv
 import { listIssueFacts, type FactRecord } from "@/lib/server/fact-store";
 import { listCapabilityState, type CapabilityRecord } from "@/lib/server/capability-store";
 import type { IssueJob } from "@/lib/server/workflow-store";
+import { listIssueStageRuns, type IssueStageRun } from "@/lib/server/issue-stage-store";
 
 export interface IssueViewState extends IssueFull {
   facts: FactRecord[];
   capabilities: CapabilityRecord[];
   jobs: IssueJob[];
   transitions: IssueStateTransition[];
+  stage_runs: IssueStageRun[];
 }
 
 async function resolveIssueNasIds(
@@ -35,7 +37,7 @@ export async function loadIssueViewState(
 ): Promise<IssueViewState> {
   const nasIds = await resolveIssueNasIds(supabase, state.issue.affected_nas);
 
-  const [facts, capabilities, jobsResult, transitionsResult] = await Promise.all([
+  const [facts, capabilities, jobsResult, transitionsResult, stageRuns] = await Promise.all([
     listIssueFacts(supabase, userId, state.issue.id),
     listCapabilityState(supabase, nasIds),
     supabase
@@ -52,6 +54,7 @@ export async function loadIssueViewState(
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(20),
+    listIssueStageRuns(supabase, userId, state.issue.id),
   ]);
 
   if (jobsResult.error) {
@@ -68,5 +71,6 @@ export async function loadIssueViewState(
     capabilities,
     jobs: (jobsResult.data ?? []) as IssueJob[],
     transitions: (transitionsResult.data ?? []) as IssueStateTransition[],
+    stage_runs: stageRuns,
   };
 }

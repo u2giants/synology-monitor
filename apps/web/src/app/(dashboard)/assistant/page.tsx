@@ -25,6 +25,7 @@ import {
   type ResolutionFull,
   type ResolutionJob,
   type ResolutionMessage,
+  type ResolutionStageRun,
   type ResolutionStep,
 } from "@/hooks/use-resolution";
 
@@ -510,6 +511,19 @@ function IssueSidebar({ state }: { state: ResolutionFull }) {
       </div>
 
       <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Stage Runs</h3>
+        <div className="mt-3 space-y-2">
+          {state.stage_runs.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No stage runs recorded yet.</div>
+          ) : (
+            state.stage_runs.slice(0, 8).map((run) => (
+              <StageRunCard key={run.id} run={run} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">State Transitions</h3>
         <div className="mt-3 space-y-2">
           {state.transitions.length === 0 ? (
@@ -596,6 +610,31 @@ function JobCard({ job }: { job: ResolutionJob }) {
         <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{job.last_error}</p>
       )}
       <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(job.updated_at)}</div>
+    </div>
+  );
+}
+
+function StageRunCard({ run }: { run: ResolutionStageRun }) {
+  const stateClass = run.status === "failed"
+    ? "border-critical/20 bg-critical/5"
+    : run.status === "running"
+      ? "border-primary/20 bg-primary/5"
+      : "border-border bg-background";
+
+  return (
+    <div className={cn("rounded-lg border p-3", stateClass)}>
+      <div className="text-xs font-medium">
+        {run.stage_key.replaceAll("_", " ")}
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {run.status}
+        {run.model_tier ? ` · ${run.model_tier}` : ""}
+        {run.model_name ? ` · ${run.model_name}` : ""}
+      </div>
+      {run.error_text && (
+        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{run.error_text}</p>
+      )}
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(run.created_at)}</div>
     </div>
   );
 }

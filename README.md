@@ -14,5 +14,7 @@ Operational tracker:
 
 Design spec:
 - [rebuild_plan.md](/worksp/monitor/app/rebuild_plan.md)
+- [MODEL_MATRIX.md](/worksp/monitor/app/MODEL_MATRIX.md)
+- [MODEL_SELECTION_GUIDE.md](/worksp/monitor/app/MODEL_SELECTION_GUIDE.md)
 
 If a markdown file is not one of the authoritative docs above, treat it as non-source-of-truth unless it explicitly says otherwise.

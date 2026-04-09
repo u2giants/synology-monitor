@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
 import {
   appendIssueEvidence,
@@ -6,7 +5,6 @@ import {
   createIssueAction,
   loadIssue,
   type IssueAction,
-  type IssueConfidence,
   type IssueFull,
   type IssueSeverity,
   type SupabaseClient,
@@ -15,44 +13,24 @@ import {
 } from "@/lib/server/issue-store";
 import { listCapabilityState, upsertCapabilityState } from "@/lib/server/capability-store";
 import { attachFactToIssue, deriveFactsFromTelemetry, listIssueFacts, upsertFact } from "@/lib/server/fact-store";
+import { recordIssueStageRun } from "@/lib/server/issue-stage-store";
+import {
+  explainIssueState,
+  planIssueNextStep,
+  rankIssueHypothesis,
+  verifyIssueAction,
+  type ToolActionPlan,
+  type HypothesisRankResult,
+  type NextStepPlanResult,
+} from "@/lib/server/issue-stage-models";
 import {
   TOOL_DEFINITIONS,
   buildApprovalToken,
   type CopilotToolName,
   type NasTarget,
 } from "@/lib/server/tools";
-import { getDiagnosisModel, getRemediationModel } from "./ai-settings";
 
-type ToolActionPlan = {
-  tool_name: CopilotToolName;
-  target: NasTarget;
-  summary: string;
-  reason: string;
-  expected_outcome: string;
-  rollback_plan?: string;
-  risk?: "low" | "medium" | "high";
-  filter?: string;
-  lookback_hours?: number;
-};
-
-type AgentDecision = {
-  response: string;
-  summary: string;
-  current_hypothesis: string;
-  hypothesis_confidence: IssueConfidence;
-  severity: IssueSeverity;
-  affected_nas: string[];
-  conversation_summary: string;
-  next_step: string;
-  status: "running" | "waiting_on_user" | "waiting_for_approval" | "resolved" | "stuck";
-  constraints_to_add: string[];
-  blocked_tools: CopilotToolName[];
-  evidence_notes: Array<{ title: string; detail: string }>;
-  diagnostic_action: ToolActionPlan | null;
-  remediation_action: ToolActionPlan | null;
-};
-
-const MAX_AGENT_CYCLES = 2;
+const MAX_AGENT_CYCLES = 3;
 
 const ALLOWED_DIAGNOSTIC_TOOLS: CopilotToolName[] = [
   "check_drive_package_health",
@@ -81,71 +59,6 @@ const ALLOWED_REMEDIATION_TOOLS: CopilotToolName[] = [
   "remove_invalid_chars",
   "trigger_sharesync_resync",
 ];
-
-function getOpenAIClient() {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY or OPENAI_API_KEY is not configured.");
-  }
-
-  return new OpenAI({
-    apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
-  });
-}
-
-function sanitizeModelJson(text: string) {
-  return text
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-}
-
-function extractFirstJsonObject(text: string) {
-  const sanitized = sanitizeModelJson(text);
-  const start = sanitized.indexOf("{");
-  if (start === -1) return sanitized;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < sanitized.length; i += 1) {
-    const char = sanitized[i];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-
-    if (char === "\"") {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) continue;
-
-    if (char === "{") depth += 1;
-    if (char === "}") depth -= 1;
-
-    if (depth === 0) {
-      return sanitized.slice(start, i + 1);
-    }
-  }
-
-  return sanitized.slice(start);
-}
-
-function parseAgentDecision(raw: string) {
-  const candidate = extractFirstJsonObject(raw);
-  return JSON.parse(candidate) as AgentDecision;
-}
 
 // Keep only the most recent row per unique field value (e.g. per task_id).
 function dedupeLatestByField<T extends Record<string, unknown>>(items: T[], field: keyof T): T[] {
@@ -189,11 +102,21 @@ async function resolveNasUnitIds(
 
 async function syncTelemetryCapabilities(
   supabase: SupabaseClient,
+  userId: string,
   issue: IssueFull["issue"],
   telemetry: Record<string, unknown>,
 ) {
+  const startedAt = new Date().toISOString();
   const nasUnits = await resolveNasUnitIds(supabase, issue.affected_nas);
   if (nasUnits.length === 0) {
+    await recordIssueStageRun(supabase, userId, issue.id, {
+      stageKey: "capability_refresh",
+      status: "skipped",
+      modelTier: "deterministic",
+      inputSummary: { affected_nas: issue.affected_nas },
+      output: { reason: "no_resolved_nas_units" },
+      startedAt,
+    });
     return [];
   }
 
@@ -224,7 +147,16 @@ async function syncTelemetryCapabilities(
     }
   }
 
-  return listCapabilityState(supabase, nasUnits.map((nas) => nas.id));
+  const state = await listCapabilityState(supabase, nasUnits.map((nas) => nas.id));
+  await recordIssueStageRun(supabase, userId, issue.id, {
+    stageKey: "capability_refresh",
+    status: "completed",
+    modelTier: "deterministic",
+    inputSummary: { affected_nas: issue.affected_nas, telemetry_error_count: telemetryErrors.length },
+    output: { capability_count: state.length },
+    startedAt,
+  });
+  return state;
 }
 
 async function syncIssueFacts(
@@ -233,6 +165,7 @@ async function syncIssueFacts(
   state: IssueFull,
   telemetry: Record<string, unknown>,
 ) {
+  const startedAt = new Date().toISOString();
   const derivedFacts = deriveFactsFromTelemetry(state.issue, telemetry);
 
   for (const fact of derivedFacts) {
@@ -240,12 +173,21 @@ async function syncIssueFacts(
     await attachFactToIssue(supabase, userId, state.issue.id, factId);
   }
 
-  return listIssueFacts(supabase, userId, state.issue.id);
+  const facts = await listIssueFacts(supabase, userId, state.issue.id);
+  await recordIssueStageRun(supabase, userId, state.issue.id, {
+    stageKey: "fact_refresh",
+    status: "completed",
+    modelTier: "deterministic",
+    inputSummary: { derived_fact_count: derivedFacts.length },
+    output: { attached_fact_count: facts.length },
+    startedAt,
+  });
+  return facts;
 }
 
 async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull["issue"]) {
-  const since6h  = new Date(Date.now() -  6 * 60 * 60 * 1000).toISOString();
-  const since30m = new Date(Date.now() -      30 * 60 * 1000).toISOString();
+  const since6h = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const nasFilter = issue.affected_nas.length > 0 ? issue.affected_nas : null;
 
@@ -290,7 +232,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("captured_at", { ascending: false })
       .limit(20),
 
-    // Scheduled tasks that failed (non-zero exit) or are in error state
     supabase
       .from("smon_scheduled_tasks")
       .select("nas_id, task_id, task_name, task_type, owner, enabled, status, last_run_time, next_run_time, last_result, captured_at")
@@ -299,7 +240,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("captured_at", { ascending: false })
       .limit(20),
 
-    // Backup task state — most recent snapshot per task
     supabase
       .from("smon_backup_tasks")
       .select("nas_id, task_id, task_name, enabled, status, last_result, last_run_time, next_run_time, dest_type, dest_name, total_bytes, transferred_bytes, speed_bps, captured_at")
@@ -307,7 +247,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("captured_at", { ascending: false })
       .limit(30),
 
-    // Snapshot replication state — most recent per task
     supabase
       .from("smon_snapshot_replicas")
       .select("nas_id, task_id, task_name, status, src_share, dst_share, dst_host, last_result, last_run_time, next_run_time, captured_at")
@@ -315,7 +254,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("captured_at", { ascending: false })
       .limit(20),
 
-    // Container I/O — top writers in last 30 min
     supabase
       .from("smon_container_io")
       .select("nas_id, captured_at, container_name, read_bps, write_bps, read_ops, write_ops")
@@ -323,7 +261,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("write_bps", { ascending: false })
       .limit(15),
 
-    // ShareSync tasks with backlog or errors
     supabase
       .from("smon_sync_task_snapshots")
       .select("nas_id, captured_at, task_id, task_name, status, backlog_count, backlog_bytes, current_file, retry_count, last_error, speed_bps")
@@ -331,7 +268,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("captured_at", { ascending: false })
       .limit(15),
 
-    // I/O-related metrics: iowait, NFS traffic, VM page pressure
     supabase
       .from("smon_metrics")
       .select("nas_id, type, value, unit, metadata, recorded_at")
@@ -360,7 +296,6 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     telemetry_errors,
     top_processes: collectResult("top_processes", processResult, telemetry_errors),
     disk_io: collectResult("disk_io", diskResult, telemetry_errors),
-    // New: structured task and I/O data
     scheduled_tasks_with_issues: collectResult("scheduled_tasks_with_issues", scheduledTasksResult, telemetry_errors),
     backup_tasks: dedupeLatestByField(collectResult("backup_tasks", backupTasksResult, telemetry_errors), "task_id"),
     snapshot_replicas: dedupeLatestByField(collectResult("snapshot_replicas", snapshotReplicasResult, telemetry_errors), "task_id"),
@@ -398,130 +333,8 @@ function summarizeEvidence(state: IssueFull) {
   }));
 }
 
-function toolPromptLines(toolNames: CopilotToolName[]) {
-  return toolNames
-    .map((toolName) => `- ${toolName}: ${TOOL_DEFINITIONS[toolName].description}`)
-    .join("\n");
-}
-
-async function callDecisionModel(
-  state: IssueFull,
-  telemetry: Awaited<ReturnType<typeof gatherTelemetryContext>>
-): Promise<AgentDecision> {
-  const client = getOpenAIClient();
-  const model = state.actions.some((action) => action.kind === "diagnostic" && action.status === "completed")
-    ? await getRemediationModel()
-    : await getDiagnosisModel();
-
-  const prompt = `You are the driver for a single Synology NAS issue.
-
-Your job is to own this issue end to end. Maintain one coherent hypothesis, update it when new evidence arrives, and either:
-1. run the one best next read-only diagnostic,
-2. propose one exact remediation action for approval, or
-3. ask the user one focused question when automation is blocked.
-
-Hard rules:
-- Treat the user's latest message as a direct reply to your last message.
-- Never repeat a rejected or blocked action unless you explicitly explain what new evidence changed.
-- Never propose a file modification unless you know the exact file path.
-- Never ask for approval unless you are returning one exact remediation_action object.
-- If evidence is thin, say so and gather the one most discriminating next diagnostic.
-- Be concise, direct, and operator-focused. No phase narration.
-
-Issue record:
-${JSON.stringify({
-  title: state.issue.title,
-  summary: state.issue.summary,
-  status: state.issue.status,
-  severity: state.issue.severity,
-  affected_nas: state.issue.affected_nas,
-  current_hypothesis: state.issue.current_hypothesis,
-  hypothesis_confidence: state.issue.hypothesis_confidence,
-  next_step: state.issue.next_step,
-  conversation_summary: state.issue.conversation_summary,
-  operator_constraints: state.issue.operator_constraints,
-  blocked_tools: state.issue.blocked_tools,
-}, null, 2)}
-
-Recent conversation:
-${JSON.stringify(summarizeMessages(state), null, 2)}
-
-Recent evidence:
-${JSON.stringify(summarizeEvidence(state), null, 2)}
-
-Recent actions:
-${JSON.stringify(summarizeActionHistory(state.actions), null, 2)}
-
-Live telemetry field guide:
-- alerts / logs: Active alerts and recent error/warning log lines.
-- normalized_facts: Deterministically extracted facts from telemetry. Prefer these for stable reasoning before raw logs.
-- capability_state: Per-NAS capability registry entries. degraded or unsupported means you do not have full visibility for that subsystem.
-- top_processes: Processes ranked by CPU/mem/IO at last sample.
-- disk_io: Per-disk read_bps, write_bps, await_ms (latency), util_pct. await_ms > 100ms or util_pct > 80% = disk is saturated.
-- scheduled_tasks_with_issues: DSM Task Scheduler jobs where last_result != 0 (non-zero exit = script failure) or status = 'error'. These are silent failures — no alert is raised anywhere else. Use check_scheduled_tasks to get live details.
-- backup_tasks: Hyper Backup task state. last_result = 'error'|'failed'|'warning' = backup broken. Check enabled flag and last_run_time staleness. Use check_backup_status for log details.
-- snapshot_replicas: Snapshot replication task outcomes. last_result != 'success' = replica is stale or broken.
-- container_io_top: Docker containers ranked by write_bps in the last 30 minutes. A container writing > 10 MB/s is likely a primary I/O contributor. Use check_container_io to get cumulative totals and live docker stats.
-- sharesync_tasks: ShareSync tasks. backlog_count > 100 = backed up; retry_count > 5 = persistent failure; status = 'error' = task is broken. last_error gives the exact failure string.
-- io_pressure_metrics: cpu_iowait_pct > 20% means the CPU is blocked waiting on disk (disk, not compute, is the bottleneck). nfs_read_bps / nfs_write_bps = total NFS bytes served. vm_pgpgout_ps > 10000 = memory pressure is forcing dirty pages to disk.
-- telemetry_errors: any entries here mean a telemetry query failed or a dependent table is missing. Treat this as degraded visibility, not proof that the subsystem is healthy.
-
-Live telemetry:
-${JSON.stringify(telemetry, null, 2)}
-
-Allowed diagnostic tools:
-${toolPromptLines(ALLOWED_DIAGNOSTIC_TOOLS)}
-
-Allowed remediation tools:
-${toolPromptLines(ALLOWED_REMEDIATION_TOOLS)}
-
-Return JSON only:
-{
-  "response": "What you say to the operator now. Must include current belief, what changed, and the one next thing you want to do.",
-  "summary": "Short issue summary for list views.",
-  "current_hypothesis": "Current best explanation.",
-  "hypothesis_confidence": "high|medium|low",
-  "severity": "critical|warning|info",
-  "affected_nas": ["edgesynology1"],
-  "conversation_summary": "Durable summary of the thread so far.",
-  "next_step": "One sentence saying the next meaningful step.",
-  "status": "running|waiting_on_user|waiting_for_approval|resolved|stuck",
-  "constraints_to_add": ["durable operator constraints learned from this turn"],
-  "blocked_tools": ["tool names that should not be proposed again unless evidence changes"],
-  "evidence_notes": [{"title":"", "detail":""}],
-  "diagnostic_action": {
-    "tool_name": "check_drive_database",
-    "target": "edgesynology1",
-    "summary": "Run one precise read-only diagnostic",
-    "reason": "Why this is the most discriminating next step",
-    "expected_outcome": "What result should clarify",
-    "filter": "",
-    "lookback_hours": 2
-  } or null,
-  "remediation_action": {
-    "tool_name": "remove_invalid_chars",
-    "target": "edgesynology1",
-    "summary": "One exact change to make",
-    "reason": "Why this is now justified",
-    "expected_outcome": "What should improve",
-    "rollback_plan": "How to revert if needed",
-    "risk": "low|medium|high",
-    "filter": "/exact/path/to/file",
-    "lookback_hours": 2
-  } or null
-}
-
-Only one of diagnostic_action or remediation_action may be non-null.`;
-
-  const response = await client.chat.completions.create({
-    model,
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
-    max_tokens: 2500,
-  });
-
-  const raw = response.choices[0]?.message?.content ?? "{}";
-  return parseAgentDecision(raw);
+function mergeStringLists(...lists: string[][]) {
+  return Array.from(new Set(lists.flat().map((item) => item.trim()).filter(Boolean)));
 }
 
 function actionFingerprint(action: {
@@ -550,28 +363,215 @@ function ensureAllowed(plan: ToolActionPlan, kind: "diagnostic" | "remediation")
   }
 }
 
-function mergeStringLists(...lists: string[][]) {
-  return Array.from(new Set(lists.flat().map((item) => item.trim()).filter(Boolean)));
-}
-
 function hasAlreadyTried(state: IssueFull, plan: ToolActionPlan) {
   const fp = actionFingerprint(plan);
-  return state.actions.some((action) => actionFingerprint({
-    tool_name: action.tool_name,
-    target: action.target,
-    filter: action.command_preview,
-  }) === fp || (
-    action.tool_name === plan.tool_name &&
-    action.target === plan.target &&
-    (action.status === "rejected" || action.status === "completed" || action.status === "failed")
-  ));
+  return state.actions.some((action) =>
+    actionFingerprint({
+      tool_name: action.tool_name,
+      target: action.target,
+      filter: action.command_preview,
+    }) === fp || (
+      action.tool_name === plan.tool_name &&
+      action.target === plan.target &&
+      (action.status === "rejected" || action.status === "completed" || action.status === "failed")
+    ),
+  );
+}
+
+async function appendEvidenceNotes(
+  supabase: SupabaseClient,
+  userId: string,
+  issueId: string,
+  notes: Array<{ title: string; detail: string }>,
+) {
+  for (const note of notes) {
+    if (!note.title || !note.detail) continue;
+    await appendIssueEvidence(supabase, userId, issueId, {
+      source_kind: "analysis",
+      title: note.title,
+      detail: note.detail,
+      metadata: {},
+    });
+  }
+}
+
+function toolDescriptions(toolNames: CopilotToolName[]) {
+  return toolNames.map((toolName) => ({
+    tool_name: toolName,
+    description: TOOL_DEFINITIONS[toolName].description,
+  }));
+}
+
+async function runHypothesisStage(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  telemetry: Record<string, unknown>,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const { model, parsed } = await rankIssueHypothesis({
+      issue: state.issue,
+      recent_messages: summarizeMessages(state),
+      recent_evidence: summarizeEvidence(state),
+      recent_actions: summarizeActionHistory(state.actions),
+      telemetry,
+    });
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "hypothesis_rank",
+      status: "completed",
+      modelName: model,
+      modelTier: "reasoner",
+      inputSummary: {
+        message_count: state.messages.length,
+        evidence_count: state.evidence.length,
+        action_count: state.actions.length,
+        fact_count: Array.isArray(telemetry.normalized_facts) ? telemetry.normalized_facts.length : 0,
+      },
+      output: parsed as unknown as Record<string, unknown>,
+      startedAt,
+    });
+    return parsed;
+  } catch (error) {
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "hypothesis_rank",
+      status: "failed",
+      modelTier: "reasoner",
+      inputSummary: { message_count: state.messages.length },
+      errorText: error instanceof Error ? error.message : "Unknown hypothesis stage error",
+      startedAt,
+    });
+    throw error;
+  }
+}
+
+async function runPlanningStage(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  telemetry: Record<string, unknown>,
+  hypothesis: HypothesisRankResult,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const { model, parsed } = await planIssueNextStep({
+      issue: state.issue,
+      hypothesis,
+      telemetry,
+      allowed_diagnostic_tools: toolDescriptions(ALLOWED_DIAGNOSTIC_TOOLS),
+      allowed_remediation_tools: toolDescriptions(ALLOWED_REMEDIATION_TOOLS),
+    });
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "next_step_plan",
+      status: "completed",
+      modelName: model,
+      modelTier: "reasoner",
+      inputSummary: {
+        hypothesis_confidence: hypothesis.hypothesis_confidence,
+        blocked_tool_count: state.issue.blocked_tools.length,
+      },
+      output: parsed as unknown as Record<string, unknown>,
+      startedAt,
+    });
+    return parsed;
+  } catch (error) {
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "next_step_plan",
+      status: "failed",
+      modelTier: "reasoner",
+      inputSummary: { issue_status: state.issue.status },
+      errorText: error instanceof Error ? error.message : "Unknown next-step planning error",
+      startedAt,
+    });
+    throw error;
+  }
+}
+
+async function runExplanationStage(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  hypothesis: HypothesisRankResult,
+  plan: NextStepPlanResult,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const { model, parsed } = await explainIssueState({
+      issue: state.issue,
+      hypothesis,
+      plan,
+    });
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "operator_explanation",
+      status: "completed",
+      modelName: model,
+      modelTier: "explainer",
+      inputSummary: {
+        status: plan.status,
+        next_step: plan.next_step,
+      },
+      output: parsed as unknown as Record<string, unknown>,
+      startedAt,
+    });
+    return parsed;
+  } catch (error) {
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "operator_explanation",
+      status: "failed",
+      modelTier: "explainer",
+      inputSummary: { issue_status: state.issue.status },
+      errorText: error instanceof Error ? error.message : "Unknown operator explanation error",
+      startedAt,
+    });
+    throw error;
+  }
+}
+
+async function runVerificationStage(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+  action: IssueAction,
+  telemetry: Record<string, unknown>,
+) {
+  const startedAt = new Date().toISOString();
+  try {
+    const { model, parsed } = await verifyIssueAction({
+      issue: state.issue,
+      action,
+      telemetry,
+    });
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "verification",
+      status: "completed",
+      modelName: model,
+      modelTier: "verifier",
+      inputSummary: {
+        tool_name: action.tool_name,
+        action_status: action.status,
+      },
+      output: parsed as unknown as Record<string, unknown>,
+      startedAt,
+    });
+    return parsed;
+  } catch (error) {
+    await recordIssueStageRun(supabase, userId, state.issue.id, {
+      stageKey: "verification",
+      status: "failed",
+      modelTier: "verifier",
+      inputSummary: { tool_name: action.tool_name },
+      errorText: error instanceof Error ? error.message : "Unknown verification error",
+      startedAt,
+    });
+    throw error;
+  }
 }
 
 async function executeDiagnosticAction(
   supabase: SupabaseClient,
   userId: string,
   issueId: string,
-  plan: ToolActionPlan
+  plan: ToolActionPlan,
 ) {
   const commandPreview = buildCommandPreview(plan);
   const actionId = await createIssueAction(supabase, userId, issueId, {
@@ -626,9 +626,13 @@ async function executeDiagnosticAction(
   });
 }
 
-async function executeApprovedActions(supabase: SupabaseClient, userId: string, state: IssueFull) {
+async function executeApprovedActions(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+) {
   const approved = state.actions.find((action) => action.status === "approved");
-  if (!approved) return false;
+  if (!approved) return null;
 
   await updateIssue(supabase, userId, state.issue.id, { status: "running" });
   await updateIssueAction(supabase, userId, approved.id, { status: "running" });
@@ -666,13 +670,85 @@ async function executeApprovedActions(supabase: SupabaseClient, userId: string, 
     },
   });
 
-  return true;
+  return {
+    ...approved,
+    status,
+    result_text: resultText,
+    exit_code: exitCode,
+    completed_at: new Date().toISOString(),
+  } as IssueAction;
+}
+
+async function refreshIssueContext(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+) {
+  const telemetry = await gatherTelemetryContext(supabase, state.issue);
+  const [facts, capability_state] = await Promise.all([
+    syncIssueFacts(supabase, userId, state, telemetry),
+    syncTelemetryCapabilities(supabase, userId, state.issue, telemetry),
+  ]);
+
+  return {
+    ...telemetry,
+    normalized_facts: facts.map((fact) => ({
+      fact_type: fact.fact_type,
+      severity: fact.severity,
+      title: fact.title,
+      detail: fact.detail,
+      value: fact.value,
+    })),
+    capability_state: capability_state.map((record) => ({
+      nas_id: record.nas_id,
+      capability_key: record.capability_key,
+      state: record.state,
+      evidence: record.evidence,
+      raw_error: record.raw_error,
+    })),
+  };
+}
+
+async function applyHypothesisAndPlan(
+  supabase: SupabaseClient,
+  userId: string,
+  issueId: string,
+  state: IssueFull,
+  hypothesis: HypothesisRankResult,
+  plan: NextStepPlanResult,
+  summary: string,
+) {
+  const mergedConstraints = mergeStringLists(
+    state.issue.operator_constraints,
+    plan.constraints_to_add ?? [],
+  );
+  const mergedBlockedTools = mergeStringLists(
+    state.issue.blocked_tools,
+    plan.blocked_tools ?? [],
+  );
+
+  await appendEvidenceNotes(supabase, userId, issueId, plan.evidence_notes ?? []);
+
+  await updateIssue(supabase, userId, issueId, {
+    summary,
+    severity: hypothesis.severity,
+    status: plan.status,
+    affected_nas: hypothesis.affected_nas,
+    current_hypothesis: hypothesis.current_hypothesis,
+    hypothesis_confidence: hypothesis.hypothesis_confidence,
+    next_step: plan.next_step,
+    conversation_summary: hypothesis.conversation_summary,
+    operator_constraints: mergedConstraints,
+    blocked_tools: mergedBlockedTools,
+  });
+
+  return { mergedConstraints, mergedBlockedTools };
 }
 
 export async function runIssueAgent(
   supabase: SupabaseClient,
   userId: string,
-  issueId: string
+  issueId: string,
 ) {
   let cycles = 0;
 
@@ -681,9 +757,24 @@ export async function runIssueAgent(
     let state = await loadIssue(supabase, userId, issueId);
     if (!state) return null;
 
-    const ranApprovedAction = await executeApprovedActions(supabase, userId, state);
-    if (ranApprovedAction) {
-      continue;
+    const executedAction = await executeApprovedActions(supabase, userId, state);
+    if (executedAction) {
+      state = await loadIssue(supabase, userId, issueId);
+      if (!state) return null;
+      const telemetry = await refreshIssueContext(supabase, userId, state);
+      const verification = await runVerificationStage(supabase, userId, state, executedAction, telemetry);
+      await appendEvidenceNotes(supabase, userId, issueId, verification.evidence_notes ?? []);
+      await updateIssue(supabase, userId, issueId, {
+        summary: verification.summary,
+        status: verification.status,
+        current_hypothesis: verification.current_hypothesis,
+        hypothesis_confidence: verification.hypothesis_confidence,
+        next_step: verification.next_step,
+        conversation_summary: verification.conversation_summary,
+        resolved_at: verification.status === "resolved" ? new Date().toISOString() : null,
+      });
+      await appendIssueMessage(supabase, userId, issueId, "agent", verification.response);
+      return loadIssue(supabase, userId, issueId);
     }
 
     const openProposal = state.actions.find((action) => action.status === "proposed" && action.requires_approval);
@@ -692,99 +783,57 @@ export async function runIssueAgent(
       return loadIssue(supabase, userId, issueId);
     }
 
-    const telemetry = await gatherTelemetryContext(supabase, state.issue);
-    const [facts, capability_state] = await Promise.all([
-      syncIssueFacts(supabase, userId, state, telemetry),
-      syncTelemetryCapabilities(supabase, state.issue, telemetry),
-    ]);
-    const enrichedTelemetry = {
-      ...telemetry,
-      normalized_facts: facts.map((fact) => ({
-        fact_type: fact.fact_type,
-        severity: fact.severity,
-        title: fact.title,
-        detail: fact.detail,
-        value: fact.value,
-      })),
-      capability_state: capability_state.map((record) => ({
-        nas_id: record.nas_id,
-        capability_key: record.capability_key,
-        state: record.state,
-        evidence: record.evidence,
-        raw_error: record.raw_error,
-      })),
-    };
-    const decision = await callDecisionModel(state, enrichedTelemetry);
+    const telemetry = await refreshIssueContext(supabase, userId, state);
+    const hypothesis = await runHypothesisStage(supabase, userId, state, telemetry);
+    const plan = await runPlanningStage(supabase, userId, state, telemetry, hypothesis);
+    const explanation = await runExplanationStage(supabase, userId, state, hypothesis, plan);
 
-    const mergedConstraints = mergeStringLists(
-      state.issue.operator_constraints,
-      decision.constraints_to_add ?? [],
-    );
-    const mergedBlockedTools = mergeStringLists(
-      state.issue.blocked_tools,
-      decision.blocked_tools ?? [],
+    const { mergedBlockedTools } = await applyHypothesisAndPlan(
+      supabase,
+      userId,
+      issueId,
+      state,
+      hypothesis,
+      plan,
+      explanation.summary,
     );
 
-    for (const note of decision.evidence_notes ?? []) {
-      if (note.title && note.detail) {
-        await appendIssueEvidence(supabase, userId, issueId, {
-          source_kind: "analysis",
-          title: note.title,
-          detail: note.detail,
-          metadata: {},
-        });
-      }
-    }
-
-    await updateIssue(supabase, userId, issueId, {
-      summary: decision.summary,
-      severity: decision.severity,
-      status: decision.status,
-      affected_nas: decision.affected_nas,
-      current_hypothesis: decision.current_hypothesis,
-      hypothesis_confidence: decision.hypothesis_confidence,
-      next_step: decision.next_step,
-      conversation_summary: decision.conversation_summary,
-      operator_constraints: mergedConstraints,
-      blocked_tools: mergedBlockedTools,
-    });
-
-    if (decision.diagnostic_action) {
-      ensureAllowed(decision.diagnostic_action, "diagnostic");
-      if (!mergedBlockedTools.includes(decision.diagnostic_action.tool_name) && !hasAlreadyTried(state, decision.diagnostic_action)) {
-        await appendIssueMessage(supabase, userId, issueId, "agent", decision.response);
-        await executeDiagnosticAction(supabase, userId, issueId, decision.diagnostic_action);
+    if (plan.diagnostic_action) {
+      ensureAllowed(plan.diagnostic_action, "diagnostic");
+      if (!mergedBlockedTools.includes(plan.diagnostic_action.tool_name) && !hasAlreadyTried(state, plan.diagnostic_action)) {
+        await appendIssueMessage(supabase, userId, issueId, "agent", explanation.response);
+        await executeDiagnosticAction(supabase, userId, issueId, plan.diagnostic_action);
         continue;
       }
     }
 
-    if (decision.remediation_action) {
-      ensureAllowed(decision.remediation_action, "remediation");
-      if (!mergedBlockedTools.includes(decision.remediation_action.tool_name) && !hasAlreadyTried(state, decision.remediation_action)) {
-        if (!decision.remediation_action.target) {
+    if (plan.remediation_action) {
+      ensureAllowed(plan.remediation_action, "remediation");
+      if (!mergedBlockedTools.includes(plan.remediation_action.tool_name) && !hasAlreadyTried(state, plan.remediation_action)) {
+        if (!plan.remediation_action.target) {
           await updateIssue(supabase, userId, issueId, { status: "waiting_on_user" });
           await appendIssueMessage(
             supabase,
             userId,
             issueId,
             "agent",
-            "I do not have a safe remediation target yet. I need one exact NAS target before I can ask you to approve a change."
+            "I do not have a safe remediation target yet. I need one exact NAS or file target before I can ask you to approve a change.",
           );
-          break;
+          return loadIssue(supabase, userId, issueId);
         }
-        const commandPreview = buildCommandPreview(decision.remediation_action);
+        const commandPreview = buildCommandPreview(plan.remediation_action);
         await createIssueAction(supabase, userId, issueId, {
           kind: "remediation",
-          target: decision.remediation_action.target,
-          toolName: decision.remediation_action.tool_name,
+          target: plan.remediation_action.target,
+          toolName: plan.remediation_action.tool_name,
           commandPreview,
-          summary: decision.remediation_action.summary,
-          reason: decision.remediation_action.reason,
-          expectedOutcome: decision.remediation_action.expected_outcome,
-          rollbackPlan: decision.remediation_action.rollback_plan ?? "",
-          risk: decision.remediation_action.risk ?? "medium",
+          summary: plan.remediation_action.summary,
+          reason: plan.remediation_action.reason,
+          expectedOutcome: plan.remediation_action.expected_outcome,
+          rollbackPlan: plan.remediation_action.rollback_plan ?? "",
+          risk: plan.remediation_action.risk ?? "medium",
           requiresApproval: true,
-          approvalToken: buildApprovalToken(decision.remediation_action.target, commandPreview),
+          approvalToken: buildApprovalToken(plan.remediation_action.target, commandPreview),
         });
         await updateIssue(supabase, userId, issueId, { status: "waiting_for_approval" });
       } else {
@@ -792,16 +841,16 @@ export async function runIssueAgent(
       }
     }
 
-    await appendIssueMessage(supabase, userId, issueId, "agent", decision.response);
+    await appendIssueMessage(supabase, userId, issueId, "agent", explanation.response);
 
-    if (decision.status === "resolved") {
+    if (plan.status === "resolved") {
       await updateIssue(supabase, userId, issueId, {
         status: "resolved",
         resolved_at: new Date().toISOString(),
       });
     }
 
-    break;
+    return loadIssue(supabase, userId, issueId);
   }
 
   return loadIssue(supabase, userId, issueId);
@@ -811,7 +860,7 @@ export async function seedIssueFromOrigin(
   supabase: SupabaseClient,
   userId: string,
   issueId: string,
-  seedText: string
+  seedText: string,
 ) {
   await appendIssueMessage(supabase, userId, issueId, "system", seedText);
   await appendIssueEvidence(supabase, userId, issueId, {

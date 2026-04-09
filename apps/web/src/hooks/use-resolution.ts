@@ -98,6 +98,25 @@ export interface ResolutionTransition {
   created_at: string;
 }
 
+export interface ResolutionStageRun {
+  id: string;
+  stage_key:
+    | "capability_refresh"
+    | "fact_refresh"
+    | "hypothesis_rank"
+    | "next_step_plan"
+    | "operator_explanation"
+    | "verification";
+  status: "running" | "completed" | "failed" | "skipped";
+  model_name: string | null;
+  model_tier: string | null;
+  input_summary: Record<string, unknown>;
+  output: Record<string, unknown>;
+  error_text: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export interface ResolutionFull {
   resolution: Resolution;
   messages: ResolutionMessage[];
@@ -107,6 +126,7 @@ export interface ResolutionFull {
   capabilities: ResolutionCapability[];
   jobs: ResolutionJob[];
   transitions: ResolutionTransition[];
+  stage_runs: ResolutionStageRun[];
 }
 
 function normalizeState(payload: any): ResolutionFull {
@@ -119,6 +139,7 @@ function normalizeState(payload: any): ResolutionFull {
     capabilities: payload.capabilities ?? [],
     jobs: payload.jobs ?? [],
     transitions: payload.transitions ?? [],
+    stage_runs: payload.stage_runs ?? [],
   };
 }
 
