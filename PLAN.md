@@ -2,6 +2,10 @@
 
 Last verified: 2026-04-09 UTC
 
+Scope:
+- Reality-based status file.
+- Use this to distinguish implemented, deployed, verified, and still incomplete.
+
 This document is a reality-based status file, not a wish list. It separates:
 - implemented in code
 - deployed live

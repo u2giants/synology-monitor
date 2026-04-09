@@ -3,6 +3,8 @@
 Last updated: 2026-04-09 UTC
 
 Scope:
+- This is non-authoritative owner/reference material.
+- Future agents should not treat it as required reading unless explicitly asked to work on model orchestration design.
 - This file is a target-state architecture spec for model orchestration.
 - It defines how reasoning work should be split across model stages, which stages should stay deterministic, and how each stage should plug into the backend issue workflow.
 - It is not a statement that every stage below is fully implemented today.

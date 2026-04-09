@@ -2,6 +2,9 @@
 
 Last verified: 2026-04-09 UTC
 
+Scope:
+- Canonical deployment and runtime contract for the Synology agent and monitor-stack controls.
+
 This file documents the actual deployment contract for the Synology agent.
 
 It also documents the monitor-stack control assumption used by the web app:

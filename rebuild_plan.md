@@ -4,6 +4,7 @@ Last updated: 2026-04-09 UTC
 
 Scope:
 - This file is a target-state build specification.
+- It is non-authoritative for new engineering sessions unless explicitly requested.
 - It is not a statement of current live behavior.
 - For current live architecture and verified behavior, use:
   - [AGENTS.md](/worksp/monitor/app/AGENTS.md)

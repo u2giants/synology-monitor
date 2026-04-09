@@ -3,6 +3,8 @@
 Last updated: 2026-04-09 UTC
 
 Scope:
+- This is non-authoritative owner/reference material.
+- Future agents should not treat it as required reading unless explicitly asked to research stage-specific model selection.
 - This file is a research guide for choosing actual models for each stage in [MODEL_MATRIX.md](/worksp/monitor/app/MODEL_MATRIX.md).
 - It is intentionally vendor-neutral.
 - It defines selection criteria, benchmark tasks, and evaluation questions for each stage.

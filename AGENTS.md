@@ -2,6 +2,10 @@
 
 Last verified: 2026-04-09 UTC
 
+Scope:
+- Canonical architecture overview.
+- Use this to understand subsystem boundaries, key files, and non-negotiable rules.
+
 This file is the canonical technical overview for this repository.
 
 ## System purpose

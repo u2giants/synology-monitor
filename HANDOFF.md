@@ -2,6 +2,11 @@
 
 Last verified: 2026-04-09 UTC
 
+Scope:
+- Read this first in a new engineering session.
+- This is the shortest authoritative summary of what the system is, how it works, and what is still missing.
+- It should stay compact.
+
 This file is the shortest accurate handoff for the current system.
 
 ## What this product is
