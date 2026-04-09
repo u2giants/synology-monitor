@@ -403,6 +403,41 @@ function toolDescriptions(toolNames: CopilotToolName[]) {
   }));
 }
 
+function buildAgentResponse(
+  response: string,
+  plan: NextStepPlanResult,
+) {
+  const parts: string[] = [];
+  const trimmedResponse = response.trim();
+  const userQuestion = plan.user_question?.trim() ?? "";
+
+  if (trimmedResponse) {
+    parts.push(trimmedResponse);
+  }
+
+  if (userQuestion) {
+    const alreadyIncluded = trimmedResponse.toLowerCase().includes(userQuestion.toLowerCase());
+    if (!alreadyIncluded) {
+      parts.push(`I need one answer from you before I can continue: ${userQuestion}`);
+    }
+  }
+
+  if (plan.status === "waiting_for_approval" && plan.remediation_action) {
+    const approvalPrompt = `Approve or reject this action: ${plan.remediation_action.summary}`;
+    const alreadyIncluded = trimmedResponse.toLowerCase().includes("approve")
+      || trimmedResponse.toLowerCase().includes(plan.remediation_action.summary.toLowerCase());
+    if (!alreadyIncluded) {
+      parts.push(approvalPrompt);
+    }
+  }
+
+  if (parts.length === 0 && plan.next_step.trim()) {
+    parts.push(plan.next_step.trim());
+  }
+
+  return parts.join("\n\n").trim();
+}
+
 async function runHypothesisStage(
   supabase: SupabaseClient,
   userId: string,
@@ -802,6 +837,17 @@ async function applyHypothesisAndPlan(
   return { mergedConstraints, mergedBlockedTools };
 }
 
+function deriveTerminalPlanStatus(
+  state: IssueFull,
+  plan: NextStepPlanResult,
+  hasPendingApproval: boolean,
+) {
+  if (hasPendingApproval) return "waiting_for_approval" as const;
+  if (plan.status !== "waiting_on_user") return plan.status;
+  if (plan.user_question?.trim()) return "waiting_on_user" as const;
+  return "stuck" as const;
+}
+
 export async function runIssueAgent(
   supabase: SupabaseClient,
   userId: string,
@@ -847,6 +893,7 @@ export async function runIssueAgent(
       plan = await runRemediationStage(supabase, userId, state, telemetry, hypothesis, plan);
     }
     const explanation = await runExplanationStage(supabase, userId, state, hypothesis, plan);
+    const agentResponse = buildAgentResponse(explanation.response, plan);
 
     const { mergedBlockedTools } = await applyHypothesisAndPlan(
       supabase,
@@ -861,7 +908,7 @@ export async function runIssueAgent(
     if (plan.diagnostic_action) {
       ensureAllowed(plan.diagnostic_action, "diagnostic");
       if (!mergedBlockedTools.includes(plan.diagnostic_action.tool_name) && !hasAlreadyTried(state, plan.diagnostic_action)) {
-        await appendIssueMessage(supabase, userId, issueId, "agent", explanation.response);
+        await appendIssueMessage(supabase, userId, issueId, "agent", agentResponse);
         await executeDiagnosticAction(supabase, userId, issueId, plan.diagnostic_action);
         continue;
       }
@@ -897,13 +944,24 @@ export async function runIssueAgent(
         });
         await updateIssue(supabase, userId, issueId, { status: "waiting_for_approval" });
       } else {
-        await updateIssue(supabase, userId, issueId, { status: "waiting_on_user" });
+        await updateIssue(supabase, userId, issueId, {
+          status: deriveTerminalPlanStatus(state, plan, false),
+        });
       }
     }
 
-    await appendIssueMessage(supabase, userId, issueId, "agent", explanation.response);
+    const remediationPlan = plan.remediation_action;
+    const hasPendingApproval = remediationPlan
+      ? !mergedBlockedTools.includes(remediationPlan.tool_name)
+        && !hasAlreadyTried(state, remediationPlan)
+        && Boolean(remediationPlan.target)
+      : false;
+    const finalStatus = deriveTerminalPlanStatus(state, plan, hasPendingApproval);
 
-    if (plan.status === "resolved") {
+    await updateIssue(supabase, userId, issueId, { status: finalStatus });
+    await appendIssueMessage(supabase, userId, issueId, "agent", agentResponse);
+
+    if (finalStatus === "resolved") {
       await updateIssue(supabase, userId, issueId, {
         status: "resolved",
         resolved_at: new Date().toISOString(),

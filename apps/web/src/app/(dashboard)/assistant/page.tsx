@@ -164,6 +164,10 @@ export default function AssistantPage() {
     () => current?.steps.filter((step) => step.status === "proposed") ?? [],
     [current]
   );
+  const latestAgentMessage = useMemo(
+    () => [...(current?.messages ?? [])].reverse().find((message) => message.role === "agent") ?? null,
+    [current]
+  );
   const activeJobs = useMemo(
     () => current?.jobs.filter((job) => job.status === "queued" || job.status === "running") ?? [],
     [current]
@@ -284,6 +288,17 @@ export default function AssistantPage() {
                   onApprove={(ids) => approveSteps(ids, "approve")}
                   onReject={(ids) => approveSteps(ids, "reject")}
                 />
+              )}
+
+              {current.resolution.status === "waiting_on_user" && (
+                <NeedsInputPanel
+                  nextStep={current.resolution.next_step}
+                  latestAgentMessage={latestAgentMessage?.content ?? null}
+                />
+              )}
+
+              {current.resolution.status === "waiting_for_approval" && pendingActions.length === 0 && (
+                <ApprovalMismatchPanel />
               )}
 
               <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
@@ -699,6 +714,46 @@ function ActionPanel({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function NeedsInputPanel({
+  nextStep,
+  latestAgentMessage,
+}: {
+  nextStep: string;
+  latestAgentMessage: string | null;
+}) {
+  return (
+    <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <MessageSquare className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold">Agent needs input from you</h3>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {nextStep || "The agent is waiting for more information before it can continue."}
+      </p>
+      {latestAgentMessage && (
+        <div className="mt-3 rounded-lg border border-border bg-card p-3">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApprovalMismatchPanel() {
+  return (
+    <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <XCircle className="h-4 w-4 text-critical" />
+        <h3 className="text-sm font-semibold">Approval state mismatch</h3>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        This issue is marked as awaiting approval, but no proposed action is attached. Use Continue to re-run the worker and rebuild the approval step.
+      </p>
     </div>
   );
 }
