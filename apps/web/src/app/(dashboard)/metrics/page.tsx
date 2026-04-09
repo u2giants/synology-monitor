@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNasUnits } from "@/hooks/use-nas-units";
 import { useMetrics } from "@/hooks/use-metrics";
 import {
@@ -20,8 +20,8 @@ const ranges = ["1h", "6h", "24h", "7d", "30d"] as const;
 const metricGroups = [
   {
     title: "CPU & Load",
-    metrics: ["cpu_usage", "system_load_1", "system_load_5"],
-    colors: ["#3b82f6", "#8b5cf6", "#a855f7"],
+    metrics: ["cpu_usage", "cpu_iowait_pct", "system_load_1", "system_load_5"],
+    colors: ["#3b82f6", "#ef4444", "#8b5cf6", "#a855f7"],
   },
   {
     title: "Memory",
@@ -172,6 +172,11 @@ export default function MetricsPage() {
   const allMetrics = metricGroups.flatMap((g) => g.metrics);
   const { series, loading } = useMetrics(nasId, allMetrics, range);
   const { devices, topProcesses, loading: diskLoading, dataAge } = useDiskIO(nasId, range);
+  const latestIowait = useMemo(() => {
+    const ioSeries = series.find((item) => item.type === "cpu_iowait_pct");
+    const last = ioSeries?.data.at(-1);
+    return last ? { value: last.value, recordedAt: last.recorded_at } : null;
+  }, [series]);
 
   const diskChartData = aggregateDevicePoints(devices);
 
@@ -220,6 +225,18 @@ export default function MetricsPage() {
         <div className="text-sm text-muted-foreground">Loading metrics...</div>
       ) : (
         <div className="space-y-6">
+          <section className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-lg border border-critical/20 bg-critical/5 p-4">
+              <div className="text-sm font-semibold text-critical">Current CPU iowait</div>
+              <div className="mt-2 text-2xl font-bold">
+                {latestIowait ? `${latestIowait.value.toFixed(2)}%` : "—"}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {latestIowait ? `Last sample ${formatTime(new Date(latestIowait.recordedAt).getTime())}` : "No cpu_iowait_pct samples yet"}
+              </div>
+            </div>
+          </section>
+
           {metricGroups.map((group) => {
             const groupSeries = series.filter((s) =>
               group.metrics.includes(s.type)

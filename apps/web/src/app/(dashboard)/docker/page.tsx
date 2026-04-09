@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { cn, formatBytes, timeAgo } from "@/lib/utils";
-import { Container, Play, Square, RotateCw } from "lucide-react";
+import { Container, Download, Hammer, Play, RotateCw, Square } from "lucide-react";
 
 interface NasUnit {
   id: string;
@@ -32,6 +32,8 @@ export default function DockerPage() {
   const [containers, setContainers] = useState<ContainerData[]>([]);
   const [nasUnits, setNasUnits] = useState<NasUnit[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionResult, setActionResult] = useState<Record<string, string>>({});
 
   useEffect(() => {
     async function fetchData() {
@@ -107,6 +109,35 @@ export default function DockerPage() {
     exited: "text-critical",
   };
 
+  async function runDockerAction(target: string, toolName: string) {
+    const key = `${target}:${toolName}`;
+    setActionLoading(key);
+    setActionResult((current) => ({ ...current, [target]: "" }));
+    try {
+      const res = await fetch("/api/docker/actions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, toolName }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "Docker action failed");
+      }
+      const output = [data.stdout, data.stderr].filter(Boolean).join("\n\n").trim();
+      setActionResult((current) => ({
+        ...current,
+        [target]: output || `${toolName} completed with exit code ${data.exitCode ?? "unknown"}.`,
+      }));
+    } catch (error) {
+      setActionResult((current) => ({
+        ...current,
+        [target]: error instanceof Error ? error.message : "Docker action failed",
+      }));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   function formatUptime(seconds: number): string {
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -142,22 +173,63 @@ export default function DockerPage() {
             return (
               <div key={nas.id}>
                 <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-semibold">{nas.name}</h2>
-                  <div className="text-xs text-muted-foreground text-right">
-                    {nas.agent_version && nas.agent_version !== "dev" ? (
-                      <>
-                        <span className="font-mono">
-                          agent {nas.agent_version.slice(0, 7)}
-                        </span>
-                        {nas.agent_built_at && (
-                          <span className="ml-2">· deployed {timeAgo(nas.agent_built_at)}</span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-warning">agent version unknown — restart agent to update</span>
-                    )}
+                  <div>
+                    <h2 className="text-lg font-semibold">{nas.name}</h2>
+                    <div className="text-xs text-muted-foreground text-left">
+                      {nas.agent_version && nas.agent_version !== "dev" ? (
+                        <>
+                          <span className="font-mono">
+                            agent {nas.agent_version.slice(0, 7)}
+                          </span>
+                          {nas.agent_built_at && (
+                            <span className="ml-2">· deployed {timeAgo(nas.agent_built_at)}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="text-warning">agent version unknown — restart agent to update</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <DockerActionButton
+                      label="Stop"
+                      icon={Square}
+                      loading={actionLoading === `${nas.name}:stop_monitor_agent`}
+                      onClick={() => runDockerAction(nas.name, "stop_monitor_agent")}
+                    />
+                    <DockerActionButton
+                      label="Start"
+                      icon={Play}
+                      loading={actionLoading === `${nas.name}:start_monitor_agent`}
+                      onClick={() => runDockerAction(nas.name, "start_monitor_agent")}
+                    />
+                    <DockerActionButton
+                      label="Restart"
+                      icon={RotateCw}
+                      loading={actionLoading === `${nas.name}:restart_monitor_agent`}
+                      onClick={() => runDockerAction(nas.name, "restart_monitor_agent")}
+                    />
+                    <DockerActionButton
+                      label="Pull"
+                      icon={Download}
+                      loading={actionLoading === `${nas.name}:pull_monitor_agent`}
+                      onClick={() => runDockerAction(nas.name, "pull_monitor_agent")}
+                    />
+                    <DockerActionButton
+                      label="Build"
+                      icon={Hammer}
+                      loading={actionLoading === `${nas.name}:build_monitor_agent`}
+                      onClick={() => runDockerAction(nas.name, "build_monitor_agent")}
+                    />
                   </div>
                 </div>
+
+                {actionResult[nas.name] && (
+                  <div className="mb-3 rounded-lg border border-border bg-card p-3">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Last action output</div>
+                    <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{actionResult[nas.name]}</pre>
+                  </div>
+                )}
 
                 {nasContainers.length === 0 ? (
                   <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
@@ -216,5 +288,28 @@ export default function DockerPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function DockerActionButton({
+  label,
+  icon: Icon,
+  loading,
+  onClick,
+}: {
+  label: string;
+  icon: typeof Play;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+    >
+      <Icon className={cn("h-4 w-4", loading && "animate-spin")} />
+      {label}
+    </button>
   );
 }

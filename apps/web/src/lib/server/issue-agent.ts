@@ -37,6 +37,7 @@ const ALLOWED_DIAGNOSTIC_TOOLS: CopilotToolName[] = [
   "check_drive_package_health",
   "check_drive_database",
   "check_share_database",
+  "check_cpu_iowait",
   "search_webapi_log",
   "search_all_logs",
   "find_problematic_files",
@@ -54,6 +55,11 @@ const ALLOWED_DIAGNOSTIC_TOOLS: CopilotToolName[] = [
 ];
 
 const ALLOWED_REMEDIATION_TOOLS: CopilotToolName[] = [
+  "stop_monitor_agent",
+  "start_monitor_agent",
+  "restart_monitor_agent",
+  "pull_monitor_agent",
+  "build_monitor_agent",
   "restart_synology_drive_sharesync",
   "restart_synology_drive_server",
   "rename_file_to_old",

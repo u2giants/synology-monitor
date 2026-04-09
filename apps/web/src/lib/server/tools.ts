@@ -10,11 +10,16 @@ export type NasTarget = "edgesynology1" | "edgesynology2";
 export type CopilotToolName =
   | "check_disk_space"
   | "check_agent_container"
+  | "check_cpu_iowait"
   | "tail_drive_server_log"
   | "search_drive_server_log"
   | "tail_sharesync_log"
   | "get_resource_snapshot"
   | "restart_monitor_agent"
+  | "stop_monitor_agent"
+  | "start_monitor_agent"
+  | "pull_monitor_agent"
+  | "build_monitor_agent"
   | "restart_synology_drive_server"
   | "restart_synology_drive_sharesync"
   | "check_sharesync_status"
@@ -58,6 +63,29 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     buildPreview: () =>
       "/usr/local/bin/docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
   },
+  check_cpu_iowait: {
+    description: "Read-only. Measure CPU iowait directly on the NAS using vmstat and /proc/stat so the operator can compare before/after a suspected I/O-heavy action.",
+    write: false,
+    buildPreview: () => [
+      "echo '=== CURRENT CPU IOWAIT ==='",
+      "vmstat 1 3 | tail -1 | awk '{print \"vmstat wa=\" $16 \"%\"}'",
+      "echo ''",
+      "echo '=== /proc/stat SAMPLE (two snapshots, computed iowait %) ==='",
+      "read cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat",
+      "t1=$((user+nice+system+idle+iowait+irq+softirq+steal))",
+      "w1=$iowait",
+      "sleep 1",
+      "read cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat",
+      "t2=$((user+nice+system+idle+iowait+irq+softirq+steal))",
+      "w2=$iowait",
+      "dt=$((t2-t1))",
+      "dw=$((w2-w1))",
+      "if [ \"$dt\" -gt 0 ]; then awk -v dw=\"$dw\" -v dt=\"$dt\" 'BEGIN { printf(\"procstat iowait=%.2f%%\\n\", (dw/dt)*100) }'; else echo 'procstat iowait unavailable'; fi",
+      "echo ''",
+      "echo '=== TOP SNAPSHOT ==='",
+      "top -b -n2 -d0.3 2>/dev/null | grep 'Cpu(s)' | tail -1 || true",
+    ].join("\n"),
+  },
   tail_drive_server_log: {
     description: "Read-only. Inspect recent Synology Drive server log lines.",
     write: false,
@@ -84,6 +112,26 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     description: "Write. Restart the Synology Monitor agent container on the NAS.",
     write: true,
     buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose restart",
+  },
+  stop_monitor_agent: {
+    description: "Write. Stop the Synology Monitor agent stack via docker compose on the NAS.",
+    write: true,
+    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose stop",
+  },
+  start_monitor_agent: {
+    description: "Write. Start the Synology Monitor agent stack via docker compose on the NAS.",
+    write: true,
+    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose up -d",
+  },
+  pull_monitor_agent: {
+    description: "Write. Pull the latest monitor agent images via docker compose on the NAS.",
+    write: true,
+    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose pull",
+  },
+  build_monitor_agent: {
+    description: "Write. Rebuild the monitor agent stack locally via docker compose on the NAS.",
+    write: true,
+    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose build --pull",
   },
   restart_synology_drive_server: {
     description: "Write. Restart the Synology Drive package.",
