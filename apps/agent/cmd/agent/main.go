@@ -1,11 +1,5 @@
 package main
 
-// Build-time version info — injected via -ldflags by the Dockerfile.
-var (
-	BuildSHA  = "dev"
-	BuildTime = "unknown"
-)
-
 import (
 	"log"
 	"os"
@@ -20,6 +14,12 @@ import (
 	"github.com/synology-monitor/agent/internal/logwatcher"
 	"github.com/synology-monitor/agent/internal/security"
 	"github.com/synology-monitor/agent/internal/sender"
+)
+
+// Build-time version info — injected via -ldflags by the Dockerfile.
+var (
+	BuildSHA  = "dev"
+	BuildTime = "unknown"
 )
 
 func main() {
