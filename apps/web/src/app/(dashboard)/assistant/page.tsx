@@ -164,6 +164,7 @@ export default function AssistantPage() {
     () => current?.steps.filter((step) => step.status === "proposed") ?? [],
     [current]
   );
+  const primaryPendingAction = pendingActions[0] ?? null;
   const latestAgentMessage = useMemo(
     () => [...(current?.messages ?? [])].reverse().find((message) => message.role === "agent") ?? null,
     [current]
@@ -274,6 +275,16 @@ export default function AssistantPage() {
                 onContinue={continueResolution}
                 onCancel={cancelResolution}
               />
+
+              {primaryPendingAction && (
+                <ActionRequiredBanner
+                  step={primaryPendingAction}
+                  latestAgentMessage={latestAgentMessage?.content ?? null}
+                  loading={loading}
+                  onApprove={() => approveSteps([primaryPendingAction.id], "approve")}
+                  onReject={() => approveSteps([primaryPendingAction.id], "reject")}
+                />
+              )}
 
               <IssueStatusSummary
                 activeJobs={activeJobs}
@@ -713,6 +724,63 @@ function ActionPanel({
             </details>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function ActionRequiredBanner({
+  step,
+  latestAgentMessage,
+  loading,
+  onApprove,
+  onReject,
+}: {
+  step: ResolutionStep;
+  latestAgentMessage: string | null;
+  loading: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-critical/30 bg-critical/10 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-critical" />
+            <h3 className="text-sm font-semibold">Action required</h3>
+          </div>
+          <div className="rounded-lg border border-critical/30 bg-critical/15 p-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-critical">Approve this exact action</div>
+            <p className="mt-1 text-sm font-semibold text-critical">{step.summary}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{step.reason}</p>
+            <div className="mt-2 text-xs text-muted-foreground">
+              {step.target} · {step.tool_name} · risk {step.risk}
+            </div>
+          </div>
+          {latestAgentMessage && (
+            <div className="rounded-lg border border-border bg-card p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
+              <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={onApprove}
+            disabled={loading}
+            className="rounded-md bg-critical px-4 py-2 text-sm font-medium text-white hover:bg-critical/90 disabled:opacity-50"
+          >
+            Approve
+          </button>
+          <button
+            onClick={onReject}
+            disabled={loading}
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            Reject
+          </button>
+        </div>
       </div>
     </div>
   );
