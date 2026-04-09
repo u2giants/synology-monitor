@@ -455,10 +455,21 @@ async function runPlanningStage(
 ) {
   const startedAt = new Date().toISOString();
   try {
+    const recentActions = summarizeActionHistory(state.actions);
+    const completedDiagnosticCount = state.actions.filter(
+      (a) => a.kind === "diagnostic" && (a.status === "completed" || a.status === "failed"),
+    ).length;
     const { model, parsed } = await planIssueNextStep({
       issue: state.issue,
       hypothesis,
       telemetry,
+      recent_actions: recentActions.map((a) => ({
+        tool_name: a.tool_name ?? "",
+        status: a.status,
+        summary: a.summary ?? "",
+        result_text: a.result_text,
+      })),
+      completed_diagnostic_count: completedDiagnosticCount,
       allowed_diagnostic_tools: toolDescriptions(ALLOWED_DIAGNOSTIC_TOOLS),
       allowed_remediation_tools: toolDescriptions(ALLOWED_REMEDIATION_TOOLS),
     });
@@ -470,6 +481,8 @@ async function runPlanningStage(
       inputSummary: {
         hypothesis_confidence: hypothesis.hypothesis_confidence,
         blocked_tool_count: state.issue.blocked_tools.length,
+        completed_diagnostic_count: completedDiagnosticCount,
+        recent_action_count: recentActions.length,
       },
       output: parsed as unknown as Record<string, unknown>,
       startedAt,
