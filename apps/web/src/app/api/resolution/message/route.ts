@@ -32,13 +32,6 @@ export async function POST(request: Request) {
       metadata: {},
     });
 
-    await supabase
-      .from("smon_issue_actions")
-      .update({ status: "rejected", updated_at: new Date().toISOString() })
-      .eq("issue_id", resolutionId)
-      .eq("user_id", user.id)
-      .eq("status", "proposed");
-
     await updateIssue(supabase, user.id, resolutionId, { status: "running" });
 
     await queueIssueRun(supabase, user.id, resolutionId, "user_message", { message: trimmed });
