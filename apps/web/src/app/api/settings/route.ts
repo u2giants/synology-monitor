@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { clearAiSettingsCache } from "@/lib/server/ai-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -65,14 +66,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
     }
 
-    const { error } = await supabase.from("smon_ai_settings").upsert({
-      key,
-      value: value.trim(),
-      updated_at: new Date().toISOString(),
-    });
+    const { error } = await supabase.from("smon_ai_settings").upsert(
+      { key, value: value.trim(), updated_at: new Date().toISOString() },
+      { onConflict: "key" },
+    );
 
     if (error) throw error;
 
+    clearAiSettingsCache();
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

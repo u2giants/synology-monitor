@@ -1,21 +1,60 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNasUnits } from "@/hooks/use-nas-units";
-import { useRealtimeAlerts } from "@/hooks/use-realtime-alerts";
 import { useMetrics } from "@/hooks/use-metrics";
 import { NasStatusCard } from "@/components/dashboard/nas-status-card";
-import { AlertList, AlertDetailModal } from "@/components/dashboard/alert-list";
 import { MetricGauge } from "@/components/dashboard/metric-gauge";
 import { ProblemsSection } from "@/components/dashboard/problems-section";
-import { Activity, AlertTriangle, HardDrive, Shield } from "lucide-react";
+import { Activity, AlertTriangle, Bot, HardDrive, Shield } from "lucide-react";
 import Link from "next/link";
-import type { Alert } from "@synology-monitor/shared";
+import { createClient } from "@/lib/supabase/client";
+import { cn, timeAgo } from "@/lib/utils";
+
+interface ActiveIssue {
+  id: string;
+  title: string;
+  severity: "critical" | "warning" | "info";
+  status: string;
+  summary: string;
+  affected_nas: string[];
+  updated_at: string;
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  open: "Open",
+  running: "Working",
+  waiting_on_user: "Waiting on you",
+  waiting_for_approval: "Awaiting approval",
+  resolved: "Resolved",
+  stuck: "Blocked",
+  cancelled: "Cancelled",
+};
+
+function useActiveIssues() {
+  const [issues, setIssues] = useState<ActiveIssue[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const supabase = createClient();
+    supabase
+      .from("smon_issues")
+      .select("id, title, severity, status, summary, affected_nas, updated_at")
+      .not("status", "in", "(resolved,cancelled)")
+      .order("updated_at", { ascending: false })
+      .limit(20)
+      .then(({ data }) => {
+        setIssues((data ?? []) as ActiveIssue[]);
+        setLoading(false);
+      });
+  }, []);
+
+  return { issues, loading };
+}
 
 export default function OverviewPage() {
   const { units, loading: unitsLoading } = useNasUnits();
-  const { alerts, loading: alertsLoading } = useRealtimeAlerts();
-  const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
+  const { issues, loading: issuesLoading } = useActiveIssues();
 
   const firstNasId = units[0]?.id ?? null;
   const { series } = useMetrics(
@@ -24,8 +63,8 @@ export default function OverviewPage() {
     "1h"
   );
 
-  const criticalCount = alerts.filter((a) => a.severity === "critical").length;
-  const warningCount = alerts.filter((a) => a.severity === "warning").length;
+  const criticalCount = issues.filter((i) => i.severity === "critical").length;
+  const warningCount = issues.filter((i) => i.severity === "warning").length;
 
   // Get latest metric values
   const latestCpu = series.find((s) => s.type === "cpu_usage")?.data?.at(-1)?.value ?? 0;
@@ -45,11 +84,10 @@ export default function OverviewPage() {
         />
         <StatCard
           icon={<AlertTriangle className="h-5 w-5 text-critical" />}
-          label="Critical Alerts"
+          label="Open Issues"
           value={criticalCount.toString()}
           detail={`${warningCount} warnings`}
           highlight={criticalCount > 0}
-          onClick={alerts.length > 0 ? () => {/* navigate handled by alert click */} : undefined}
         />
         <StatCard
           icon={<Activity className="h-5 w-5 text-primary" />}
@@ -96,38 +134,67 @@ export default function OverviewPage() {
           </div>
         </section>
 
-        {/* Alerts */}
+        {/* Active Issues */}
         <section>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold">Active Alerts</h2>
-            {alerts.length > 0 && (
-              <Link 
-                href="/sync-triage" 
-                className="text-sm text-primary hover:underline flex items-center gap-1"
-              >
-                View in Sync Triage
-              </Link>
-            )}
+            <h2 className="text-lg font-semibold">Active Issues</h2>
+            <Link
+              href="/assistant"
+              className="text-sm text-primary hover:underline flex items-center gap-1"
+            >
+              Open Issue Agent
+            </Link>
           </div>
           <div className="rounded-lg border border-border p-4">
-            {alertsLoading ? (
+            {issuesLoading ? (
               <div className="text-sm text-muted-foreground">Loading...</div>
+            ) : issues.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-6 text-muted-foreground">
+                <Bot className="h-7 w-7 mb-2 opacity-40" />
+                <p className="text-sm">No open issue threads. Run detection on the dashboard.</p>
+              </div>
             ) : (
-              <AlertList
-                alerts={alerts}
-                limit={15}
-                onAlertClick={setSelectedAlert}
-              />
+              <div className="space-y-2">
+                {issues.slice(0, 12).map((issue) => {
+                  const severityClass = issue.severity === "critical"
+                    ? "border-critical/30 bg-critical/5"
+                    : issue.severity === "warning"
+                      ? "border-warning/30 bg-warning/5"
+                      : "border-border bg-background";
+                  return (
+                    <Link
+                      key={issue.id}
+                      href={`/assistant?resolutionId=${issue.id}`}
+                      className={cn(
+                        "block rounded-md border p-3 hover:opacity-80 transition-opacity",
+                        severityClass
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium truncate">{issue.title}</p>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {timeAgo(issue.updated_at)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                        <span>{STATUS_LABELS[issue.status] ?? issue.status}</span>
+                        {issue.affected_nas.length > 0 && (
+                          <span>· {issue.affected_nas.join(", ")}</span>
+                        )}
+                      </div>
+                    </Link>
+                  );
+                })}
+                {issues.length > 12 && (
+                  <div className="text-center text-xs text-muted-foreground pt-1">
+                    Showing 12 of {issues.length} active issues
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </section>
       </div>
-
-      {/* Alert Detail Modal */}
-      <AlertDetailModal 
-        alert={selectedAlert} 
-        onClose={() => setSelectedAlert(null)} 
-      />
     </div>
   );
 }

@@ -16,6 +16,8 @@ interface ContainerData {
   uptime_seconds: number;
   recorded_at: string;
   nas_name: string;
+  io_read_bps?: number;
+  io_write_bps?: number;
 }
 
 export default function DockerPage() {
@@ -23,26 +25,47 @@ export default function DockerPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function fetch() {
+    async function fetchData() {
       const supabase = createClient();
+      const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
-      const { data, error } = await supabase
-        .from("smon_container_status")
-        .select("*, smon_nas_units!inner(name)")
-        .order("recorded_at", { ascending: false })
-        .limit(50);
+      const [statusResult, ioResult] = await Promise.all([
+        supabase
+          .from("smon_container_status")
+          .select("*, smon_nas_units!inner(name)")
+          .order("recorded_at", { ascending: false })
+          .limit(50),
+        supabase
+          .from("smon_container_io")
+          .select("nas_id, container_name, read_bps, write_bps, captured_at")
+          .gte("captured_at", since30m)
+          .order("captured_at", { ascending: false })
+          .limit(200),
+      ]);
 
-      if (!error && data) {
+      if (!statusResult.error && statusResult.data) {
+        // Build latest I/O map: key = nas_id + container_name
+        const ioMap = new Map<string, { read_bps: number; write_bps: number }>();
+        for (const row of ioResult.data ?? []) {
+          const key = `${row.nas_id}-${row.container_name}`;
+          if (!ioMap.has(key)) {
+            ioMap.set(key, { read_bps: row.read_bps ?? 0, write_bps: row.write_bps ?? 0 });
+          }
+        }
+
         // Dedupe by container_name (keep latest)
         const seen = new Set<string>();
         const deduped: ContainerData[] = [];
-        for (const row of data) {
+        for (const row of statusResult.data) {
           const key = `${row.nas_id}-${row.container_name}`;
           if (!seen.has(key)) {
             seen.add(key);
+            const io = ioMap.get(key);
             deduped.push({
               ...row,
               nas_name: (row.smon_nas_units as any)?.name ?? "Unknown",
+              io_read_bps: io?.read_bps,
+              io_write_bps: io?.write_bps,
             });
           }
         }
@@ -50,7 +73,7 @@ export default function DockerPage() {
       }
       setLoading(false);
     }
-    fetch();
+    fetchData();
   }, []);
 
   const statusIcons: Record<string, typeof Play> = {
@@ -109,14 +132,24 @@ export default function DockerPage() {
 
                 <p className="text-xs text-muted-foreground mb-3 truncate">{ct.image}</p>
 
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="grid grid-cols-4 gap-2 text-center">
                   <div>
-                    <p className="text-xs text-muted-foreground">CPU</p>
-                    <p className="font-mono text-sm">{ct.cpu_percent.toFixed(1)}%</p>
+                    <p className="text-xs text-muted-foreground">Read I/O</p>
+                    <p className="font-mono text-sm">
+                      {ct.io_read_bps != null ? formatBytes(ct.io_read_bps) + "/s" : "—"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Write I/O</p>
+                    <p className="font-mono text-sm">
+                      {ct.io_write_bps != null ? formatBytes(ct.io_write_bps) + "/s" : "—"}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Memory</p>
-                    <p className="font-mono text-sm">{formatBytes(ct.memory_bytes)}</p>
+                    <p className={cn("font-mono text-sm", ct.memory_bytes === 0 ? "text-muted-foreground" : "")}>
+                      {ct.memory_bytes > 0 ? formatBytes(ct.memory_bytes) : "—"}
+                    </p>
                   </div>
                   <div>
                     <p className="text-xs text-muted-foreground">Uptime</p>

@@ -9,6 +9,11 @@ let cachedSettings: Record<string, string> | null = null;
 let cacheTime = 0;
 const CACHE_TTL = 60_000; // 1 minute
 
+export function clearAiSettingsCache() {
+  cachedSettings = null;
+  cacheTime = 0;
+}
+
 async function loadSettings(): Promise<Record<string, string>> {
   if (cachedSettings && Date.now() - cacheTime < CACHE_TTL) {
     return cachedSettings;

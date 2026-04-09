@@ -31,6 +31,13 @@ type LogRow = {
   ingested_at: string;
 };
 
+type MetricRow = {
+  nas_id: string | null;
+  type: string;
+  value: number;
+  recorded_at: string;
+};
+
 type SignalGroup = {
   fingerprint: string;
   family: string;
@@ -84,10 +91,21 @@ function isActionableInfoLog(message: string) {
   );
 }
 
+async function fetchNasNameMap(supabase: SupabaseClient): Promise<Map<string, string>> {
+  const { data } = await supabase.from("smon_nas_units").select("id, name, hostname");
+  const map = new Map<string, string>();
+  for (const row of data ?? []) {
+    const name = (row.name || row.hostname || row.id) as string;
+    map.set(row.id as string, name);
+  }
+  return map;
+}
+
 async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: number) {
   const since = new Date(Date.now() - lookbackMinutes * 60 * 1000).toISOString();
+  const sinceMetrics = new Date(Date.now() - Math.min(lookbackMinutes, 120) * 60 * 1000).toISOString();
 
-  const [alertsResult, errorLogsResult, driveInfoResult] = await Promise.all([
+  const [alertsResult, errorLogsResult, driveInfoResult, metricsResult] = await Promise.all([
     supabase
       .from("smon_alerts")
       .select("id, nas_id, source, severity, title, message, details, created_at")
@@ -108,6 +126,15 @@ async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: 
       .eq("source", "drive_server")
       .order("ingested_at", { ascending: false })
       .limit(4000),
+
+    supabase
+      .from("smon_metrics")
+      .select("nas_id, type, value, recorded_at")
+      .eq("type", "cpu_iowait_pct")
+      .gte("recorded_at", sinceMetrics)
+      .gte("value", 15)
+      .order("recorded_at", { ascending: false })
+      .limit(200),
   ]);
 
   const combinedLogs = [
@@ -120,6 +147,7 @@ async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: 
   return {
     alerts: (alertsResult.data ?? []) as AlertRow[],
     logs: dedupedLogs,
+    metrics: (metricsResult.data ?? []) as MetricRow[],
   };
 }
 
@@ -353,6 +381,47 @@ function buildLogGroups(logs: LogRow[]) {
     });
 }
 
+function buildMetricsGroups(metrics: MetricRow[], nasNameMap: Map<string, string>) {
+  const groups = new Map<string, SignalGroup>();
+
+  // Group iowait readings by nas_id
+  const byNas = new Map<string, { values: number[]; nasName: string }>();
+  for (const m of metrics) {
+    if (!m.nas_id) continue;
+    const nasName = nasNameMap.get(m.nas_id) ?? m.nas_id;
+    const existing = byNas.get(m.nas_id);
+    if (existing) {
+      existing.values.push(m.value);
+    } else {
+      byNas.set(m.nas_id, { values: [m.value], nasName });
+    }
+  }
+
+  for (const [nasId, { values, nasName }] of byNas) {
+    if (values.length < 3) continue; // need at least 3 readings
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    const max = Math.max(...values);
+    if (avg < 20) continue; // sustained average below threshold — skip
+
+    const severity: IssueSeverity = avg >= 40 ? "critical" : "warning";
+    const key = `detected:io-pressure:${nasId}`;
+    upsertGroup(groups, key, {
+      family: "io-pressure",
+      title: `Sustained disk I/O pressure on ${nasName}`,
+      summary: `${values.length} readings show cpu_iowait averaging ${avg.toFixed(1)}% (peak ${max.toFixed(1)}%) on ${nasName}. High I/O wait blocks processes, degrades ShareSync performance, and can destabilize DSM WebAPI registration.`,
+      severity,
+      nasId: nasName,
+      scope: nasName,
+      evidence: {
+        title: "High cpu_iowait_pct samples",
+        detail: `avg=${avg.toFixed(1)}%, peak=${max.toFixed(1)}%, samples=${values.length}`,
+      },
+    });
+  }
+
+  return Array.from(groups.values());
+}
+
 function mergeGroupsIntoIssues(groups: SignalGroup[]): DetectedIssue[] {
   return groups
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.count - a.count)
@@ -372,10 +441,14 @@ export async function runIssueDetection(
   userId: string,
   lookbackMinutes: number
 ) {
-  const context = await fetchDetectionContext(supabase, lookbackMinutes);
+  const [context, nasNameMap] = await Promise.all([
+    fetchDetectionContext(supabase, lookbackMinutes),
+    fetchNasNameMap(supabase),
+  ]);
   const issues = mergeGroupsIntoIssues([
     ...buildAlertGroups(context.alerts),
     ...buildLogGroups(context.logs),
+    ...buildMetricsGroups(context.metrics, nasNameMap),
   ]);
 
   const createdIds: string[] = [];
