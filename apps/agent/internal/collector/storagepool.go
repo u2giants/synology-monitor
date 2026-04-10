@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/synology-monitor/agent/internal/dsm"
@@ -35,6 +36,13 @@ type StoragePoolCollector struct {
 	nasID        string
 	mdstatTick   time.Duration
 	snapshotTick time.Duration
+
+	// prevStates tracks the last reported health state per md device so we only
+	// emit a log/alert when the state actually changes (healthy→degraded or the
+	// reverse).  Without this the collector floods smon_logs with an identical
+	// "RAID degraded" entry every 60 s for as long as a drive is missing.
+	mu         sync.Mutex
+	prevStates map[string]string // device → "healthy" | "degraded"
 }
 
 // NewStoragePoolCollector creates a StoragePoolCollector with sensible defaults.
@@ -45,6 +53,7 @@ func NewStoragePoolCollector(dsmClient *dsm.Client, s *sender.Sender, nasID stri
 		nasID:        nasID,
 		mdstatTick:   60 * time.Second,
 		snapshotTick: 5 * time.Minute,
+		prevStates:   make(map[string]string),
 	}
 }
 
@@ -181,17 +190,52 @@ func (c *StoragePoolCollector) collectMdstat() {
 			})
 		}
 
-		// Log degraded arrays regardless of active operation
+		// Emit a log+alert only when the health state *changes*, not on every
+		// tick.  Logging every 60 s floods smon_logs with identical entries and
+		// makes triage look like the problem is ongoing long after it resolved.
+		currentState := "healthy"
 		if dev.state == "degraded" {
+			currentState = "degraded"
+		}
+
+		c.mu.Lock()
+		prev := c.prevStates[dev.name]
+		c.prevStates[dev.name] = currentState
+		c.mu.Unlock()
+
+		if currentState == "degraded" && prev != "degraded" {
+			// Transition healthy → degraded (or first observation): alert once.
 			c.sender.QueueLog(sender.LogPayload{
 				NasID:    c.nasID,
 				Source:   "storage",
 				Severity: "error",
-				Message:  fmt.Sprintf("RAID array %s is degraded (type=%s health=%s)", dev.name, dev.raidType, dev.health),
+				Message:  fmt.Sprintf("RAID array %s became degraded (type=%s health=%s)", dev.name, dev.raidType, dev.health),
 				Metadata: map[string]interface{}{
 					"device":    dev.name,
 					"raid_type": dev.raidType,
-					"state":     dev.state,
+					"state":     "degraded",
+					"health":    dev.health,
+				},
+				LoggedAt: now,
+			})
+			c.sender.QueueAlert(sender.AlertPayload{
+				NasID:    c.nasID,
+				Severity: "error",
+				Source:   "storage",
+				Title:    fmt.Sprintf("RAID array %s degraded", dev.name),
+				Message:  fmt.Sprintf("type=%s health=%s — one or more members missing or failed", dev.raidType, dev.health),
+			})
+		} else if currentState == "healthy" && prev == "degraded" {
+			// Transition degraded → healthy: log recovery.
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "storage",
+				Severity: "info",
+				Message:  fmt.Sprintf("RAID array %s recovered (type=%s health=%s)", dev.name, dev.raidType, dev.health),
+				Metadata: map[string]interface{}{
+					"device":    dev.name,
+					"raid_type": dev.raidType,
+					"state":     "healthy",
 					"health":    dev.health,
 				},
 				LoggedAt: now,

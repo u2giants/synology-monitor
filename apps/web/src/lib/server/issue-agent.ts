@@ -201,6 +201,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
   const [
     alertsResult,
     logsResult,
+    storageLogsResult,
     processResult,
     diskResult,
     scheduledTasksResult,
@@ -209,6 +210,8 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     containerIOResult,
     syncTasksResult,
     ioMetricsResult,
+    storageSnapshotsResult,
+    dsmErrorsResult,
   ] = await Promise.all([
     supabase
       .from("smon_alerts")
@@ -224,6 +227,17 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .in("severity", ["critical", "error", "warning"])
       .order("ingested_at", { ascending: false })
       .limit(80),
+
+    // Storage-specific logs with a 48h window so RAID events that occurred
+    // more than 6h ago (e.g. a degradation that has since recovered) remain
+    // visible to the agent for root-cause tracing.
+    supabase
+      .from("smon_logs")
+      .select("id, nas_id, source, severity, message, metadata, ingested_at")
+      .gte("ingested_at", since48h)
+      .in("source", ["storage", "share_config", "share_quota", "share_health"])
+      .order("ingested_at", { ascending: false })
+      .limit(60),
 
     supabase
       .from("smon_process_snapshots")
@@ -286,6 +300,25 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       ])
       .order("recorded_at", { ascending: false })
       .limit(40),
+
+    // Structured DSM volume/RAID state — the authoritative source for storage
+    // health.  Includes status (normal/degraded/crashed), raid_type, and disk
+    // member details.  48h window so recovery context is preserved.
+    supabase
+      .from("smon_storage_snapshots")
+      .select("nas_id, volume_id, volume_path, total_bytes, used_bytes, status, raid_type, disks, recorded_at")
+      .gte("recorded_at", since48h)
+      .order("recorded_at", { ascending: false })
+      .limit(20),
+
+    // DSM Log Center errors — warning/error events from the NAS OS itself,
+    // separate from the high-volume smon_logs stream.
+    supabase
+      .from("smon_dsm_errors")
+      .select("nas_id, level, message, who, log_name, logged_at, created_at")
+      .gte("logged_at", since48h)
+      .order("logged_at", { ascending: false })
+      .limit(30),
   ]);
 
   const telemetry_errors: string[] = [];
@@ -297,9 +330,17 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
   });
 
+  // Storage logs use the same NAS filter but come from a 48h window
+  const storage_logs = collectResult("storage_logs", storageLogsResult, telemetry_errors).filter((row) => {
+    if (!nasFilter?.length) return true;
+    const nasValue = typeof row.nas_id === "string" ? row.nas_id : "";
+    return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
+  });
+
   return {
     alerts,
     logs,
+    storage_logs,
     telemetry_errors,
     top_processes: collectResult("top_processes", processResult, telemetry_errors),
     disk_io: collectResult("disk_io", diskResult, telemetry_errors),
@@ -309,6 +350,8 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     container_io_top: collectResult("container_io_top", containerIOResult, telemetry_errors),
     sharesync_tasks: dedupeLatestByField(collectResult("sharesync_tasks", syncTasksResult, telemetry_errors), "task_id"),
     io_pressure_metrics: collectResult("io_pressure_metrics", ioMetricsResult, telemetry_errors),
+    storage_snapshots: dedupeLatestByField(collectResult("storage_snapshots", storageSnapshotsResult, telemetry_errors), "volume_id"),
+    dsm_errors: collectResult("dsm_errors", dsmErrorsResult, telemetry_errors),
   };
 }
 
