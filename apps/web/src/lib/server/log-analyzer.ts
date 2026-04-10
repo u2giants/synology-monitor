@@ -34,6 +34,12 @@ export interface AnalysisResult {
   summary: string;
 }
 
+export type AnalysisFailureReason =
+  | "no_events"
+  | "minimax_error"
+  | "parse_error"
+  | "db_error";
+
 interface MinimaxAnalysisResponse {
   problems: {
     id: string;
@@ -104,14 +110,12 @@ async function fetchAnalysisData(lookbackMinutes: number) {
     securityResult,
     driveLogsResult,
   ] = await Promise.all([
-    // Active alerts
     supabase
       .from("smon_alerts")
       .select("*")
       .eq("status", "active")
       .gte("created_at", since),
 
-    // Recent error/warning logs
     supabase
       .from("smon_logs")
       .select("*")
@@ -119,14 +123,12 @@ async function fetchAnalysisData(lookbackMinutes: number) {
       .gte("ingested_at", since)
       .limit(200),
 
-    // Recent security events
     supabase
       .from("smon_security_events")
       .select("*")
       .gte("created_at", since)
       .limit(50),
 
-    // Drive/sync logs
     supabase
       .from("smon_logs")
       .select("*")
@@ -174,6 +176,38 @@ function formatDataForPrompt(
 }
 
 /**
+ * Store a failed analysis run in the database.
+ * Called when Minimax fails so failures are visible in the run history.
+ */
+async function storeFailedRun(
+  errorMessage: string,
+  lookbackMinutes: number
+): Promise<string | null> {
+  const supabase = await createSupabaseServerClient();
+
+  const { data: runData, error: runError } = await supabase
+    .from("smon_analysis_runs")
+    .insert({
+      status: "failed",
+      error_message: errorMessage,
+      summary: "Analysis failed",
+      problem_count: 0,
+      model: "MiniMax-M2.7",
+      tokens_used: 0,
+      lookback_minutes: lookbackMinutes,
+    })
+    .select("id")
+    .single();
+
+  if (runError || !runData) {
+    console.error("[log-analyzer] Failed to store failed run:", runError);
+    return null;
+  }
+
+  return runData.id as string;
+}
+
+/**
  * Store analysis results in database
  */
 async function storeAnalysisResult(
@@ -183,10 +217,10 @@ async function storeAnalysisResult(
 ): Promise<string | null> {
   const supabase = await createSupabaseServerClient();
 
-  // Create analysis run
   const { data: runData, error: runError } = await supabase
     .from("smon_analysis_runs")
     .insert({
+      status: "success",
       summary: result.summary,
       problem_count: result.problems.length,
       model: "MiniMax-M2.7",
@@ -201,9 +235,8 @@ async function storeAnalysisResult(
     return null;
   }
 
-  const runId = runData.id;
+  const runId = runData.id as string;
 
-  // Insert problems
   if (result.problems.length > 0) {
     const problemsToInsert = result.problems.map((problem) => ({
       analysis_run_id: runId,
@@ -231,7 +264,6 @@ async function storeAnalysisResult(
     }
   }
 
-  // Auto-resolve old problems that don't appear in new analysis
   await autoResolveOldProblems(supabase, result.problems, runId);
 
   return runId;
@@ -245,7 +277,6 @@ async function autoResolveOldProblems(
   currentProblems: AnalyzedProblem[],
   currentRunId: string
 ) {
-  // Get all open problems from previous runs
   const previousOpenProblems = await supabase
     .from("smon_analyzed_problems")
     .select("id, slug, raw_event_ids")
@@ -259,12 +290,10 @@ async function autoResolveOldProblems(
   );
 
   for (const oldProblem of previousOpenProblems.data) {
-    // Check if any of the old problem's events are still present
-    const hasOverlappingEvents = oldProblem.raw_event_ids?.some(
-      (id: string) => currentEventIds.has(id)
+    const hasOverlappingEvents = (oldProblem.raw_event_ids as string[] | null)?.some(
+      (id) => currentEventIds.has(id)
     );
 
-    // If no overlapping events, auto-resolve
     if (!hasOverlappingEvents) {
       await supabase
         .from("smon_analyzed_problems")
@@ -286,9 +315,9 @@ export async function analyzeRecentLogs(
   runId: string | null;
   result: AnalysisResult | null;
   error?: string;
+  failureReason?: AnalysisFailureReason;
 }> {
   try {
-    // Fetch data
     const data = await fetchAnalysisData(lookbackMinutes);
 
     const totalItems =
@@ -301,17 +330,12 @@ export async function analyzeRecentLogs(
       return {
         runId: null,
         result: { problems: [], summary: "No events found in the specified time range." },
+        failureReason: "no_events",
       };
     }
 
-    // Build prompt
-    const userPrompt = `Analyze the following data from the Synology NAS monitoring system:
+    const userPrompt = `Analyze the following data from the Synology NAS monitoring system:\n\n${formatDataForPrompt(data.alerts, data.logs, data.securityEvents, data.driveLogs)}\n\nTotal: ${totalItems} events to analyze. Identify distinct root causes and group related events.`;
 
-${formatDataForPrompt(data.alerts, data.logs, data.securityEvents, data.driveLogs)}
-
-Total: ${totalItems} events to analyze. Identify distinct root causes and group related events.`;
-
-    // Call Minimax
     const { data: minimaxData, error: minimaxError } = await callMinimaxJSON<MinimaxAnalysisResponse>(
       SYSTEM_PROMPT,
       userPrompt
@@ -319,14 +343,16 @@ Total: ${totalItems} events to analyze. Identify distinct root causes and group 
 
     if (minimaxError || !minimaxData) {
       console.error("[log-analyzer] Minimax call failed:", minimaxError);
+      const errorMsg = minimaxError || "Minimax returned no data";
+      await storeFailedRun(errorMsg, lookbackMinutes);
       return {
         runId: null,
         result: null,
-        error: minimaxError || "Minimax returned no data",
+        error: errorMsg,
+        failureReason: "minimax_error",
       };
     }
 
-    // Format result
     const result: AnalysisResult = {
       problems: minimaxData.problems.map((p) => ({
         id: p.id,
@@ -347,14 +373,22 @@ Total: ${totalItems} events to analyze. Identify distinct root causes and group 
       summary: minimaxData.summary || "Analysis complete.",
     };
 
-    // Store in database
     const runId = await storeAnalysisResult(result, lookbackMinutes, 0);
+
+    if (!runId) {
+      return {
+        runId: null,
+        result,
+        error: "Analysis completed but could not be saved to database",
+        failureReason: "db_error",
+      };
+    }
 
     return { runId, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[log-analyzer] Analysis failed:", message);
-    return { runId: null, result: null, error: message };
+    return { runId: null, result: null, error: message, failureReason: "minimax_error" };
   }
 }
 

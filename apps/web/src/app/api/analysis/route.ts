@@ -1,17 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
-import { analyzeRecentLogs, getLatestAnalysis, getAnalysisById } from "@/lib/server/log-analyzer";
+import {
+  analyzeRecentLogs,
+  getLatestAnalysis,
+  getAnalysisById,
+  type AnalysisFailureReason,
+} from "@/lib/server/log-analyzer";
 
-// POST /api/analysis - Trigger a new analysis run
+function getUserMessage(failureReason: AnalysisFailureReason | undefined): string {
+  switch (failureReason) {
+    case "minimax_error":
+      return "The AI model could not be reached. Check server logs for details.";
+    case "parse_error":
+      return "The AI model returned an unexpected response format. Check server logs for details.";
+    case "db_error":
+      return "Analysis completed but could not be saved. Check server logs for details.";
+    default:
+      return "An unexpected error occurred. Check server logs for details.";
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const lookbackMinutes = body.lookbackMinutes || 60;
+    const lookbackMinutes = (body as { lookbackMinutes?: number }).lookbackMinutes || 60;
 
     const result = await analyzeRecentLogs(lookbackMinutes);
 
+    // No events is a normal/expected condition — return 200
+    if (result.failureReason === "no_events") {
+      return NextResponse.json({
+        runId: null,
+        result: { problems: [], summary: "No events found in the specified time range." },
+        noEvents: true,
+      });
+    }
+
+    // Real failures — return 500 with structured error info
     if (result.error) {
       return NextResponse.json(
-        { error: result.error },
+        {
+          error: result.error,
+          failureReason: result.failureReason ?? "unknown",
+          userMessage: getUserMessage(result.failureReason),
+        },
         { status: 500 }
       );
     }
@@ -23,13 +54,16 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("[POST /api/analysis] Error:", error);
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        error: "Internal server error",
+        failureReason: "unknown",
+        userMessage: "An unexpected error occurred. Check server logs for details.",
+      },
       { status: 500 }
     );
   }
 }
 
-// GET /api/analysis - Get the latest analysis or a specific one
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -46,7 +80,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json(result);
     }
 
-    // Return latest analysis
     const result = await getLatestAnalysis();
     return NextResponse.json(result);
   } catch (error) {
