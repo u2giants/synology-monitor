@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import {
+  getExtractorModel,
   getExplainerModel,
   getHypothesisModel,
   getPlannerModel,
@@ -290,4 +291,84 @@ ${JSON.stringify(input, null, 2)}`;
 
   const parsed = await callStageModel<VerificationResult>(model, prompt);
   return { model, parsed };
+}
+
+export type LogCompressionFact = {
+  source: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  detail: string;
+  is_anomaly: boolean;
+};
+
+/**
+ * Runs the extractor model (cheap/fast) over raw log rows from high-volume
+ * sources. Returns compressed fact summaries so the expensive hypothesis and
+ * planner models receive signal, not noise.
+ *
+ * Design: called once per tick, keys facts by source so they upsert in place.
+ * At Mistral Small / Llama Scout prices this costs ~$0.001 per run on 80 rows.
+ */
+export async function compressLogsToFacts(input: {
+  logs: Array<Record<string, unknown>>;
+  audit_logs: Array<Record<string, unknown>>;
+  nas_context: string;
+}): Promise<{ model: string; facts: LogCompressionFact[] }> {
+  const allLogs = [...(input.logs ?? []), ...(input.audit_logs ?? [])];
+  if (allLogs.length === 0) return { model: "none", facts: [] };
+
+  const model = await getExtractorModel();
+
+  // Group by source so the model has structure to work with
+  const bySource: Record<string, Array<Record<string, unknown>>> = {};
+  for (const row of allLogs) {
+    const src = String(row.source ?? "unknown");
+    (bySource[src] ??= []).push(row);
+  }
+
+  // Slim each row to message + severity + timestamp only — no metadata blobs
+  const slimmed: Record<string, Array<{ t: string; sev: string; msg: string }>> = {};
+  for (const [src, rows] of Object.entries(bySource)) {
+    slimmed[src] = rows.slice(0, 40).map((r) => ({
+      t: String(r.ingested_at ?? r.logged_at ?? ""),
+      sev: String(r.severity ?? "info"),
+      msg: String(r.message ?? "").slice(0, 200),
+    }));
+  }
+
+  const prompt = `You are a log analyst for a Synology NAS monitoring system (NAS: ${input.nas_context}).
+
+You receive grouped log entries from multiple sources. For each source:
+1. Identify the dominant recurring pattern (1 sentence — this is the baseline noise).
+2. Flag ONLY entries that break the pattern as anomalies. An anomaly must meet at least one criterion:
+   - Appears for the first time (not a repeat of earlier messages in this batch)
+   - Contains a specific file path, PID, username, IP, or API name not seen before
+   - Occurs at a timestamp that correlates with another source's anomaly
+   - Indicates a state change (service went from ok → error, or an action was taken)
+
+Return JSON only:
+{
+  "facts": [
+    {
+      "source": "system",
+      "severity": "info|warning|critical",
+      "title": "short title (max 80 chars)",
+      "detail": "1-2 sentence summary. For anomalies: include exact timestamp, user, IP, or process name from the log.",
+      "is_anomaly": true
+    }
+  ]
+}
+
+Rules:
+- One fact per source for the baseline pattern summary (is_anomaly: false).
+- One fact per distinct anomaly. Do not merge different anomalies into one.
+- If a source has only recurring noise with zero anomalies, emit the pattern fact only.
+- Do not invent details not present in the logs.
+- Do not emit facts for sources with fewer than 2 entries unless the single entry is clearly anomalous.
+
+Log data:
+${JSON.stringify(slimmed, null, 2)}`;
+
+  const parsed = await callStageModel<{ facts: LogCompressionFact[] }>(model, prompt);
+  return { model, facts: Array.isArray(parsed.facts) ? parsed.facts : [] };
 }

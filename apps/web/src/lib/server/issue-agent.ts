@@ -15,6 +15,7 @@ import { listCapabilityState, upsertCapabilityState } from "@/lib/server/capabil
 import { attachFactToIssue, deriveFactsFromTelemetry, listIssueFacts, upsertFact } from "@/lib/server/fact-store";
 import { recordIssueStageRun } from "@/lib/server/issue-stage-store";
 import {
+  compressLogsToFacts,
   explainIssueState,
   planIssueRemediation,
   planIssueNextStep,
@@ -173,11 +174,48 @@ async function syncIssueFacts(
   telemetry: Record<string, unknown>,
 ) {
   const startedAt = new Date().toISOString();
-  const derivedFacts = deriveFactsFromTelemetry(state.issue, telemetry);
 
+  // 1. Deterministic rule-based facts (thresholds, status checks)
+  const derivedFacts = deriveFactsFromTelemetry(state.issue, telemetry);
   for (const fact of derivedFacts) {
     const factId = await upsertFact(supabase, fact);
     await attachFactToIssue(supabase, userId, state.issue.id, factId);
+  }
+
+  // 2. Model-driven log compression (cheap extractor model).
+  //    Turns raw log rows into pattern summaries and anomaly facts so the
+  //    expensive hypothesis/planner models never see the raw noise.
+  const nasContext = state.issue.affected_nas[0] ?? "unknown";
+  let compressedFactCount = 0;
+  let compressorModel = "none";
+  try {
+    const { model, facts: logFacts } = await compressLogsToFacts({
+      logs: Array.isArray(telemetry.logs) ? telemetry.logs as Array<Record<string, unknown>> : [],
+      audit_logs: Array.isArray(telemetry.audit_logs) ? telemetry.audit_logs as Array<Record<string, unknown>> : [],
+      nas_context: nasContext,
+    });
+    compressorModel = model;
+
+    for (const lf of logFacts) {
+      const factId = await upsertFact(supabase, {
+        nasId: nasContext,
+        factType: lf.is_anomaly ? "log_anomaly" : "log_pattern",
+        // Key by source so pattern facts upsert in place each tick;
+        // anomaly keys include title hash to preserve distinct events.
+        factKey: lf.is_anomaly
+          ? `log-anomaly:${nasContext}:${lf.source}:${lf.title.slice(0, 60).replace(/\s+/g, "-").toLowerCase()}`
+          : `log-pattern:${nasContext}:${lf.source}`,
+        severity: lf.severity,
+        title: lf.title,
+        detail: lf.detail,
+        value: { source: lf.source, is_anomaly: lf.is_anomaly },
+      });
+      await attachFactToIssue(supabase, userId, state.issue.id, factId);
+      compressedFactCount++;
+    }
+  } catch (err) {
+    // Non-fatal — deterministic facts still available
+    console.error("[syncIssueFacts] log compressor failed:", err);
   }
 
   const facts = await listIssueFacts(supabase, userId, state.issue.id);
@@ -185,8 +223,8 @@ async function syncIssueFacts(
     stageKey: "fact_refresh",
     status: "completed",
     modelTier: "deterministic",
-    inputSummary: { derived_fact_count: derivedFacts.length },
-    output: { attached_fact_count: facts.length },
+    inputSummary: { derived_fact_count: derivedFacts.length, compressed_log_fact_count: compressedFactCount },
+    output: { attached_fact_count: facts.length, compressor_model: compressorModel },
     startedAt,
   });
   return facts;
@@ -846,8 +884,14 @@ async function refreshIssueContext(
     syncTelemetryCapabilities(supabase, userId, state.issue, telemetry),
   ]);
 
+  // Strip raw log arrays — their signal is now captured in normalized_facts
+  // as compressed pattern/anomaly facts by the extractor model. Passing raw
+  // rows to the hypothesis and planner models wastes context and adds noise.
+  const { logs: _logs, audit_logs: _auditLogs, ...telemetryWithoutLogs } = telemetry;
+  void _logs; void _auditLogs;
+
   return {
-    ...telemetry,
+    ...telemetryWithoutLogs,
     normalized_facts: facts.map((fact) => ({
       fact_type: fact.fact_type,
       severity: fact.severity,
