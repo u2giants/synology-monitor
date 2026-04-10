@@ -228,20 +228,27 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("ingested_at", { ascending: false })
       .limit(80),
 
-    // Storage-specific logs with a 48h window so RAID events that occurred
-    // more than 6h ago (e.g. a degradation that has since recovered) remain
-    // visible to the agent for root-cause tracing.
+    // Storage + system logs with a 48h window.
+    // - storage/share_* sources: catch RAID/share events that occurred and
+    //   recovered more than 6h ago.
+    // - system source (all severities including info): captures SSH logins,
+    //   DSM API authentications, and invoked errors that are the triggering
+    //   events for anomalous host-level processes. These are logged at info
+    //   level so they are invisible to the 6h warning/error-only query above.
     supabase
       .from("smon_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since48h)
-      .in("source", ["storage", "share_config", "share_quota", "share_health"])
+      .in("source", ["storage", "share_config", "share_quota", "share_health", "system"])
       .order("ingested_at", { ascending: false })
-      .limit(60),
+      .limit(80),
 
     supabase
       .from("smon_process_snapshots")
-      .select("nas_id, captured_at, name, username, cpu_pct, mem_pct, write_bps, parent_service")
+      // cmdline and pid are essential: without them the agent sees "grep" but
+      // not what it's scanning for, making foreign/stuck processes invisible.
+      // read_bps surfaces I/O-heavy processes that don't show up in CPU ranking.
+      .select("nas_id, captured_at, pid, name, cmdline, username, cpu_pct, mem_pct, read_bps, write_bps, parent_service")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
