@@ -24,8 +24,8 @@ const navItems = [
   { href: "/sync-triage", label: "Sync Triage", icon: FolderSync },
   { href: "/security", label: "Security", icon: Shield },
   { href: "/docker", label: "Docker", icon: Container },
-  { href: "/ai-insights", label: "AI Insights", icon: Brain },
-  { href: "/assistant", label: "NAS Copilot", icon: Bot },
+  { href: "/ai-insights", label: "Issue Insights", icon: Brain },
+  { href: "/assistant", label: "Issue Agent", icon: Bot },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

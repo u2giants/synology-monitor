@@ -22,8 +22,10 @@ const BLOCKED_PATTERNS = [
   /\bpasswd\b/i,
   /\buser(add|del|mod)\b/i,
   />\s*\/dev\/sd/i,
-  /\bmount\b/i,
-  /\bumount\b/i,
+  // Block mount only when actually mounting a device (mount <flags> /dev/...).
+  // "mount | grep ..." (listing mounts) and grep patterns containing "mount" are safe.
+  /\bmount\s+(?:-\S+\s+)*\/dev\//i,
+  /\bumount\s+\//i,
 ];
 
 export function getNasConfigs(): NasConfig[] {
@@ -186,5 +188,5 @@ export async function executeApprovedCommand(target: NasTarget, command: string)
     throw new Error(validationError);
   }
 
-  return runNasScript(config, command, 60_000);
+  return runNasScript(config, command, 90_000);
 }

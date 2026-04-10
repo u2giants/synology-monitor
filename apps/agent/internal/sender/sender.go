@@ -99,6 +99,61 @@ func (s *Sender) QueueDriveActivity(p DriveActivityPayload) {
 	s.queue("smon_drive_activities", p)
 }
 
+func (s *Sender) QueueProcessSnapshot(p ProcessSnapshotPayload) {
+	s.queue("smon_process_snapshots", p)
+}
+
+func (s *Sender) QueueDiskIOStat(p DiskIOStatPayload) {
+	s.queue("smon_disk_io_stats", p)
+}
+
+func (s *Sender) QueueSyncTaskSnapshot(p SyncTaskSnapshotPayload) {
+	s.queue("smon_sync_task_snapshots", p)
+}
+
+func (s *Sender) QueueNetConnection(p NetConnectionPayload) {
+	s.queue("smon_net_connections", p)
+}
+
+func (s *Sender) QueueServiceHealth(p ServiceHealthPayload) {
+	s.queue("smon_service_health", p)
+}
+
+func (s *Sender) QueueCustomMetricData(p CustomMetricDataPayload) {
+	s.queue("smon_custom_metric_data", p)
+}
+
+func (s *Sender) QueueScheduledTask(p ScheduledTaskPayload) {
+	s.queue("smon_scheduled_tasks", p)
+}
+
+func (s *Sender) QueueBackupTask(p BackupTaskPayload) {
+	s.queue("smon_backup_tasks", p)
+}
+
+func (s *Sender) QueueSnapshotReplica(p SnapshotReplicaPayload) {
+	s.queue("smon_snapshot_replicas", p)
+}
+
+func (s *Sender) QueueContainerIO(p ContainerIOPayload) {
+	s.queue("smon_container_io", p)
+}
+
+func (s *Sender) QueuePackageStatus(p PackageStatusPayload) {
+	s.queue("smon_package_status", p)
+}
+
+func (s *Sender) QueueDSMError(p DSMErrorPayload) {
+	s.queue("smon_dsm_errors", p)
+}
+
+// upsertTables lists tables that should use Supabase's merge-duplicates
+// resolution (INSERT … ON CONFLICT DO UPDATE).  The table must have a UNIQUE
+// constraint on its natural key for this to take effect.
+var upsertTables = map[string]bool{
+	"smon_package_status": true,
+}
+
 func (s *Sender) queue(table string, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -217,10 +272,15 @@ func (s *Sender) flushTable(table string) {
 		return
 	}
 
+	preferHeader := "return=minimal"
+	if upsertTables[table] {
+		preferHeader = "resolution=merge-duplicates,return=minimal"
+	}
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", s.serviceKey)
 	req.Header.Set("Authorization", "Bearer "+s.serviceKey)
-	req.Header.Set("Prefer", "return=minimal")
+	req.Header.Set("Prefer", preferHeader)
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -326,15 +386,17 @@ func normalizeBatchPayloads(payloads []json.RawMessage) ([]byte, error) {
 	return body, nil
 }
 
-// SendHeartbeat updates the NAS unit's last_seen timestamp
-func (s *Sender) SendHeartbeat(nasID, nasName, model, dsmVersion string) {
+// SendHeartbeat updates the NAS unit's last_seen timestamp and agent version.
+func (s *Sender) SendHeartbeat(nasID, nasName, model, dsmVersion, agentVersion, agentBuiltAt string) {
 	payload := map[string]interface{}{
-		"id":          nasID,
-		"name":        nasName,
-		"model":       model,
-		"dsm_version": dsmVersion,
-		"last_seen":   time.Now().UTC(),
-		"status":      "online",
+		"id":             nasID,
+		"name":           nasName,
+		"model":          model,
+		"dsm_version":    dsmVersion,
+		"last_seen":      time.Now().UTC(),
+		"status":         "online",
+		"agent_version":  agentVersion,
+		"agent_built_at": agentBuiltAt,
 	}
 
 	body, _ := json.Marshal(payload)

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { clearAiSettingsCache } from "@/lib/server/ai-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -49,19 +50,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "key and value are required strings." }, { status: 400 });
     }
 
-    const allowedKeys = ["diagnosis_model", "remediation_model"];
+    const allowedKeys = [
+      "diagnosis_model",
+      "remediation_model",
+      "second_opinion_model",
+      "extractor_model",
+      "cluster_model",
+      "hypothesis_model",
+      "planner_model",
+      "remediation_planner_model",
+      "explainer_model",
+      "verifier_model",
+    ];
     if (!allowedKeys.includes(key)) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
     }
 
-    const { error } = await supabase.from("smon_ai_settings").upsert({
-      key,
-      value: value.trim(),
-      updated_at: new Date().toISOString(),
-    });
+    const { error } = await supabase.from("smon_ai_settings").upsert(
+      { key, value: value.trim(), updated_at: new Date().toISOString() },
+      { onConflict: "key" },
+    );
 
     if (error) throw error;
 
+    clearAiSettingsCache();
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

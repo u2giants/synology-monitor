@@ -25,8 +25,10 @@ COPY turbo.json ./
 
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG BUILD_SHA
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+ENV BUILD_SHA=$BUILD_SHA
 
 WORKDIR /app/apps/web
 RUN npx next build
@@ -50,4 +52,5 @@ ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 3000
 WORKDIR /app/apps/web
-CMD ["npx", "next", "start", "-p", "3000"]
+RUN chmod +x /app/apps/web/docker-entrypoint.sh
+CMD ["/app/apps/web/docker-entrypoint.sh"]

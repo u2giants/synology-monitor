@@ -1,727 +1,902 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
+  AlertTriangle,
   Bot,
-  Database,
-  LoaderCircle,
-  MessageSquareText,
+  CheckCircle2,
+  ChevronRight,
+  Loader2,
+  MessageSquare,
+  Play,
   Plus,
-  Search,
-  ShieldAlert,
-  Sparkles,
-  Terminal,
+  Send,
+  Trash2,
   Wrench,
+  XCircle,
 } from "lucide-react";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, formatETFull, timeAgo } from "@/lib/utils";
+import {
+  useResolution,
+  type Resolution,
+  type ResolutionCapability,
+  type ResolutionFact,
+  type ResolutionFull,
+  type ResolutionJob,
+  type ResolutionMessage,
+  type ResolutionStageRun,
+  type ResolutionStep,
+} from "@/hooks/use-resolution";
 
-type ReasoningEffort = "high" | "xhigh";
-type LookbackHours = 1 | 2 | 6 | 24;
-type Target = "edgesynology1" | "edgesynology2";
-type MessageRole = "user" | "assistant" | "tool";
-type ActionStatus = "proposed" | "approved" | "running" | "executed" | "failed" | "rejected";
-type CopilotRole = "viewer" | "operator" | "admin";
+const severityConfig = {
+  critical: { icon: AlertTriangle, className: "text-critical", badge: "bg-critical/10 text-critical border-critical/20" },
+  warning: { icon: AlertTriangle, className: "text-warning", badge: "bg-warning/10 text-warning border-warning/20" },
+  info: { icon: CheckCircle2, className: "text-primary", badge: "bg-primary/10 text-primary border-primary/20" },
+};
 
-interface EvidenceItem {
-  id: string;
-  kind: "alert" | "log" | "ssh";
-  title: string;
-  detail: string;
-  timestamp?: string;
-  target?: string;
-}
-
-interface ProposedAction {
-  id: string;
-  title: string;
-  target: Target;
-  toolName: string;
-  commandPreview: string;
-  reason: string;
-  risk: "low" | "medium" | "high";
-  approvalToken: string;
-  status?: ActionStatus;
-  result?: string;
-}
-
-interface ChatMessage {
-  id: string;
-  role: MessageRole;
-  content: string;
-  createdAt: string;
-  evidence?: EvidenceItem[];
-  actions?: ProposedAction[];
-}
-
-interface SessionSummary {
-  id: string;
-  title: string;
-  reasoningEffort: ReasoningEffort;
-  lookbackHours: LookbackHours;
-  updatedAt: string;
-  createdAt: string;
-}
-
-const STORAGE_KEY = "smon-copilot-chat-v2";
-
-function messageTone(role: MessageRole) {
-  switch (role) {
-    case "assistant":
-      return "border-primary/20 bg-primary/5";
-    case "tool":
-      return "border-amber-500/30 bg-amber-500/5";
-    default:
-      return "border-border bg-card";
-  }
-}
-
-function roleIcon(role: MessageRole) {
-  switch (role) {
-    case "assistant":
-      return Bot;
-    case "tool":
-      return Terminal;
-    default:
-      return MessageSquareText;
-  }
-}
+const statusLabels: Record<Resolution["status"], string> = {
+  open: "Open",
+  running: "Working",
+  waiting_on_user: "Waiting on you",
+  waiting_for_approval: "Awaiting approval",
+  resolved: "Resolved",
+  stuck: "Blocked",
+  cancelled: "Cancelled",
+};
 
 export default function AssistantPage() {
   const searchParams = useSearchParams();
-  const autoSubmitDone = useRef(false);
+  const router = useRouter();
+  const createdOnce = useRef(false);
+  const {
+    resolutions,
+    current,
+    loading,
+    error,
+    fetchList,
+    loadResolution,
+    createResolution,
+    approveSteps,
+    sendMessage,
+    continueResolution,
+    cancelResolution,
+    deleteResolution,
+  } = useResolution();
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [prompt, setPrompt] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [loadingSession, setLoadingSession] = useState(false);
-  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("high");
-  const [lookbackHours, setLookbackHours] = useState<LookbackHours>(2);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [role, setRole] = useState<CopilotRole>("admin");
-  const [persistenceEnabled, setPersistenceEnabled] = useState(false);
-  const [activityMessage, setActivityMessage] = useState<string | null>(null);
-  const [activeActionId, setActiveActionId] = useState<string | null>(null);
-
-  async function loadServerSession(targetSessionId?: string | null) {
-    const suffix = targetSessionId ? `?sessionId=${encodeURIComponent(targetSessionId)}` : "";
-    const response = await fetch(`/api/copilot/session${suffix}`);
-    if (!response.ok) throw new Error("session load failed");
-    const payload = await response.json();
-    setRole(payload.role ?? "admin");
-    setPersistenceEnabled(Boolean(payload.persistenceEnabled));
-    setSessions(payload.sessions ?? []);
-    if (payload.session) {
-      setSessionId(payload.session.id);
-      setReasoningEffort(payload.session.reasoningEffort ?? "high");
-      setLookbackHours(payload.session.lookbackHours ?? 2);
-      setMessages(payload.session.messages ?? []);
-    } else {
-      setSessionId(null);
-      setMessages([]);
-    }
-    return payload;
-  }
+  const [showNewForm, setShowNewForm] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
-    async function bootstrap() {
-      try {
-        await loadServerSession();
-        return;
-      } catch {
-        // fallback to local storage below
-      }
-
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      try {
-        const parsed = JSON.parse(raw) as {
-          messages: ChatMessage[];
-          reasoningEffort: ReasoningEffort;
-          lookbackHours: LookbackHours;
-        };
-        setMessages(parsed.messages ?? []);
-        setReasoningEffort(parsed.reasoningEffort ?? "high");
-        setLookbackHours(parsed.lookbackHours ?? 2);
-      } catch {
-        // ignore corrupt local storage
-      }
-    }
-
-    void bootstrap();
-  }, []);
+    fetchList();
+  }, [fetchList]);
 
   useEffect(() => {
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ messages, reasoningEffort, lookbackHours })
-    );
-  }, [messages, reasoningEffort, lookbackHours]);
+    if (createdOnce.current || loading) return;
 
-  // Auto-submit when arriving from "Analyze with Copilot" on an alert
-  useEffect(() => {
-    if (autoSubmitDone.current || loading) return;
-
-    const alertTitle = searchParams.get("title");
-    const alertMessage = searchParams.get("message");
-    const alertSeverity = searchParams.get("severity");
+    const resolutionId = searchParams.get("resolutionId");
     const problemId = searchParams.get("problemId");
+    const alertId = searchParams.get("alertId") ?? searchParams.get("alert_id");
+    const title = searchParams.get("title");
+    const message = searchParams.get("message");
 
-    if (!alertTitle && !problemId) return;
-    autoSubmitDone.current = true;
-
-    let autoPrompt = "";
-    if (problemId) {
-      // Coming from "Fix with Copilot" on a diagnosed problem
-      fetch(`/api/copilot/problem-prompt?problemId=${encodeURIComponent(problemId)}`)
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.prompt) {
-            setMessages([]);
-            setSessionId(null);
-            setPrompt(data.prompt);
-          }
-        })
-        .catch(() => {});
+    if (resolutionId) {
+      createdOnce.current = true;
+      loadResolution(resolutionId);
       return;
     }
 
-    // Coming from "Analyze with Copilot" on a raw alert
-    autoPrompt =
-      `I have a ${alertSeverity ?? "warning"} alert: "${alertTitle}"\n` +
-      (alertMessage ? `Details: ${alertMessage}\n\n` : "\n") +
-      `What is causing this? Explain in plain English what the problem is, what's affected, and what I should do to fix it.`;
-
-    setMessages([]);
-    setSessionId(null);
-    setPrompt(autoPrompt);
-  }, [searchParams, loading]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // When prompt is auto-set from URL params, trigger send
-  const pendingAutoSend = useRef(false);
-  useEffect(() => {
-    if (prompt && autoSubmitDone.current && !loading && !pendingAutoSend.current && messages.length === 0) {
-      pendingAutoSend.current = true;
-      // Small delay to let state settle after setPrompt
-      const timer = setTimeout(() => {
-        handleSend();
-      }, 200);
-      return () => clearTimeout(timer);
+    if (problemId) {
+      createdOnce.current = true;
+      createResolution({ originType: "problem", originId: problemId }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+      return;
     }
-  }, [prompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasActions = useMemo(
-    () => messages.some((message) => (message.actions ?? []).length > 0),
-    [messages]
-  );
+    if (alertId) {
+      createdOnce.current = true;
+      createResolution({ originType: "alert", originId: alertId }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+      return;
+    }
+
+    if (title || message) {
+      createdOnce.current = true;
+      createResolution({
+        originType: "manual",
+        title: title ?? "Imported issue",
+        description: message ?? title ?? "Imported issue context",
+      }).then((id) => {
+        if (id) {
+          fetchList();
+          router.replace(`/assistant?resolutionId=${id}`);
+        }
+      });
+    }
+  }, [createResolution, fetchList, loadResolution, loading, router, searchParams]);
+
+  useEffect(() => {
+    if (!current) return;
+    const hasActiveJobs = current.jobs.some((job) => job.status === "queued" || job.status === "running");
+    if (!hasActiveJobs) return;
+
+    const timer = window.setInterval(() => {
+      loadResolution(current.resolution.id);
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [current, loadResolution]);
+
+  async function handleCreate() {
+    if (!newTitle.trim()) return;
+    const id = await createResolution({
+      originType: "manual",
+      title: newTitle.trim(),
+      description: newDescription.trim() || newTitle.trim(),
+    });
+    if (!id) return;
+    setNewTitle("");
+    setNewDescription("");
+    setShowNewForm(false);
+    await fetchList();
+    router.replace(`/assistant?resolutionId=${id}`);
+  }
 
   async function handleSend() {
-    if (!prompt.trim() || loading) return;
-
-    const userMessage: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: prompt.trim(),
-      createdAt: new Date().toISOString(),
-    };
-
-    const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
-    setPrompt("");
-    setLoading(true);
-    setActivityMessage(`Thinking with GPT-5.4 (${reasoningEffort}) over the last ${lookbackHours} hour${lookbackHours > 1 ? "s" : ""}...`);
-
-    try {
-      const response = await fetch("/api/copilot/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          messages: nextMessages.map((message) => ({
-            id: message.id,
-            role: message.role,
-            content: message.content,
-          })),
-          reasoningEffort,
-          lookbackHours,
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.error ?? "Copilot request failed.");
-      }
-
-      setRole(payload.role ?? role);
-      setPersistenceEnabled(Boolean(payload.persistenceEnabled));
-      setSessionId(payload.sessionId ?? sessionId);
-
-      const assistantMessage: ChatMessage = {
-        id: payload.assistantMessageId ?? crypto.randomUUID(),
-        role: "assistant",
-        content: payload.answer,
-        evidence: payload.evidence ?? [],
-        actions: (payload.proposedActions ?? []).map((action: ProposedAction) => ({
-          ...action,
-          status: "proposed",
-        })),
-        createdAt: new Date().toISOString(),
-      };
-
-      if (payload.persistenceEnabled && payload.sessionId) {
-        await loadServerSession(payload.sessionId);
-      } else {
-        setMessages((current) => [...current, assistantMessage]);
-      }
-      setActivityMessage(null);
-    } catch (error) {
-      setActivityMessage(null);
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: "tool",
-          content: error instanceof Error ? error.message : "Failed to reach copilot.",
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    } finally {
-      setLoading(false);
-    }
+    const trimmed = draft.trim();
+    if (!trimmed) return;
+    setDraft("");
+    await sendMessage(trimmed);
+    await fetchList();
   }
 
-  async function handleAction(messageId: string, actionId: string, decision: "approve" | "reject") {
-    setMessages((current) =>
-      current.map((message) => {
-        if (message.id !== messageId) return message;
-        return {
-          ...message,
-          actions: message.actions?.map((action) =>
-            action.id === actionId
-              ? {
-                  ...action,
-                  status: (decision === "reject" ? "rejected" : "running") as ActionStatus,
-                }
-              : action
-          ),
-        };
-      })
-    );
-
-    const message = messages.find((item) => item.id === messageId);
-    const action = message?.actions?.find((item) => item.id === actionId);
-    if (!action) return;
-
-    if (decision === "reject") {
-      setActivityMessage(`Rejected ${action.title}.`);
-      await fetch("/api/copilot/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actionId: action.id,
-          target: action.target,
-          commandPreview: action.commandPreview,
-          approvalToken: action.approvalToken,
-          decision: "reject",
-        }),
-      });
-      if (persistenceEnabled && sessionId) {
-        await loadServerSession(sessionId);
-      }
-      return;
-    }
-
-    setActiveActionId(actionId);
-    setActivityMessage(`Running ${action.title} on ${action.target}...`);
-
-    try {
-      const response = await fetch("/api/copilot/execute", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          actionId: action.id,
-          target: action.target,
-          commandPreview: action.commandPreview,
-          approvalToken: action.approvalToken,
-          decision: "approve",
-        }),
-      });
-
-      const payload = await response.json();
-      if (!response.ok || !payload.ok) {
-        throw new Error(payload.error ?? payload.content ?? "Action execution failed.");
-      }
-
-      if (persistenceEnabled && sessionId) {
-        await loadServerSession(sessionId);
-      } else {
-        setMessages((current) => {
-          const updated = current.map((item) => {
-            if (item.id !== messageId) return item;
-            return {
-              ...item,
-              actions: item.actions?.map((candidate) =>
-                candidate.id === actionId
-                  ? {
-                      ...candidate,
-                      status: "executed" as ActionStatus,
-                      result: payload.content,
-                    }
-                  : candidate
-              ),
-            };
-          });
-
-          return [
-            ...updated,
-            {
-              id: crypto.randomUUID(),
-              role: "tool",
-              content: `Approved action ran on ${action.target}.\n\n${payload.content}`,
-              createdAt: new Date().toISOString(),
-            },
-          ];
-        });
-      }
-      setActivityMessage(`${action.title} completed on ${action.target}.`);
-    } catch (error) {
-      const resultText = error instanceof Error ? error.message : "Unknown action failure.";
-      setActivityMessage(`${action.title} failed on ${action.target}.`);
-      setMessages((current) => {
-        const updated = current.map((item) => {
-          if (item.id !== messageId) return item;
-          return {
-            ...item,
-            actions: item.actions?.map((candidate) =>
-              candidate.id === actionId
-                ? {
-                    ...candidate,
-                    status: "failed" as ActionStatus,
-                    result: resultText,
-                  }
-                : candidate
-            ),
-          };
-        });
-
-        return [
-          ...updated,
-          {
-            id: crypto.randomUUID(),
-            role: "tool",
-            content: resultText,
-            createdAt: new Date().toISOString(),
-          },
-        ];
-      });
-    } finally {
-      setActiveActionId(null);
-    }
-  }
-
-  function startNewChat() {
-    setMessages([]);
-    setSessionId(null);
-    setActivityMessage("Started a new chat.");
-  }
-
-  async function openSession(targetSessionId: string) {
-    if (loading || loadingSession || targetSessionId === sessionId) return;
-    setLoadingSession(true);
-    setActivityMessage("Loading chat...");
-    try {
-      await loadServerSession(targetSessionId);
-      setActivityMessage(null);
-    } catch {
-      setActivityMessage("Failed to load that chat.");
-    } finally {
-      setLoadingSession(false);
-    }
-  }
-
-  function clearLocalFallback() {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setActivityMessage("Cleared local fallback cache.");
-  }
+  const pendingActions = useMemo(
+    () => current?.steps.filter((step) => step.status === "proposed") ?? [],
+    [current]
+  );
+  const primaryPendingAction = pendingActions[0] ?? null;
+  const latestAgentMessage = useMemo(
+    () => [...(current?.messages ?? [])].reverse().find((message) => message.role === "agent") ?? null,
+    [current]
+  );
+  const activeJobs = useMemo(
+    () => current?.jobs.filter((job) => job.status === "queued" || job.status === "running") ?? [],
+    [current]
+  );
+  const failedJobs = useMemo(
+    () => current?.jobs.filter((job) => job.status === "failed").slice(0, 3) ?? [],
+    [current]
+  );
+  const capabilityGaps = useMemo(
+    () => current?.capabilities.filter((capability) => capability.state !== "supported") ?? [],
+    [current]
+  );
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">NAS Copilot</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            GPT-5.4 assistant for live NAS diagnostics, Drive/ShareSync investigation, historical context, and individually approved repair actions.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-            <Sparkles className="h-3.5 w-3.5" />
-            {hasActions ? "Action approval enabled" : "Read-only until an action is proposed"}
-          </div>
-          <div className="rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground">
-            role: {role}
-          </div>
-        </div>
+      <div>
+        <h1 className="text-2xl font-bold">Issue Agent</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          One persistent conversation per issue. The agent owns the diagnosis, remembers every result, and asks for approval only when it has one exact action to run.
+        </p>
       </div>
 
-      {activityMessage ? (
-        <div className="flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground">
-          {(loading || loadingSession || activeActionId) ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
-          )}
-          <span>{activityMessage}</span>
+      {error && (
+        <div className="rounded-lg border border-critical/30 bg-critical/5 p-3 text-sm text-critical">
+          {error}
         </div>
-      ) : null}
+      )}
 
-      <div className="grid gap-4 lg:grid-cols-[220px_1fr_320px]">
-        <aside className="space-y-4">
+      <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+        <aside className="space-y-3">
           <div className="rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Chats</h2>
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">Issue Threads</h2>
               <button
-                onClick={startNewChat}
+                onClick={() => setShowNewForm((value) => !value)}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 <Plus className="h-3.5 w-3.5" />
                 New
               </button>
             </div>
-            <div className="mt-3 space-y-2">
-              {sessions.length === 0 ? (
-                <div className="text-xs text-muted-foreground">
-                  No saved chats yet. Your first question will create one.
-                </div>
-              ) : (
-                sessions.map((session) => (
-                  <button
-                    key={session.id}
-                    onClick={() => openSession(session.id)}
-                    className={cn(
-                      "w-full rounded-lg border px-3 py-2 text-left",
-                      session.id === sessionId
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-background hover:bg-muted/40"
-                    )}
-                  >
-                    <div className="line-clamp-2 text-sm font-medium">{session.title}</div>
-                    <div className="mt-1 text-[11px] text-muted-foreground">
-                      {timeAgo(session.updatedAt)} · {session.reasoningEffort} · {session.lookbackHours}h
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </aside>
 
-        <section className="rounded-xl border border-border bg-card p-4">
-          <div className="space-y-3">
-            {messages.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
-                Ask what happened 2 hours ago, investigate Drive issues, or request a proposed fix.
+            {showNewForm && (
+              <div className="mb-3 space-y-2 rounded-lg border border-border bg-background p-3">
+                <input
+                  value={newTitle}
+                  onChange={(event) => setNewTitle(event.target.value)}
+                  placeholder="Issue title"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                />
+                <textarea
+                  value={newDescription}
+                  onChange={(event) => setNewDescription(event.target.value)}
+                  placeholder="What do you know so far?"
+                  className="min-h-20 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                />
+                <button
+                  onClick={handleCreate}
+                  disabled={loading || !newTitle.trim()}
+                  className="w-full rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Start issue
+                </button>
+              </div>
+            )}
+
+            {resolutions.length === 0 ? (
+              <div className="text-xs text-muted-foreground">
+                No issue threads yet. Create one manually or run issue detection from the dashboard.
               </div>
             ) : (
-              messages.map((message) => {
-                const Icon = roleIcon(message.role);
-                return (
-                  <article
-                    key={message.id}
-                    className={cn("rounded-xl border p-4", messageTone(message.role))}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <div className="rounded-lg bg-background/70 p-2">
-                          <Icon className="h-4 w-4" />
-                        </div>
-                        <div className="space-y-3">
-                          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
-                            {message.content}
-                          </p>
-
-                          {message.evidence?.length ? (
-                            <div className="rounded-lg border border-border bg-background/40 p-3">
-                              <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                <Search className="h-3.5 w-3.5" />
-                                Evidence
-                              </div>
-                              <div className="space-y-2">
-                                {message.evidence.map((item) => (
-                                  <div key={item.id} className="rounded-md border border-border/70 p-2">
-                                    <div className="text-xs font-medium text-foreground">
-                                      {item.title}
-                                    </div>
-                                    <div className="mt-1 break-words text-xs text-muted-foreground">
-                                      {item.detail}
-                                    </div>
-                                    <div className="mt-1 text-[11px] text-muted-foreground">
-                                      {item.target ? `${item.target} · ` : ""}
-                                      {item.timestamp ? timeAgo(item.timestamp) : item.kind}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
-
-                          {message.actions?.length ? (
-                            <div className="space-y-3">
-                              {message.actions.map((action) => (
-                                <div key={action.id} className="rounded-lg border border-border bg-background/60 p-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div>
-                                      <div className="flex items-center gap-2 text-sm font-medium">
-                                        <Wrench className="h-4 w-4 text-primary" />
-                                        <span>{action.title}</span>
-                                      </div>
-                                      <div className="mt-1 text-xs text-muted-foreground">
-                                        {action.target} · {action.toolName} · risk {action.risk}
-                                      </div>
-                                    </div>
-                                    <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                                      <span className="inline-flex items-center gap-1">
-                                        {action.status === "running" ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null}
-                                        {action.status ?? "proposed"}
-                                      </span>
-                                    </span>
-                                  </div>
-                                  <p className="mt-2 text-sm text-muted-foreground">{action.reason}</p>
-                                  <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-black/80 p-3 text-xs text-white">
-                                    {action.commandPreview}
-                                  </pre>
-
-                                  {action.result && (
-                                    <pre className="mt-3 whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs text-foreground">
-                                      {action.result}
-                                    </pre>
-                                  )}
-
-                                  {action.status === "proposed" && role !== "viewer" && (
-                                    <div className="mt-3 flex gap-2">
-                                      <button
-                                        onClick={() => handleAction(message.id, action.id, "approve")}
-                                        disabled={Boolean(activeActionId)}
-                                        className="rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                                      >
-                                        Approve
-                                      </button>
-                                      <button
-                                        onClick={() => handleAction(message.id, action.id, "reject")}
-                                        disabled={Boolean(activeActionId)}
-                                        className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
-                                      >
-                                        Reject
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="text-right text-xs text-muted-foreground">
-                        {timeAgo(message.createdAt)}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })
+              <div className="space-y-1.5">
+                {resolutions.map((resolution) => (
+                  <IssueListItem
+                    key={resolution.id}
+                    resolution={resolution}
+                    active={current?.resolution.id === resolution.id}
+                    onClick={() => {
+                      loadResolution(resolution.id);
+                      router.replace(`/assistant?resolutionId=${resolution.id}`);
+                    }}
+                    onDelete={() => {
+                      deleteResolution(resolution.id);
+                      router.replace("/assistant");
+                    }}
+                  />
+                ))}
+              </div>
             )}
           </div>
-
-          <div className="mt-4 space-y-3 border-t border-border pt-4">
-            <textarea
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Ask what happened 2 hours ago, investigate Drive/ShareSync issues, or request a proposed fix..."
-              className="min-h-28 w-full rounded-lg border border-border bg-background px-3 py-3 text-sm focus:border-primary focus:outline-none"
-            />
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ShieldAlert className="h-4 w-4" />
-                Write actions require one-by-one approval and a valid server token.
-              </div>
-              <button
-                onClick={handleSend}
-                disabled={loading || !prompt.trim()}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {loading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Bot className="h-4 w-4" />}
-                Ask Copilot
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <aside className="space-y-4">
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">Reasoning</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              `high` is the normal default. `xhigh` is slower and usually more expensive.
-            </p>
-            <select
-              value={reasoningEffort}
-              onChange={(event) => setReasoningEffort(event.target.value as ReasoningEffort)}
-              className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-            >
-              <option value="high">High</option>
-              <option value="xhigh">XHigh</option>
-            </select>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">History Window</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Controls how much recent Supabase and NAS log context the copilot uses.
-            </p>
-            <select
-              value={lookbackHours}
-              onChange={(event) => setLookbackHours(Number(event.target.value) as LookbackHours)}
-              className="mt-3 w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
-            >
-              <option value={1}>Last 1 hour</option>
-              <option value={2}>Last 2 hours</option>
-              <option value={6}>Last 6 hours</option>
-              <option value={24}>Last 24 hours</option>
-            </select>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">Persistence</h2>
-            <div className="mt-3 flex items-start gap-2 text-sm text-muted-foreground">
-              <Database className="mt-0.5 h-4 w-4" />
-              <div>
-                {persistenceEnabled
-                  ? "Chat sessions, evidence, and action history are persisted in Supabase."
-                  : "Running in fallback mode. Local browser history still works if the new copilot tables are not available yet."}
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <h2 className="text-sm font-semibold">What It Can Do</h2>
-            <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
-              <li>Inspect recent Drive and ShareSync issues from Supabase.</li>
-              <li>Run read-only diagnostics on both NASes over Tailscale SSH.</li>
-              <li>Search and tail bounded historical windows instead of only the latest lines.</li>
-              <li>Propose structured repair tools instead of unconstrained shell prompts.</li>
-            </ul>
-          </div>
-
-          <div className="rounded-xl border border-border bg-card p-4">
-            <button
-              onClick={clearLocalFallback}
-              className="w-full rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              Clear Local Fallback Cache
-            </button>
-          </div>
         </aside>
+
+        <section className="space-y-4">
+          {!current ? (
+            <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted-foreground">
+              <Bot className="mx-auto mb-3 h-10 w-10 opacity-40" />
+              <p className="text-sm">Select an issue thread or create a new one.</p>
+            </div>
+          ) : (
+            <>
+              <IssueHeader
+                state={current}
+                loading={loading}
+                onContinue={continueResolution}
+                onCancel={cancelResolution}
+              />
+
+              {primaryPendingAction && (
+                <ActionRequiredBanner
+                  step={primaryPendingAction}
+                  latestAgentMessage={latestAgentMessage?.content ?? null}
+                  loading={loading}
+                  onApprove={() => approveSteps([primaryPendingAction.id], "approve")}
+                  onReject={() => approveSteps([primaryPendingAction.id], "reject")}
+                />
+              )}
+
+              <IssueStatusSummary
+                activeJobs={activeJobs}
+                failedJobs={failedJobs}
+                capabilityGaps={capabilityGaps}
+              />
+
+              {pendingActions.length > 0 && (
+                <ActionPanel
+                  steps={pendingActions}
+                  loading={loading}
+                  onApprove={(ids) => approveSteps(ids, "approve")}
+                  onReject={(ids) => approveSteps(ids, "reject")}
+                />
+              )}
+
+              {current.resolution.status === "waiting_on_user" && (
+                <NeedsInputPanel
+                  nextStep={current.resolution.next_step}
+                  latestAgentMessage={latestAgentMessage?.content ?? null}
+                />
+              )}
+
+              {current.resolution.status === "waiting_for_approval" && pendingActions.length === 0 && (
+                <ApprovalMismatchPanel />
+              )}
+
+              <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <div className="mb-3 flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                    <h2 className="text-sm font-semibold">Conversation</h2>
+                  </div>
+
+                  <div className="space-y-3">
+                    {current.messages.map((message) => (
+                      <MessageBubble key={message.id} message={message} />
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex gap-2">
+                    <textarea
+                      value={draft}
+                      onChange={(event) => setDraft(event.target.value)}
+                      placeholder="Reply to this issue thread..."
+                      className="min-h-24 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                    />
+                    <button
+                      onClick={handleSend}
+                      disabled={loading || !draft.trim()}
+                      className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      Send
+                    </button>
+                  </div>
+                </div>
+
+                <IssueSidebar state={current} />
+              </div>
+            </>
+          )}
+        </section>
       </div>
+    </div>
+  );
+}
+
+function IssueStatusSummary({
+  activeJobs,
+  failedJobs,
+  capabilityGaps,
+}: {
+  activeJobs: ResolutionJob[];
+  failedJobs: ResolutionJob[];
+  capabilityGaps: ResolutionCapability[];
+}) {
+  if (activeJobs.length === 0 && failedJobs.length === 0 && capabilityGaps.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3">
+      <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-primary">
+          <Loader2 className={cn("h-4 w-4", activeJobs.length > 0 && "animate-spin")} />
+          Background worker
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {activeJobs.length > 0
+            ? `${activeJobs.length} job${activeJobs.length === 1 ? "" : "s"} queued or running for this issue. The backend worker owns progression now.`
+            : "No queued or running jobs for this issue right now."}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+          <AlertTriangle className="h-4 w-4" />
+          Telemetry visibility
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {capabilityGaps.length > 0
+            ? `${capabilityGaps.length} capability gap${capabilityGaps.length === 1 ? "" : "s"} may limit diagnosis on this issue.`
+            : "No known telemetry capability gaps are attached to this issue."}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-critical">
+          <XCircle className="h-4 w-4" />
+          Workflow failures
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {failedJobs.length > 0
+            ? `${failedJobs.length} job${failedJobs.length === 1 ? "" : "s"} failed recently. Review the workflow panel below for exact errors.`
+            : "No recent worker failures recorded for this issue."}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function IssueHeader({
+  state,
+  loading,
+  onContinue,
+  onCancel,
+}: {
+  state: ResolutionFull;
+  loading: boolean;
+  onContinue: () => void;
+  onCancel: () => void;
+}) {
+  const config = severityConfig[state.resolution.severity];
+  const Icon = config.icon;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Icon className={cn("h-5 w-5", config.className)} />
+            <h2 className="text-lg font-semibold">{state.resolution.title}</h2>
+            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", config.badge)}>
+              {state.resolution.severity}
+            </span>
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+              {statusLabels[state.resolution.status]}
+            </span>
+          </div>
+          <p className="text-sm text-muted-foreground">{state.resolution.summary}</p>
+          {state.resolution.affected_nas.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Affects: {state.resolution.affected_nas.join(", ")}
+            </p>
+          )}
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={onContinue}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            <Play className="h-4 w-4" />
+            Continue
+          </button>
+          {state.resolution.status !== "resolved" && state.resolution.status !== "cancelled" && (
+            <button
+              onClick={onCancel}
+              disabled={loading}
+              className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-critical disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IssueSidebar({ state }: { state: ResolutionFull }) {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Working Theory</h3>
+        <p className="mt-2 text-sm">{state.resolution.current_hypothesis || "No stable hypothesis yet."}</p>
+        <div className="mt-3 text-xs text-muted-foreground">
+          Confidence: {state.resolution.hypothesis_confidence}
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">
+          Next step: {state.resolution.next_step || "Awaiting next agent step."}
+        </div>
+      </div>
+
+      {state.resolution.operator_constraints.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">Operator Constraints</h3>
+          <div className="mt-2 space-y-2">
+            {state.resolution.operator_constraints.map((constraint) => (
+              <div key={constraint} className="rounded-md bg-muted px-3 py-2 text-xs">
+                {constraint}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Normalized Facts</h3>
+        <div className="mt-3 space-y-2">
+          {state.facts.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No normalized facts attached yet.</div>
+          ) : (
+            state.facts.slice(0, 8).map((fact) => (
+              <FactCard key={fact.id} fact={fact} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Capability Gaps</h3>
+        <div className="mt-3 space-y-2">
+          {state.capabilities.filter((capability) => capability.state !== "supported").length === 0 ? (
+            <div className="text-xs text-muted-foreground">No known telemetry capability gaps for this issue.</div>
+          ) : (
+            state.capabilities
+              .filter((capability) => capability.state !== "supported")
+              .slice(0, 8)
+              .map((capability) => (
+                <CapabilityCard key={capability.id} capability={capability} />
+              ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Workflow State</h3>
+        <div className="mt-3 space-y-2">
+          {state.jobs.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No queued workflow jobs yet.</div>
+          ) : (
+            state.jobs.slice(0, 6).map((job) => (
+              <JobCard key={job.id} job={job} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Stage Runs</h3>
+        <div className="mt-3 space-y-2">
+          {state.stage_runs.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No stage runs recorded yet.</div>
+          ) : (
+            state.stage_runs.slice(0, 8).map((run) => (
+              <StageRunCard key={run.id} run={run} />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">State Transitions</h3>
+        <div className="mt-3 space-y-2">
+          {state.transitions.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No recorded state transitions yet.</div>
+          ) : (
+            state.transitions.slice(0, 6).map((transition) => (
+              <div key={transition.id} className="rounded-lg border border-border bg-background p-3">
+                <div className="text-xs font-medium">
+                  {(transition.from_status ?? "none").replaceAll("_", " ")}{" "}
+                  <ChevronRight className="mx-1 inline h-3 w-3" />
+                  {transition.to_status.replaceAll("_", " ")}
+                </div>
+                {transition.reason && (
+                  <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{transition.reason}</p>
+                )}
+                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(transition.created_at)}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h3 className="text-sm font-semibold">Evidence Timeline</h3>
+        <div className="mt-3 space-y-2">
+          {state.log.length === 0 ? (
+            <div className="text-xs text-muted-foreground">No evidence captured yet.</div>
+          ) : (
+            state.log.slice(-8).reverse().map((entry) => (
+              <div key={entry.id} className="rounded-lg border border-border bg-background p-3">
+                <div className="text-xs font-medium">{entry.title}</div>
+                <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{entry.detail}</p>
+                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(entry.created_at)}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FactCard({ fact }: { fact: ResolutionFact }) {
+  const severityClass = fact.severity === "critical"
+    ? "border-critical/20 bg-critical/5"
+    : fact.severity === "warning"
+      ? "border-warning/20 bg-warning/5"
+      : "border-primary/20 bg-primary/5";
+
+  return (
+    <div className={cn("rounded-lg border p-3", severityClass)}>
+      <div className="text-xs font-medium">{fact.title}</div>
+      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{fact.detail}</p>
+      <div className="mt-2 text-[11px] text-muted-foreground">
+        {fact.fact_type} · {timeAgo(fact.observed_at)}
+      </div>
+    </div>
+  );
+}
+
+function CapabilityCard({ capability }: { capability: ResolutionCapability }) {
+  const stateClass = capability.state === "unsupported"
+    ? "border-critical/20 bg-critical/5"
+    : "border-warning/20 bg-warning/5";
+
+  return (
+    <div className={cn("rounded-lg border p-3", stateClass)}>
+      <div className="text-xs font-medium">{capability.capability_key}</div>
+      <p className="mt-1 text-xs text-muted-foreground">{capability.state}</p>
+      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{capability.raw_error || capability.evidence}</p>
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(capability.checked_at)}</div>
+    </div>
+  );
+}
+
+function JobCard({ job }: { job: ResolutionJob }) {
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <div className="text-xs font-medium">{job.job_type}</div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {job.status} · attempt {job.attempts}
+      </div>
+      {job.last_error && (
+        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{job.last_error}</p>
+      )}
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(job.updated_at)}</div>
+    </div>
+  );
+}
+
+function StageRunCard({ run }: { run: ResolutionStageRun }) {
+  const stateClass = run.status === "failed"
+    ? "border-critical/20 bg-critical/5"
+    : run.status === "running"
+      ? "border-primary/20 bg-primary/5"
+      : "border-border bg-background";
+
+  return (
+    <div className={cn("rounded-lg border p-3", stateClass)}>
+      <div className="text-xs font-medium">
+        {run.stage_key.replaceAll("_", " ")}
+      </div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        {run.status}
+        {run.model_tier ? ` · ${run.model_tier}` : ""}
+        {run.model_name ? ` · ${run.model_name}` : ""}
+      </div>
+      {run.error_text && (
+        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{run.error_text}</p>
+      )}
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(run.created_at)}</div>
+    </div>
+  );
+}
+
+function ActionPanel({
+  steps,
+  loading,
+  onApprove,
+  onReject,
+}: {
+  steps: ResolutionStep[];
+  loading: boolean;
+  onApprove: (ids: string[]) => void;
+  onReject: (ids: string[]) => void;
+}) {
+  return (
+    <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <Wrench className="h-4 w-4 text-warning" />
+        <h3 className="text-sm font-semibold">Pending approval</h3>
+      </div>
+      <div className="space-y-3">
+        {steps.map((step) => (
+          <div key={step.id} className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="text-sm font-medium">{step.summary}</div>
+                <div className="text-xs text-muted-foreground">
+                  {step.target} · {step.tool_name} · risk {step.risk}
+                </div>
+                <p className="text-sm text-muted-foreground">{step.reason}</p>
+                <p className="text-xs text-muted-foreground">Expected outcome: {step.expected_outcome}</p>
+                {step.rollback_plan && (
+                  <p className="text-xs text-muted-foreground">Rollback: {step.rollback_plan}</p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => onApprove([step.id])}
+                  disabled={loading}
+                  className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                >
+                  Approve
+                </button>
+                <button
+                  onClick={() => onReject([step.id])}
+                  disabled={loading}
+                  className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                Exact command
+              </summary>
+              <pre className="mt-2 whitespace-pre-wrap rounded-md bg-black/90 p-3 text-xs text-white/85">
+                {step.command_preview}
+              </pre>
+            </details>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ActionRequiredBanner({
+  step,
+  latestAgentMessage,
+  loading,
+  onApprove,
+  onReject,
+}: {
+  step: ResolutionStep;
+  latestAgentMessage: string | null;
+  loading: boolean;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-critical/30 bg-critical/10 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-critical" />
+            <h3 className="text-sm font-semibold">Action required</h3>
+          </div>
+          <div className="rounded-lg border border-critical/30 bg-critical/15 p-3">
+            <div className="text-xs font-medium uppercase tracking-wide text-critical">Approve this exact action</div>
+            <p className="mt-1 text-sm font-semibold text-critical">{step.summary}</p>
+            <p className="mt-2 text-sm text-muted-foreground">{step.reason}</p>
+            <div className="mt-2 text-xs text-muted-foreground">
+              {step.target} · {step.tool_name} · risk {step.risk}
+            </div>
+          </div>
+          {latestAgentMessage && (
+            <div className="rounded-lg border border-border bg-card p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
+              <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+            </div>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            onClick={onApprove}
+            disabled={loading}
+            className="rounded-md bg-critical px-4 py-2 text-sm font-medium text-white hover:bg-critical/90 disabled:opacity-50"
+          >
+            Approve
+          </button>
+          <button
+            onClick={onReject}
+            disabled={loading}
+            className="rounded-md border border-border bg-card px-4 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            Reject
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NeedsInputPanel({
+  nextStep,
+  latestAgentMessage,
+}: {
+  nextStep: string;
+  latestAgentMessage: string | null;
+}) {
+  return (
+    <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <MessageSquare className="h-4 w-4 text-primary" />
+        <h3 className="text-sm font-semibold">Agent needs input from you</h3>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {nextStep || "The agent is waiting for more information before it can continue."}
+      </p>
+      {latestAgentMessage && (
+        <div className="mt-3 rounded-lg border border-border bg-card p-3">
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
+          <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApprovalMismatchPanel() {
+  return (
+    <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <XCircle className="h-4 w-4 text-critical" />
+        <h3 className="text-sm font-semibold">Approval state mismatch</h3>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        This issue is marked as awaiting approval, but no proposed action is attached. Use Continue to re-run the worker and rebuild the approval step.
+      </p>
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: ResolutionMessage }) {
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+
+  return (
+    <div
+      className={cn(
+        "rounded-xl border p-3",
+        isUser
+          ? "ml-8 border-primary/20 bg-primary/5"
+          : isSystem
+            ? "border-border bg-muted/40"
+            : "mr-8 border-border bg-background"
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          {isUser ? "You" : isSystem ? "System" : "Agent"}
+        </span>
+        <span className="text-[11px] text-muted-foreground">
+          {formatETFull(message.created_at)}
+        </span>
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-sm">{message.content}</p>
+    </div>
+  );
+}
+
+function IssueListItem({
+  resolution,
+  active,
+  onClick,
+  onDelete,
+}: {
+  resolution: Resolution;
+  active: boolean;
+  onClick: () => void;
+  onDelete: () => void;
+}) {
+  const config = severityConfig[resolution.severity];
+  const Icon = config.icon;
+
+  return (
+    <div
+      className={cn(
+        "group rounded-lg border p-3 transition-colors",
+        active ? "border-primary/30 bg-primary/5" : "border-border bg-background hover:border-primary/20"
+      )}
+    >
+      <button onClick={onClick} className="w-full text-left">
+        <div className="flex items-start gap-2">
+          <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", config.className)} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-medium">{resolution.title}</span>
+              <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+            </div>
+            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{resolution.summary}</p>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              {statusLabels[resolution.status]} · {timeAgo(resolution.updated_at)}
+            </div>
+          </div>
+        </div>
+      </button>
+      <button
+        onClick={onDelete}
+        className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-critical"
+      >
+        <Trash2 className="h-3 w-3" />
+        Delete
+      </button>
     </div>
   );
 }

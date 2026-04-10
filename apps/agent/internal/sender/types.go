@@ -105,3 +105,169 @@ type DriveActivityPayload struct {
 	Timestamp  string    `json:"timestamp,omitempty"`
 	RecordedAt time.Time `json:"recorded_at"`
 }
+
+// ProcessSnapshotPayload is a single process row in smon_process_snapshots
+type ProcessSnapshotPayload struct {
+	NasID         string    `json:"nas_id"`
+	SnapshotGrp   string    `json:"snapshot_grp"`
+	CapturedAt    time.Time `json:"captured_at"`
+	PID           int       `json:"pid"`
+	Name          string    `json:"name"`
+	Cmdline       string    `json:"cmdline,omitempty"`
+	Username      string    `json:"username,omitempty"`
+	State         string    `json:"state,omitempty"`
+	CPUPct        float64   `json:"cpu_pct"`
+	MemRSSKB      int64     `json:"mem_rss_kb"`
+	MemPct        float64   `json:"mem_pct"`
+	ReadBPS       int64     `json:"read_bps"`
+	WriteBPS      int64     `json:"write_bps"`
+	ParentService string    `json:"parent_service,omitempty"`
+	Cgroup        string    `json:"cgroup,omitempty"`
+}
+
+// DiskIOStatPayload is a single device row in smon_disk_io_stats
+type DiskIOStatPayload struct {
+	NasID      string    `json:"nas_id"`
+	CapturedAt time.Time `json:"captured_at"`
+	Device     string    `json:"device"`
+	VolumePath string    `json:"volume_path,omitempty"`
+	ReadPS     float64   `json:"reads_ps"`
+	WritePS    float64   `json:"writes_ps"`
+	ReadBPS    int64     `json:"read_bps"`
+	WriteBPS   int64     `json:"write_bps"`
+	AwaitMS    float64   `json:"await_ms"`
+	UtilPct    float64   `json:"util_pct"`
+	QueueDepth float64   `json:"queue_depth"`
+}
+
+// SyncTaskSnapshotPayload is a row in smon_sync_task_snapshots
+type SyncTaskSnapshotPayload struct {
+	NasID            string    `json:"nas_id"`
+	CapturedAt       time.Time `json:"captured_at"`
+	TaskID           string    `json:"task_id"`
+	TaskName         string    `json:"task_name,omitempty"`
+	TaskType         string    `json:"task_type,omitempty"`
+	Status           string    `json:"status,omitempty"`
+	BacklogCount     int       `json:"backlog_count,omitempty"`
+	BacklogBytes     int64     `json:"backlog_bytes,omitempty"`
+	CurrentFile      string    `json:"current_file,omitempty"`
+	CurrentFolder    string    `json:"current_folder,omitempty"`
+	RetryCount       int       `json:"retry_count,omitempty"`
+	LastError        string    `json:"last_error,omitempty"`
+	TransferredFiles int       `json:"transferred_files,omitempty"`
+	TransferredBytes int64     `json:"transferred_bytes,omitempty"`
+	SpeedBPS         int64     `json:"speed_bps,omitempty"`
+	IndexingQueue    int       `json:"indexing_queue,omitempty"`
+}
+
+// ServiceHealthPayload is a row in smon_service_health
+type ServiceHealthPayload struct {
+	NasID       string    `json:"nas_id"`
+	ServiceName string    `json:"service_name"`
+	Status      string    `json:"status"` // running, stopped, not_found
+	CapturedAt  time.Time `json:"captured_at"`
+}
+
+// CustomMetricDataPayload is a row in smon_custom_metric_data
+type CustomMetricDataPayload struct {
+	ScheduleID string    `json:"schedule_id"`
+	NasID      string    `json:"nas_id"`
+	RawOutput  string    `json:"raw_output,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+// NetConnectionPayload is a row in smon_net_connections
+type NetConnectionPayload struct {
+	NasID      string    `json:"nas_id"`
+	CapturedAt time.Time `json:"captured_at"`
+	RemoteIP   string    `json:"remote_ip"`
+	RemoteHost string    `json:"remote_host,omitempty"`
+	LocalPort  int       `json:"local_port,omitempty"`
+	Protocol   string    `json:"protocol,omitempty"`
+	ConnCount  int       `json:"conn_count"`
+	Username   string    `json:"username,omitempty"`
+}
+
+// ScheduledTaskPayload is a row in smon_scheduled_tasks
+type ScheduledTaskPayload struct {
+	NasID       string    `json:"nas_id"`
+	TaskID      int       `json:"task_id"`
+	TaskName    string    `json:"task_name"`
+	TaskType    string    `json:"task_type,omitempty"`
+	Owner       string    `json:"owner,omitempty"`
+	Enabled     bool      `json:"enabled"`
+	Status      string    `json:"status,omitempty"`
+	LastRunTime string    `json:"last_run_time,omitempty"`
+	NextRunTime string    `json:"next_run_time,omitempty"`
+	LastResult  int       `json:"last_result"`
+	CapturedAt  time.Time `json:"captured_at"`
+}
+
+// BackupTaskPayload is a row in smon_backup_tasks
+type BackupTaskPayload struct {
+	NasID            string    `json:"nas_id"`
+	TaskID           string    `json:"task_id"`
+	TaskName         string    `json:"task_name"`
+	Enabled          bool      `json:"enabled"`
+	Status           string    `json:"status,omitempty"`
+	LastResult       string    `json:"last_result,omitempty"`
+	LastRunTime      string    `json:"last_run_time,omitempty"`
+	NextRunTime      string    `json:"next_run_time,omitempty"`
+	DestType         string    `json:"dest_type,omitempty"`
+	DestName         string    `json:"dest_name,omitempty"`
+	TotalBytes       int64     `json:"total_bytes,omitempty"`
+	TransferredBytes int64     `json:"transferred_bytes,omitempty"`
+	SpeedBPS         int64     `json:"speed_bps,omitempty"`
+	CapturedAt       time.Time `json:"captured_at"`
+}
+
+// ContainerIOPayload is a row in smon_container_io
+type ContainerIOPayload struct {
+	NasID         string    `json:"nas_id"`
+	CapturedAt    time.Time `json:"captured_at"`
+	ContainerID   string    `json:"container_id"`
+	ContainerName string    `json:"container_name"`
+	ReadBPS       int64     `json:"read_bps"`
+	WriteBPS      int64     `json:"write_bps"`
+	ReadOPS       int64     `json:"read_ops"`
+	WriteOPS      int64     `json:"write_ops"`
+}
+
+// PackageStatusPayload is an upserted row in smon_package_status.
+// Represents the current install/run state of one DSM package.
+type PackageStatusPayload struct {
+	NasID       string    `json:"nas_id"`
+	PackageID   string    `json:"package_id"`
+	DisplayName string    `json:"display_name"`
+	Version     string    `json:"version"`
+	Status      string    `json:"status"`   // running / stopped / broken / etc.
+	PkgType     string    `json:"pkg_type"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
+// DSMErrorPayload is a row in smon_dsm_errors.
+// Represents a warning or error level event from DSM Log Center.
+type DSMErrorPayload struct {
+	NasID    string    `json:"nas_id"`
+	Level    string    `json:"level"`             // warning / error / critical
+	Message  string    `json:"message"`
+	Who      string    `json:"who,omitempty"`
+	LogName  string    `json:"log_name,omitempty"`
+	LoggedAt time.Time `json:"logged_at"`
+}
+
+// SnapshotReplicaPayload is a row in smon_snapshot_replicas
+type SnapshotReplicaPayload struct {
+	NasID       string    `json:"nas_id"`
+	TaskID      string    `json:"task_id"`
+	TaskName    string    `json:"task_name,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	SrcShare    string    `json:"src_share,omitempty"`
+	DstShare    string    `json:"dst_share,omitempty"`
+	DstHost     string    `json:"dst_host,omitempty"`
+	LastResult  string    `json:"last_result,omitempty"`
+	LastRunTime string    `json:"last_run_time,omitempty"`
+	NextRunTime string    `json:"next_run_time,omitempty"`
+	CapturedAt  time.Time `json:"captured_at"`
+}

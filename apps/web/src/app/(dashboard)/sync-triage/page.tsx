@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, List, LayoutGrid, Globe, CheckSquare, Square, Loader2, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, Globe, CheckSquare, Square, Loader2, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { cn, timeAgoET } from "@/lib/utils";
 import { ProblemsSection } from "@/components/dashboard/problems-section";
 import type { Alert } from "@synology-monitor/shared";
+import Link from "next/link";
 
 interface LogEntry {
   id: string;
@@ -28,6 +29,16 @@ interface SyncRemediation {
   completed_at: string | null;
 }
 
+interface DerivedIssue {
+  key: string;
+  title: string;
+  summary: string;
+  severity: "critical" | "warning" | "info";
+  count: number;
+  affectedPath?: string;
+  sampleMessage: string;
+}
+
 const sourceOptions = [
   { value: "all", label: "All Sync Sources" },
   { value: "drive", label: "Drive" },
@@ -45,6 +56,8 @@ const actionOptions = [
   { value: "rename", label: "Rename" },
   { value: "create", label: "Create" },
 ];
+
+const syncSources = ["drive", "drive_server", "drive_sharesync", "smb", "webapi", "share", "service", "storage"];
 
 function metaValue(metadata: Record<string, unknown> | null, key: string) {
   const value = metadata?.[key];
@@ -80,6 +93,115 @@ function translateMessage(message: string): string {
   return message;
 }
 
+function isActionableSyncLog(log: LogEntry) {
+  if (["error", "warning", "critical"].includes(log.severity)) return true;
+
+  const message = log.message.toLowerCase();
+  return (
+    log.source === "drive_server" &&
+    (
+      message.includes("synologydrive.admin.sharesync") ||
+      message.includes("synologydrive.sharesync") ||
+      message.includes("apiinternalutil.cpp:200 webapi") ||
+      message.includes("_sharesync_list")
+    )
+  );
+}
+
+function deriveSyncIssues(logs: LogEntry[], alerts: Alert[]): DerivedIssue[] {
+  const groups = new Map<string, DerivedIssue>();
+
+  const addGroup = (key: string, issue: Omit<DerivedIssue, "count">) => {
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+      return;
+    }
+    groups.set(key, { ...issue, count: 1 });
+  };
+
+  for (const alert of alerts) {
+    const details = alert.details ?? {};
+    const path = metaValue(details, "path") || metaValue(details, "folder_path") || metaValue(details, "share_name");
+    const titleLower = alert.title.toLowerCase();
+
+    if (titleLower.includes("mass file rename")) {
+      const scope = path || "the same folder";
+      addGroup(`alert:mass-rename:${scope}`, {
+        key: `alert:mass-rename:${scope}`,
+        title: `Mass rename activity in ${scope}`,
+        summary: `These alerts likely represent one burst of rename activity in the same folder, not separate issues.`,
+        severity: "warning",
+        affectedPath: path,
+        sampleMessage: alert.message || alert.title,
+      });
+      continue;
+    }
+
+    if (titleLower.includes("backup") && (titleLower.includes("failed") || titleLower.includes("failure"))) {
+      const scope = path || "the same backup job";
+      addGroup(`alert:backup-failure:${scope}`, {
+        key: `alert:backup-failure:${scope}`,
+        title: `Repeated backup failures for ${scope}`,
+        summary: `The same backup workflow appears to be failing repeatedly and should be investigated as one issue thread.`,
+        severity: "critical",
+        affectedPath: path,
+        sampleMessage: alert.message || alert.title,
+      });
+      continue;
+    }
+  }
+
+  for (const log of logs) {
+    const path = metaValue(log.metadata, "path") || metaValue(log.metadata, "folder_path") || metaValue(log.metadata, "share_name");
+    const action = metaValue(log.metadata, "action");
+    const message = log.message.toLowerCase();
+
+    if (message.includes("stoi") || message.includes("synoshareget")) {
+      const scope = path || "ShareSync metadata";
+      addGroup(`log:sharesync-meta:${scope}`, {
+        key: `log:sharesync-meta:${scope}`,
+        title: `ShareSync metadata lookup failures in ${scope}`,
+        summary: `These backend errors suggest ShareSync is failing to read or parse metadata for the same share, folder, or internal task.`,
+        severity: "critical",
+        affectedPath: path,
+        sampleMessage: log.message,
+      });
+      continue;
+    }
+
+    if (action === "sync_failure" || message.includes("sync") && message.includes("fail")) {
+      const scope = path || "the same sync scope";
+      addGroup(`log:sync-failure:${scope}`, {
+        key: `log:sync-failure:${scope}`,
+        title: `Recurring sync failures in ${scope}`,
+        summary: `These rows look like one sync failure cluster with a shared root cause.`,
+        severity: "warning",
+        affectedPath: path,
+        sampleMessage: log.message,
+      });
+      continue;
+    }
+
+    if (message.includes("synologydrive.admin.sharesync") || message.includes("synologydrive.sharesync") || message.includes("_sharesync_list")) {
+      const scope = path || "ShareSync control plane";
+      addGroup(`log:sharesync-api:${scope}`, {
+        key: `log:sharesync-api:${scope}`,
+        title: `ShareSync API failures in ${scope}`,
+        summary: `These rows show DSM's ShareSync admin APIs returning invalid responses repeatedly, which points to a backend ShareSync state problem.`,
+        severity: "warning",
+        affectedPath: path,
+        sampleMessage: log.message,
+      });
+      continue;
+    }
+  }
+
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 12);
+}
+
 export default function SyncTriagePage() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [syncAlerts, setSyncAlerts] = useState<Alert[]>([]);
@@ -102,21 +224,34 @@ export default function SyncTriagePage() {
 
   const fetchData = useCallback(async () => {
     const supabase = createClient();
-    
-    // Fetch logs - include all sync-related sources
-    let logsQuery = supabase
+
+    let errorLogsQuery = supabase
       .from("smon_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
-      .in("source", ["drive", "drive_server", "drive_sharesync", "smb"])
+      .in("source", syncSources)
       .in("severity", ["error", "warning", "critical"])
       .order("ingested_at", { ascending: false })
-      .limit(200);
+      .limit(1200);
 
-    if (source !== "all") logsQuery = logsQuery.eq("source", source);
+    let driveInfoQuery = supabase
+      .from("smon_logs")
+      .select("id, source, severity, message, logged_at, metadata, ingested_at")
+      .eq("source", "drive_server")
+      .order("ingested_at", { ascending: false })
+      .limit(4000);
 
-    const logsResult = await logsQuery;
-    if (!logsResult.error && logsResult.data) {
-      setLogs(logsResult.data);
+    if (source !== "all") {
+      errorLogsQuery = errorLogsQuery.eq("source", source);
+      driveInfoQuery = driveInfoQuery.eq("source", source);
+    }
+
+    const [errorLogsResult, driveInfoResult] = await Promise.all([errorLogsQuery, driveInfoQuery]);
+    if (!errorLogsResult.error && !driveInfoResult.error) {
+      const combined = [
+        ...((errorLogsResult.data ?? []) as LogEntry[]),
+        ...((driveInfoResult.data ?? []) as LogEntry[]).filter(isActionableSyncLog),
+      ];
+      setLogs(Array.from(new Map(combined.map((log) => [log.id, log])).values()));
     }
 
     // Fetch sync-related alerts (source='ai' or containing sync keywords)
@@ -227,6 +362,7 @@ export default function SyncTriagePage() {
   }, [filteredLogs]);
 
   const totalIssues = syncAlerts.length + remediations.length + summary.incidents;
+  const groupedIssues = useMemo(() => deriveSyncIssues(filteredLogs, syncAlerts), [filteredLogs, syncAlerts]);
 
   return (
     <div className="space-y-6">
@@ -261,6 +397,54 @@ export default function SyncTriagePage() {
 
       {/* AI-Analyzed Problems - showing only sync-related */}
       <ProblemsSection />
+
+      {groupedIssues.length > 0 && (
+        <div className="space-y-3">
+          <div>
+            <h2 className="text-lg font-semibold">Grouped Sync Issues</h2>
+            <p className="text-sm text-muted-foreground">
+              These are plain-English clusters derived from the raw sync signals below. Open one to continue resolution in a dedicated issue thread.
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            {groupedIssues.map((issue) => (
+              <div key={issue.key} className="rounded-lg border border-border bg-card p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold">{issue.title}</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">{issue.summary}</p>
+                  </div>
+                  <span className={cn(
+                    "rounded-full px-2 py-0.5 text-xs font-medium",
+                    issue.severity === "critical" ? "bg-critical/10 text-critical" :
+                    issue.severity === "warning" ? "bg-warning/10 text-warning" :
+                    "bg-primary/10 text-primary"
+                  )}>
+                    {issue.count} signals
+                  </span>
+                </div>
+                {issue.affectedPath && (
+                  <div className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-xs font-mono">
+                    {issue.affectedPath}
+                  </div>
+                )}
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Example evidence: {showEnglish ? translateMessage(issue.sampleMessage) : issue.sampleMessage}
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <Link
+                    href={`/assistant?title=${encodeURIComponent(issue.title)}&message=${encodeURIComponent(`${issue.summary}\n\nExample evidence: ${issue.sampleMessage}${issue.affectedPath ? `\nAffected path: ${issue.affectedPath}` : ""}`)}`}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    <Wrench className="h-4 w-4" />
+                    Open issue thread
+                  </Link>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Alert Banner */}
       {showAlerts && syncAlerts.length > 0 && (
@@ -461,7 +645,7 @@ export default function SyncTriagePage() {
             ) : (
               <>
                 <Sparkles className="h-4 w-4" />
-                Analyze {selectedLogIds.size} with Copilot
+                Open {selectedLogIds.size} in Issue Agent
               </>
             )}
           </button>
@@ -641,7 +825,7 @@ export default function SyncTriagePage() {
                   className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
                 >
                   <Wrench className="h-4 w-4" />
-                  Analyze with Copilot
+                  Open in Issue Agent
                 </a>
                 <a
                   href="/ai-insights"

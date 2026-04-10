@@ -1,57 +1,217 @@
 # Synology Agent Deployment
 
-This directory contains deployment assets for running `synology-monitor-agent` on Synology NAS devices.
+Last verified: 2026-04-09 UTC
 
-## Quick Start
+Scope:
+- Canonical deployment and runtime contract for the Synology agent and monitor-stack controls.
 
-1. Copy `docker-compose.agent.yml` and `nas-*.env.example` to `/volume1/docker/synology-monitor-agent`
-2. Rename the env file to `.env` and fill in real values
-3. Run:
-   ```sh
-   docker compose -f docker-compose.agent.yml pull
-   docker compose -f docker-compose.agent.yml up -d
-   ```
+This file documents the actual deployment contract for the Synology agent.
 
-## Required Environment Variables
+It also documents the monitor-stack control assumption used by the web app:
+- monitor write actions target `/volume1/docker/synology-monitor-agent`
+- the web app does not assume arbitrary Docker control outside that stack
 
-| Variable | Description |
-|----------|-------------|
-| `NAS_ID` | UUID (maps to `smon_nas_units.id`) |
-| `DSM_USERNAME` | DSM API credentials |
-| `DSM_PASSWORD` | DSM API credentials |
-| `SUPABASE_SERVICE_KEY` | Supabase service role key |
-| `DSM_URL` | Default: `https://localhost:5001` |
-| `DSM_INSECURE_SKIP_VERIFY` | Default: `true` (for self-signed certs) |
-| `AGENT_IMAGE_TAG` | Default: `latest` |
+## Canonical layout on each NAS
 
-## Deployment Model
+Live directory:
+```text
+/volume1/docker/synology-monitor-agent/
+  compose.yaml
+  .env
+```
 
-- **Image Source:** Pre-built from GitHub Container Registry (`ghcr.io/u2giants/synology-monitor-agent`)
-- **Build Pipeline:** GitHub Actions (`.github/workflows/agent-image.yml`)
-- **No source builds on NAS** - agents pull published images
+`compose.yaml` should be kept in sync with:
+- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
 
-## Container Manager Compatibility
+Docker binary on Synology:
+- `/var/packages/ContainerManager/target/usr/bin/docker`
 
-The compose file uses specific share mounts (not `/volume1`) because Synology Container Manager's web UI cannot parse `/volume1` as a valid share name. If you add shares, list them explicitly in the bind mounts.
+Monitor-stack control commands used by the web app and issue agent:
+- `docker compose stop`
+- `docker compose up -d`
+- `docker compose restart`
+- `docker compose pull`
+- `docker compose build --pull`
 
-## Log Sources
+All of them run from:
+- `/volume1/docker/synology-monitor-agent`
 
-The agent monitors:
-- `/var/log/synologydrive.log` → `drive_server`
-- `WATCH_PATHS/@synologydrive/log/*.log` → `drive`
-- `WATCH_PATHS/@synologydrive/log/syncfolder.log` → `drive_sharesync`
-- `EXTRA_LOG_FILES=path|source` for additional logs
+## Deployment model
 
-## Important Notes
+1. Push to `master`
+2. GitHub Actions builds and publishes:
+   - `ghcr.io/u2giants/synology-monitor-agent:latest`
+3. Each NAS must pull and recreate the container
 
-- Both NAS units use only `/volume1`
-- Docker socket works fine; web UI path validation is stricter
-- Healthcheck verifies WAL database creation only
-- NAS pulls `latest` by default; pin specific tags for controlled rollouts
+The agent does not auto-update itself.
 
-## Files
+## Required update sequence
 
-- `docker-compose.agent.yml` - Container orchestration
-- `.env.agent.example` - Base template
-- `nas-1.env.example` - Edge1 configuration
-- `nas-2.env.example` - Edge2 configuration
+Run this on the NAS:
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+cd /volume1/docker/synology-monitor-agent
+
+$DOCKER compose -f compose.yaml pull
+$DOCKER stop synology-monitor-agent || true
+$DOCKER rm synology-monitor-agent || true
+$DOCKER compose -f compose.yaml up -d
+```
+
+Why `stop` and `rm` matter:
+- Synology Docker/Container Manager often reuses the existing container definition
+- `compose up -d` alone is not reliable for switching to the newly pulled image
+
+## AGENT_IMAGE_TAG rule
+
+`.env` should normally contain:
+
+```sh
+AGENT_IMAGE_TAG=latest
+```
+
+If it is pinned to a SHA tag, pulling `latest` will not change the running image.
+
+## Required mounts
+
+The canonical compose file mounts:
+
+| Host path | Container path | Why |
+|---|---|---|
+| `/proc` | `/host/proc` | process stats, disk stats, network stats, proc I/O fallback |
+| `/sys` | `/host/sys` | cgroup stats, Btrfs counters, thermal data |
+| `/etc/passwd` | `/host/etc/passwd` | UID to username resolution |
+| `/var/log` | `/host/log` | system logs, Drive logs, backup logs |
+| `/var/packages` | `/host/packages` | Synology package logs |
+
+This `/sys` mount is not optional for the current design. Without it:
+- cgroup-based container I/O becomes incomplete
+- Btrfs error collection cannot work correctly
+
+## Share mounts
+
+The compose file mounts explicit shares instead of `/volume1` because Synology Container Manager rejects top-level `/volume1` bind mounts on compose-driven recreates.
+
+If a share path does not exist on a NAS:
+- either create the share
+- or remove/comment that bind from the NAS-local compose file and matching env references
+
+## Expected startup signals
+
+You should see startup lines for all major collectors, including:
+- `schedtasks`
+- `hyperbackup`
+- `storagepool`
+- `container-io`
+- `share-health`
+- `service-health`
+- `sys-extras`
+
+## Live telemetry expectations
+
+### Confirmed working
+
+- `smon_container_io` should receive rows after the second 30-second sample
+- `smon_metrics.type='cpu_iowait_pct'` should continue to receive rows
+- `scheduled_task` warnings can appear in `smon_logs`
+- snapshot-replication API warnings can appear in `smon_logs`
+
+Operator-visible surfaces that depend on that telemetry:
+- `/metrics` CPU chart includes `cpu_iowait_pct`
+- `/metrics` shows a current iowait card
+
+### Not guaranteed to produce rows on current DSM
+
+The following collectors are deployed, but the current NAS units do not yet fully support their request shapes:
+- scheduled tasks
+- snapshot replication
+- possibly Hyper Backup task listing
+- DSM Log Center structured log listing
+
+Important:
+- empty tables do not imply healthy subsystems
+- check `smon_logs` for explicit API-unavailable warnings
+
+## Current DSM-specific caveats
+
+### Scheduled tasks
+
+Observed on current NAS:
+- `SYNO.Core.TaskScheduler` is advertised
+- current call shape returns `API error code: 103`
+
+Current behavior:
+- no task rows yet
+- warning log emitted instead
+
+### Snapshot replication
+
+Observed on current NAS:
+- current attempted APIs return unsupported/unavailable responses
+
+Current behavior:
+- no snapshot rows yet
+- warning log emitted instead
+
+### Hyper Backup
+
+Current behavior:
+- collector is deployed
+- rows are not yet confirmed on the live NASes
+- failures now surface as warning logs rather than silent emptiness
+
+### DSM structured Log Center entries
+
+Current behavior:
+- parser handles string log levels now
+- live row ingestion is not yet confirmed on the current NASes
+
+## Verification commands
+
+### Confirm running revision
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+$DOCKER ps --format 'table {{.Names}}\t{{.Status}}\t{{.Label "org.opencontainers.image.revision"}}'
+```
+
+### Confirm `/host/sys` exists in the running container
+
+```sh
+$DOCKER exec synology-monitor-agent sh -lc 'ls -d /host/sys /host/sys/fs /host/sys/fs/btrfs 2>/dev/null || true'
+```
+
+### Check recent agent logs
+
+```sh
+$DOCKER logs --tail 120 synology-monitor-agent 2>&1
+```
+
+### Check current CPU iowait manually on the NAS
+
+```sh
+vmstat 1 3 | tail -1
+top -b -n2 -d0.3 2>/dev/null | grep 'Cpu(s)' | tail -1
+```
+
+The web tool `check_cpu_iowait` runs equivalent checks for the issue agent.
+
+### Check for explicit blind-spot warnings in Supabase
+
+Look for `smon_logs.source` values such as:
+- `scheduled_task`
+- `hyperbackup`
+- `dsm_system_log`
+- `storage` messages beginning with `Snapshot replication API unavailable:`
+
+## Why the latest deployment changes were made
+
+The extended telemetry work originally had two structural problems:
+- the code emitted data for tables that were not in tracked schema
+- DSM API failures often degraded into “no data” without any warning
+
+The deployment and runtime changes in this repo now enforce:
+- schema exists before emitter code depends on it
+- unsupported DSM APIs surface as warning logs
+- `/sys` is mounted because the collectors now rely on it

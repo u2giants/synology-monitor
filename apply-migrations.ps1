@@ -1,8 +1,8 @@
 # Apply Supabase Migrations Script
 # Run this script to apply the migrations to your Supabase database
 
-$supabaseUrl = "https://ryltkzzernhwnojzouyb.supabase.co"
-$serviceKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5bHRrenplcm5od25vanpvdXliIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MzI0NzQ5NywiZXhwIjoyMDg4ODIzNDk3fQ.oBwSqvjgjqBI3-z6xDIxilB30-DFgCDGUYbD2pcgzpY"
+$supabaseUrl = "https://qnjimovrsaacneqkggsn.supabase.co"
+$serviceKey = "replace_with_service_role_key_from_supabase_dashboard"  # Project Settings > API > service_role key
 
 # Read migration files
 $migrations = @(

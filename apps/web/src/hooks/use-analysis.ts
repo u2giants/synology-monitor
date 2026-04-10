@@ -1,44 +1,24 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
-interface AnalyzedProblem {
+export interface DetectedIssue {
   id: string;
-  slug: string;
   title: string;
-  explanation: string;
-  severity: "critical" | "warning" | "info";
-  affected_nas: string[];
-  affected_shares: string[];
-  affected_users: string[];
-  affected_files: { path: string; detail: string }[];
-  raw_event_count: number;
-  raw_event_ids: string[];
-  technical_diagnosis: string;
-  first_seen: string;
-  last_seen: string;
-  status: "open" | "investigating" | "resolved";
-  resolution?: string;
-  created_at: string;
-}
-
-interface AnalysisRun {
-  id: string;
   summary: string;
-  problem_count: number;
-  model: string;
-  tokens_used: number;
-  lookback_minutes: number;
-  created_at: string;
+  severity: "critical" | "warning" | "info";
+  status: string;
+  affected_nas: string[];
+  current_hypothesis: string;
+  hypothesis_confidence: "high" | "medium" | "low";
+  next_step: string;
+  updated_at: string;
 }
 
 export function useAnalysis() {
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const supabase = createClient();
 
   const fetchLatestAnalysis = useCallback(async () => {
     setLoading(true);
@@ -47,76 +27,41 @@ export function useAnalysis() {
       const response = await fetch("/api/analysis");
       const data = await response.json();
       return {
-        run: data.run as AnalysisRun | null,
-        problems: (data.problems || []) as AnalyzedProblem[],
+        run: data.run ?? null,
+        problems: (data.problems || []) as DetectedIssue[],
       };
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch analysis");
+      setError(err instanceof Error ? err.message : "Failed to load detected issues");
       return { run: null, problems: [] };
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // Helper to add timeout to fetch
-  const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number = 120000) => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
-      return response;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  };
-
-  const triggerAnalysis = useCallback(async (lookbackMinutes: number = 60) => {
+  const triggerAnalysis = useCallback(async (lookbackMinutes: number = 10080) => {
     setAnalyzing(true);
     setError(null);
     try {
-      const response = await fetchWithTimeout("/api/analysis", {
+      const response = await fetch("/api/analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ lookbackMinutes }),
-      }, 120000); // 2 minute timeout
+      });
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error || "Analysis failed");
+        throw new Error(data.error || "Issue detection failed");
       }
       return {
         runId: data.runId,
-        result: data.result,
+        result: data.result as { issues: DetectedIssue[]; summary: string },
       };
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        setError("Analysis timed out after 2 minutes. The AI service may be slow or unavailable.");
-      } else {
-        setError(err instanceof Error ? err.message : "Analysis failed");
-      }
+      setError(err instanceof Error ? err.message : "Issue detection failed");
       return { runId: null, result: null };
     } finally {
       setAnalyzing(false);
     }
   }, []);
-
-  const updateProblemStatus = useCallback(
-    async (problemId: string, status: "open" | "investigating" | "resolved", resolution?: string) => {
-      const { error } = await supabase
-        .from("smon_analyzed_problems")
-        .update({ status, resolution })
-        .eq("id", problemId);
-
-      if (error) {
-        setError(error.message);
-        return false;
-      }
-      return true;
-    },
-    [supabase]
-  );
 
   return {
     loading,
@@ -124,6 +69,5 @@ export function useAnalysis() {
     error,
     fetchLatestAnalysis,
     triggerAnalysis,
-    updateProblemStatus,
   };
 }

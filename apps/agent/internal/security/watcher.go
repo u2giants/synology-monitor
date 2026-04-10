@@ -54,9 +54,14 @@ func NewWatcher(s *sender.Sender, nasID string, watchPaths []string, maxDirs int
 			path TEXT PRIMARY KEY,
 			checksum TEXT NOT NULL,
 			size INTEGER,
+			mtime INTEGER,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)
 	`)
+	if err == nil {
+		// Add mtime column to existing DBs that pre-date this schema change
+		_, _ = db.Exec(`ALTER TABLE file_checksums ADD COLUMN mtime INTEGER`)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -81,22 +86,14 @@ func (w *Watcher) Close() error {
 func (w *Watcher) Run(stop <-chan struct{}) {
 	log.Println("[security] watcher started")
 
-	// Start inotify watcher in goroutine
-	go w.watchFiles(stop)
-
-	// Run periodic checksum scan
-	ticker := time.NewTicker(15 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			w.runChecksumScan()
-		case <-stop:
-			log.Println("[security] watcher stopped")
-			return
-		}
-	}
+	// inotify covers real-time writes, renames, and creates — that is sufficient
+	// for ransomware detection and high-entropy file monitoring.
+	//
+	// The periodic full-filesystem checksum scan has been removed: on a NAS with
+	// terabytes of design assets it read every file's content every hour, causing
+	// sustained GB/s of unnecessary disk I/O with no meaningful security benefit
+	// on top of what inotify already provides.
+	w.watchFiles(stop)
 }
 
 func (w *Watcher) watchFiles(stop <-chan struct{}) {
@@ -309,23 +306,32 @@ func (w *Watcher) runChecksumScan() {
 			}
 
 			scanned++
+			currentMtime := info.ModTime().Unix()
+
+			// Check stored mtime — if unchanged, skip reading the file entirely.
+			// This avoids re-hashing every file on every scan (which caused GB/s of I/O).
+			var storedChecksum string
+			var storedMtime int64
+			err = w.db.QueryRow("SELECT checksum, COALESCE(mtime, 0) FROM file_checksums WHERE path = ?", path).Scan(&storedChecksum, &storedMtime)
+			if err == nil && storedMtime == currentMtime {
+				// mtime unchanged — file content almost certainly the same, skip
+				return nil
+			}
+
 			checksum := fileChecksum(path)
 			if checksum == "" {
 				return nil
 			}
 
-			// Check against stored checksum
-			var storedChecksum string
-			err = w.db.QueryRow("SELECT checksum FROM file_checksums WHERE path = ?", path).Scan(&storedChecksum)
 			if err == sql.ErrNoRows {
 				// New file — store baseline
-				w.db.Exec("INSERT INTO file_checksums (path, checksum, size) VALUES (?, ?, ?)",
-					path, checksum, info.Size())
+				w.db.Exec("INSERT INTO file_checksums (path, checksum, size, mtime) VALUES (?, ?, ?, ?)",
+					path, checksum, info.Size(), currentMtime)
 			} else if err == nil && storedChecksum != checksum {
-				// Changed file
+				// mtime changed AND checksum changed — genuinely modified
 				changed++
-				w.db.Exec("UPDATE file_checksums SET checksum = ?, size = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
-					checksum, info.Size(), path)
+				w.db.Exec("UPDATE file_checksums SET checksum = ?, size = ?, mtime = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
+					checksum, info.Size(), currentMtime, path)
 
 				w.sender.QueueSecurityEvent(sender.SecurityEventPayload{
 					NasID:       w.nasID,
@@ -341,6 +347,11 @@ func (w *Watcher) runChecksumScan() {
 					FilePath:   path,
 					DetectedAt: time.Now(),
 				})
+			} else if err == nil {
+				// mtime changed but checksum matches — update stored mtime so we
+				// don't re-read this file next scan (e.g. touch without content change)
+				w.db.Exec("UPDATE file_checksums SET mtime = ?, updated_at = CURRENT_TIMESTAMP WHERE path = ?",
+					currentMtime, path)
 			}
 
 			return nil

@@ -33,13 +33,21 @@ type LogFile struct {
 
 var defaultLogFiles = []LogFile{
 	{Path: "messages", Source: "system"},
-	{Path: "synobackup.log", Source: "system"},
+	{Path: "synolog/synobackup.log", Source: "backup"},
+	{Path: "synobackup.log", Source: "backup"},
 	{Path: "synologydrive.log", Source: "drive_server"},
 	{Path: "synolog/synosecurity.log", Source: "security"},
 	{Path: "synolog/synoconnection.log", Source: "connection"},
 	{Path: "synolog/synopkg.log", Source: "package"},
 	{Path: "samba/log.smbd", Source: "smb"},
 	{Path: "samba/log.nmbd", Source: "smb"},
+	// --- Logs critical for diagnosing share/sync issues ---
+	{Path: "synolog/synowebapi.log", Source: "webapi"},        // "Failed to SYNOShareGet" errors live HERE
+	{Path: "synolog/synostorage.log", Source: "storage"},      // Share/volume management operations
+	{Path: "synolog/synoshare.log", Source: "share"},          // Share database ops (create/delete/get errors)
+	{Path: "kern.log", Source: "kernel"},                      // I/O stalls, SCSI errors, disk faults
+	{Path: "synolog/synoinfo.log", Source: "system_info"},     // System config changes
+	{Path: "synolog/synoservice.log", Source: "service"},      // Service start/stop/crash events
 }
 
 func New(s *sender.Sender, nasID, logDir string, watchPaths, extraLogFiles []string, interval time.Duration) *LogWatcher {
@@ -65,12 +73,14 @@ func (w *LogWatcher) Run(stop <-chan struct{}) {
 
 	log.Printf("[logwatcher] started (interval: %s, dir: %s)", w.interval, w.logDir)
 
-	// Bootstrap recent Drive history once on startup, then tail from EOF.
+	// Bootstrap recent history for key sources once on startup, then tail from EOF.
 	for _, lf := range w.logFiles {
 		for _, fullPath := range w.expandLogFile(lf) {
 			if info, err := os.Stat(fullPath); err == nil {
-				if strings.HasPrefix(lf.Source, "drive") {
-					w.bootstrapFile(fullPath, lf.Source, w.bootstrapDriveTail)
+				if lines := bootstrapLines(lf.Source); lines > 0 {
+					w.bootstrapFile(fullPath, lf.Source, lines)
+					// Also try rotated version if current file is suspiciously small
+					w.bootstrapRotated(fullPath, lf.Source, lines)
 				}
 				w.offsets[fullPath] = info.Size()
 			}
@@ -200,6 +210,46 @@ func (w *LogWatcher) bootstrapFile(path, source string, maxLines int) {
 	if count > 0 {
 		log.Printf("[logwatcher] %s: bootstrapped %d recent %s lines", filepath.Base(path), count, source)
 	}
+}
+
+// bootstrapLines returns how many tail lines to read on startup for each source.
+// Returns 0 for sources that should not be bootstrapped.
+func bootstrapLines(source string) int {
+	switch {
+	case strings.HasPrefix(source, "drive"):
+		return 200
+	case source == "backup":
+		return 150
+	case source == "webapi":
+		return 100
+	case source == "share":
+		return 100
+	case source == "service":
+		return 100
+	case source == "storage":
+		return 75
+	case source == "kernel":
+		return 75
+	case source == "package":
+		return 50
+	default:
+		return 0
+	}
+}
+
+// bootstrapRotated checks if path has a .1 rotated counterpart and, if the
+// current file is very small (< 8 KB — likely just rotated), bootstraps the
+// rotated file too so we don't lose the evidence that was there before rotation.
+func (w *LogWatcher) bootstrapRotated(path, source string, lines int) {
+	rotated := path + ".1"
+	if _, err := os.Stat(rotated); err != nil {
+		return // no rotated file
+	}
+	// Only read rotated file if current file looks freshly rotated
+	if info, err := os.Stat(path); err != nil || info.Size() > 8192 {
+		return
+	}
+	w.bootstrapFile(rotated, source, lines)
 }
 
 func readLastLines(path string, maxLines int) ([]string, error) {

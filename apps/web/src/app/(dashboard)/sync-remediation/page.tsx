@@ -162,7 +162,7 @@ export default function SyncRemediationPage() {
         <div className="text-sm text-muted-foreground">Loading remediations...</div>
       ) : remediations.length === 0 ? (
         <div className="rounded-lg border border-border bg-card p-8 text-center text-sm text-muted-foreground">
-          No sync remediations found. Use the Copilot to diagnose and fix ShareSync issues.
+          No sync remediations found. Use the Issue Agent to diagnose and fix ShareSync issues.
         </div>
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">

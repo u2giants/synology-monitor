@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/synology-monitor/agent/internal/collector"
 	"github.com/synology-monitor/agent/internal/config"
@@ -15,9 +16,15 @@ import (
 	"github.com/synology-monitor/agent/internal/sender"
 )
 
+// Build-time version info — injected via -ldflags by the Dockerfile.
+var (
+	BuildSHA  = "dev"
+	BuildTime = "unknown"
+)
+
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Println("Synology Monitor Agent starting...")
+	log.Printf("Synology Monitor Agent starting... (sha=%s built=%s)", BuildSHA, BuildTime)
 
 	// Load configuration
 	cfg, err := config.Load()
@@ -37,6 +44,7 @@ func main() {
 	}
 	defer dsmClient.Logout()
 	log.Println("Connected to DSM API")
+	log.Printf("Agent version: sha=%s built=%s", BuildSHA, BuildTime)
 
 	// Initialize sender (Supabase + SQLite WAL)
 	s, err := sender.New(
@@ -56,9 +64,9 @@ func main() {
 	sysInfo, err := dsmClient.GetSystemInfo()
 	if err != nil {
 		log.Printf("Warning: could not get system info: %v", err)
-		s.SendHeartbeat(cfg.NasID, cfg.NasName, "DS1621xs+", "")
+		s.SendHeartbeat(cfg.NasID, cfg.NasName, "DS1621xs+", "", BuildSHA, BuildTime)
 	} else {
-		s.SendHeartbeat(cfg.NasID, cfg.NasName, sysInfo.Model, sysInfo.FirmwareVer)
+		s.SendHeartbeat(cfg.NasID, cfg.NasName, sysInfo.Model, sysInfo.FirmwareVer, BuildSHA, BuildTime)
 	}
 
 	// Stop channel and wait group for graceful shutdown
@@ -94,12 +102,43 @@ func main() {
 		dockerCollector.Run(stop)
 	}()
 
-	// Start Drive Admin collector (team folders, user activity, stats)
+	containerIOCollector := collector.NewContainerIOCollector(dsmClient, s, cfg.NasID, 30*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		containerIOCollector.Run(stop)
+	}()
+
+	// Start Drive Admin collector (team folders, user activity, stats, ShareSync tasks)
 	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		driveCollector.Run(stop)
+	}()
+
+	// Start per-process CPU / memory / disk I/O collector
+	processCollector := collector.NewProcessCollector(s, cfg.NasID, cfg.ProcessInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		processCollector.Run(stop)
+	}()
+
+	// Start per-disk IOPS / latency / utilisation collector
+	diskStatsCollector := collector.NewDiskStatsCollector(s, cfg.NasID, cfg.DiskStatsInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		diskStatsCollector.Run(stop)
+	}()
+
+	// Start active network connection enumerator
+	connectionsCollector := collector.NewConnectionsCollector(s, cfg.NasID, cfg.ConnectionsInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		connectionsCollector.Run(stop)
 	}()
 
 	// Start log watcher
@@ -108,6 +147,62 @@ func main() {
 	go func() {
 		defer wg.Done()
 		logW.Run(stop)
+	}()
+
+	// Start share health collector (shares, packages, DSM system logs via API)
+	shareHealthCollector := collector.NewShareHealthCollector(dsmClient, s, cfg.NasID, 2*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		shareHealthCollector.Run(stop)
+	}()
+
+	// Start service health collector (DSM service status)
+	serviceCollector := collector.NewServiceHealthCollector(s, cfg.NasID, 60*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serviceCollector.Run(stop)
+	}()
+
+	// Start system extras collector (memory pressure, inode usage, thermal)
+	sysExtrasCollector := collector.NewSysExtrasCollector(s, cfg.NasID, 30*time.Second)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sysExtrasCollector.Run(stop)
+	}()
+
+	// Start scheduled task collector (all tasks, outcomes, next run)
+	schedTaskCollector := collector.NewScheduledTaskCollector(dsmClient, s, cfg.NasID, 5*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		schedTaskCollector.Run(stop)
+	}()
+
+	// Start Hyper Backup state collector
+	hyperBackupCollector := collector.NewHyperBackupCollector(dsmClient, s, cfg.NasID, 5*time.Minute)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hyperBackupCollector.Run(stop)
+	}()
+
+	// Start storage pool / RAID scrub / snapshot replication collector
+	storagePoolCollector := collector.NewStoragePoolCollector(dsmClient, s, cfg.NasID)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		storagePoolCollector.Run(stop)
+	}()
+
+	// Start custom metric collector (polls smon_custom_metric_schedules for AI-requested collections)
+	customCollector := collector.NewCustomCollector(s, cfg.NasName, cfg.SupabaseURL, cfg.SupabaseServiceKey)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		customCollector.Run(stop)
 	}()
 
 	// Start security watcher
