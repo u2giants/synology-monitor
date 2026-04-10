@@ -1,9 +1,15 @@
 /**
  * Load AI model settings from smon_ai_settings table.
  * Falls back to env vars, then hardcoded defaults.
+ *
+ * Uses the service-role admin client so settings are readable from any
+ * context — including background issue-worker runs that have no user session.
+ * The session-based client would silently return {} there (RLS requires
+ * authenticated role), causing all getters to fall back to hardcoded defaults
+ * and ignoring whatever the operator set in Settings.
  */
 
-import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 let cachedSettings: Record<string, string> | null = null;
 let cacheTime = 0;
@@ -20,7 +26,7 @@ async function loadSettings(): Promise<Record<string, string>> {
   }
 
   try {
-    const supabase = await createSupabaseServerClient();
+    const supabase = createAdminClient();
     const { data } = await supabase.from("smon_ai_settings").select("key, value");
 
     const settings: Record<string, string> = {};
