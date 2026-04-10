@@ -220,26 +220,33 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .order("created_at", { ascending: false })
       .limit(12),
 
+    // Noisy polling sources (share_config, package_health, drive_server,
+    // dsm_system_log, backup) — warning+ only, 6h.  At info level these emit
+    // hundreds of routine enumeration rows per hour that add no diagnostic
+    // signal and fill the context window.
     supabase
       .from("smon_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since6h)
       .in("severity", ["critical", "error", "warning"])
+      .not("source", "in", '("system","storage","scheduled_task","share_quota","share_health")')
       .order("ingested_at", { ascending: false })
-      .limit(80),
+      .limit(60),
 
-    // Storage + system logs with a 48h window.
-    // - storage/share_* sources: catch RAID/share events that occurred and
-    //   recovered more than 6h ago.
-    // - system source (all severities including info): captures SSH logins,
-    //   DSM API authentications, and invoked errors that are the triggering
-    //   events for anomalous host-level processes. These are logged at info
-    //   level so they are invisible to the 6h warning/error-only query above.
+    // High-signal sources — all severities (including info), 48h window.
+    // - system: SSH logins, DSM API authentications, invoked errors.
+    //   These are info-level but are the triggering events for anomalous
+    //   host-level processes (e.g. a curl-to-DSM auth 34s before rogue greps
+    //   start is invisible if info is filtered).
+    // - storage: RAID state changes, replication — relevant even when healthy.
+    // - scheduled_task: task completions are info-level but form the trigger
+    //   trail for scripts that spawn child processes.
+    // - share_quota / share_health: low volume, all severities useful.
     supabase
       .from("smon_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since48h)
-      .in("source", ["storage", "share_config", "share_quota", "share_health", "system"])
+      .in("source", ["system", "storage", "scheduled_task", "share_quota", "share_health"])
       .order("ingested_at", { ascending: false })
       .limit(80),
 
@@ -337,8 +344,9 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
   });
 
-  // Storage logs use the same NAS filter but come from a 48h window
-  const storage_logs = collectResult("storage_logs", storageLogsResult, telemetry_errors).filter((row) => {
+  // High-signal logs (system, storage, scheduled_task, share_quota/health)
+  // with 48h window and all severities — apply same NAS filter as general logs.
+  const audit_logs = collectResult("audit_logs", storageLogsResult, telemetry_errors).filter((row) => {
     if (!nasFilter?.length) return true;
     const nasValue = typeof row.nas_id === "string" ? row.nas_id : "";
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
@@ -347,7 +355,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
   return {
     alerts,
     logs,
-    storage_logs,
+    audit_logs,
     telemetry_errors,
     top_processes: collectResult("top_processes", processResult, telemetry_errors),
     disk_io: collectResult("disk_io", diskResult, telemetry_errors),
