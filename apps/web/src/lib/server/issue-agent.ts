@@ -16,6 +16,7 @@ import { attachFactToIssue, deriveFactsFromTelemetry, listIssueFacts, upsertFact
 import { recordIssueStageRun } from "@/lib/server/issue-stage-store";
 import {
   compressLogsToFacts,
+  consolidateIssueMemory,
   explainIssueState,
   planIssueRemediation,
   planIssueNextStep,
@@ -30,6 +31,11 @@ import {
   nasApiExec,
   resolveNasApiConfig,
 } from "@/lib/server/nas-api-client";
+import {
+  classifyIssueSubjects,
+  loadMemoriesForIssue,
+  saveMemories,
+} from "@/lib/server/agent-memory-store";
 
 const MAX_AGENT_CYCLES = 8;
 
@@ -195,11 +201,20 @@ async function syncIssueFacts(
   return facts;
 }
 
-async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull["issue"]) {
+async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, issue: IssueFull["issue"]) {
   const since6h = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
   const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   const nasFilter = issue.affected_nas.length > 0 ? issue.affected_nas : null;
+
+  // Kick off memory loading in parallel with telemetry queries.
+  // Classified by subject so only relevant topics are loaded.
+  const memoriesPromise = loadMemoriesForIssue(
+    supabase,
+    userId,
+    classifyIssueSubjects(issue),
+    issue.affected_nas.length > 0 ? issue.affected_nas : undefined,
+  );
 
   const [
     alertsResult,
@@ -355,6 +370,9 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
   });
 
+  // Resolve memories (started in parallel above; nearly always resolved by now)
+  const agentMemory = await memoriesPromise;
+
   return {
     alerts,
     logs,
@@ -370,6 +388,16 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     io_pressure_metrics: collectResult("io_pressure_metrics", ioMetricsResult, telemetry_errors),
     storage_snapshots: dedupeLatestByField(collectResult("storage_snapshots", storageSnapshotsResult, telemetry_errors), "volume_id"),
     dsm_errors: collectResult("dsm_errors", dsmErrorsResult, telemetry_errors),
+    // Persistent knowledge from past resolved issues — loaded per-subject so
+    // only relevant topics are included (e.g. HyperBackup memories for backup issues).
+    agent_memory: agentMemory.map((m) => ({
+      subject: m.subject,
+      memory_type: m.memory_type,
+      title: m.title,
+      content: m.content,
+      tags: m.tags,
+      nas_id: m.nas_id,
+    })),
   };
 }
 
@@ -822,7 +850,7 @@ async function refreshIssueContext(
   userId: string,
   state: IssueFull,
 ) {
-  const telemetry = await gatherTelemetryContext(supabase, state.issue);
+  const telemetry = await gatherTelemetryContext(supabase, userId, state.issue);
   const [facts, capability_state] = await Promise.all([
     syncIssueFacts(supabase, userId, state, telemetry),
     syncTelemetryCapabilities(supabase, userId, state.issue, telemetry),
@@ -929,6 +957,10 @@ export async function runIssueAgent(
         resolved_at: verification.status === "resolved" ? new Date().toISOString() : null,
       });
       await appendIssueMessage(supabase, userId, issueId, "agent", verification.response);
+      if (verification.status === "resolved") {
+        const finalState = await loadIssue(supabase, userId, issueId);
+        if (finalState) void runMemoryConsolidation(supabase, userId, finalState).catch(console.error);
+      }
       return loadIssue(supabase, userId, issueId);
     }
 
@@ -1019,12 +1051,58 @@ export async function runIssueAgent(
         status: "resolved",
         resolved_at: new Date().toISOString(),
       });
+      const resolvedState = await loadIssue(supabase, userId, issueId);
+      if (resolvedState) void runMemoryConsolidation(supabase, userId, resolvedState).catch(console.error);
     }
 
     return loadIssue(supabase, userId, issueId);
   }
 
   return loadIssue(supabase, userId, issueId);
+}
+
+/** Fire-and-forget: extract and persist durable memories after an issue resolves. */
+async function runMemoryConsolidation(
+  supabase: SupabaseClient,
+  userId: string,
+  state: IssueFull,
+): Promise<void> {
+  try {
+    const completedActions = state.actions
+      .filter((a) => a.status === "completed" || a.status === "failed")
+      .map((a) => ({
+        command: a.command_preview ?? "",
+        summary: a.summary ?? "",
+        result_excerpt: (a.result_text ?? "").slice(0, 400),
+        status: a.status,
+      }));
+
+    const evidenceHighlights = state.evidence.slice(-10).map((e) => ({
+      title: e.title,
+      detail: e.detail.slice(0, 300),
+    }));
+
+    const { memories } = await consolidateIssueMemory({
+      issue_id: state.issue.id,
+      title: state.issue.title,
+      summary: state.issue.summary ?? "",
+      final_hypothesis: state.issue.current_hypothesis ?? "",
+      conversation_summary: state.issue.conversation_summary ?? "",
+      affected_nas: state.issue.affected_nas,
+      evidence_highlights: evidenceHighlights,
+      completed_actions: completedActions,
+    });
+
+    if (memories.length > 0) {
+      await saveMemories(
+        supabase,
+        userId,
+        memories.map((m) => ({ ...m, source_issue_id: state.issue.id })),
+      );
+    }
+  } catch (err) {
+    console.error("[runMemoryConsolidation] Failed:", err);
+  }
 }
 
 export async function seedIssueFromOrigin(

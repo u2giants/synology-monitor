@@ -381,3 +381,81 @@ ${JSON.stringify(slimmed, null, 2)}`;
   const parsed = await callStageModel<{ facts: LogCompressionFact[] }>(model, prompt);
   return { model, facts: Array.isArray(parsed.facts) ? parsed.facts : [] };
 }
+
+// ─── Agent memory consolidation ──────────────────────────────────────────────
+
+export type AgentMemoryEntry = {
+  nas_id: string | null;
+  subject: string;
+  memory_type: "nas_profile" | "issue_pattern" | "calibration" | "institutional";
+  title: string;
+  content: string;
+  tags: string[];
+};
+
+/**
+ * Runs the extractor model over a resolved issue to extract durable memories.
+ * Called once after resolution — cheap model (extractor tier) since this runs
+ * in the background and latency doesn't matter.
+ *
+ * Returns up to 5 memories covering: issue patterns, NAS-specific calibration,
+ * version-specific behaviour, institutional Synology knowledge.
+ */
+export async function consolidateIssueMemory(input: {
+  issue_id: string;
+  title: string;
+  summary: string;
+  final_hypothesis: string;
+  conversation_summary: string;
+  affected_nas: string[];
+  evidence_highlights: Array<{ title: string; detail: string }>;
+  completed_actions: Array<{ command: string; summary: string; result_excerpt: string; status: string }>;
+}): Promise<{ model: string; memories: AgentMemoryEntry[] }> {
+  const model = await getExtractorModel();
+
+  const prompt = `You are extracting durable knowledge from a resolved Synology NAS issue.
+
+Extract up to 5 short, precise memories that would help a future agent facing a similar issue.
+Focus on facts that are NOT obvious from standard Synology documentation and that will still be
+valid weeks or months from now.
+
+Good memory types:
+- issue_pattern: "When X happens on Synology, the root cause is usually Y" — diagnostic fingerprints.
+- calibration: "Normal baseline on this NAS is X for metric Y" — prevents false alarms next time.
+- institutional: "Synology DSM <version> has behaviour Z" — version-specific or firmware-level facts.
+- nas_profile: "This specific NAS has configuration/history X" — persistent NAS-specific state.
+
+Subject must be one of: HyperBackup, BTRFS, RAID, ShareSync, SynologyDrive, Docker, SSL, DSM,
+SMB, NFS, Network, Disk, Memory, CPU, Process, LogCenter, Security, ShareHealth,
+SnapshotReplication, C2Backup, QuickConnect, VPN, Packages, StoragePool, Virtualization,
+DDNS, ReverseProxy, SynologyPhotos, ActiveDirectory, iSCSI, Monitoring, General.
+If none fit exactly, use General.
+
+Return JSON only:
+{
+  "memories": [
+    {
+      "nas_id": "edgesynology1" or null,
+      "subject": "HyperBackup",
+      "memory_type": "issue_pattern",
+      "title": "One-line label (max 100 chars)",
+      "content": "2-4 sentences of durable knowledge. Include version numbers, exact paths, or process names when relevant.",
+      "tags": ["tag1", "tag2"]
+    }
+  ]
+}
+
+Rules:
+- Only emit memories that contain specific, actionable, non-obvious facts.
+- Do not emit memories that just restate what happened — extract the generalizable lesson.
+- nas_id should be the affected NAS name when the fact is NAS-specific; null when it applies universally.
+- Omit memories that duplicate general Synology documentation.
+- If no durable lesson can be extracted, return "memories": [].
+
+Issue context:
+${JSON.stringify(input, null, 2)}`;
+
+  const parsed = await callStageModel<{ memories: AgentMemoryEntry[] }>(model, prompt);
+  const memories = Array.isArray(parsed.memories) ? parsed.memories : [];
+  return { model, memories };
+}
