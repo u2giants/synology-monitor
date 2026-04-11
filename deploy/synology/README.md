@@ -23,6 +23,22 @@ Live directory:
 `compose.yaml` should be kept in sync with:
 - [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
 
+`.env` is generated from the per-NAS example file:
+- NAS 1: [nas-1.env.example](/worksp/monitor/app/deploy/synology/nas-1.env.example)
+- NAS 2: [nas-2.env.example](/worksp/monitor/app/deploy/synology/nas-2.env.example)
+
+## Running containers
+
+The compose stack runs three containers:
+
+| Container | Image | Purpose |
+|---|---|---|
+| `synology-monitor-agent` | `ghcr.io/u2giants/synology-monitor-agent:latest` | Passive metrics collector, pushes to Supabase |
+| `synology-monitor-nas-api` | `ghcr.io/u2giants/synology-monitor-nas-api:latest` | Three-tier HTTP shell execution API for issue agent |
+| `synology-monitor-watchtower` | `containrrr/watchtower` | Auto-updates both containers from GHCR |
+
+The NAS API listens on port 7734 (configurable via `NAS_API_PORT` in `.env`).
+
 Docker binary on Synology:
 - `/var/packages/ContainerManager/target/usr/bin/docker`
 
@@ -54,14 +70,30 @@ DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 cd /volume1/docker/synology-monitor-agent
 
 $DOCKER compose -f compose.yaml pull
-$DOCKER stop synology-monitor-agent || true
-$DOCKER rm synology-monitor-agent || true
+$DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
+$DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER compose -f compose.yaml up -d
 ```
 
 Why `stop` and `rm` matter:
 - Synology Docker/Container Manager often reuses the existing container definition
 - `compose up -d` alone is not reliable for switching to the newly pulled image
+
+## Coolify web app environment variables
+
+The web app reads NAS API credentials from these environment variables (set in Coolify):
+
+```
+NAS_EDGE1_API_URL=http://100.107.131.35:7734
+NAS_EDGE1_API_SECRET=<must match NAS_API_SECRET in NAS 1 .env>
+NAS_EDGE1_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 1 .env>
+
+NAS_EDGE2_API_URL=http://100.107.131.36:7734
+NAS_EDGE2_API_SECRET=<must match NAS_API_SECRET in NAS 2 .env>
+NAS_EDGE2_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 2 .env>
+```
+
+The exact values are in [apps/web/.env.example](/worksp/monitor/app/apps/web/.env.example).
 
 ## AGENT_IMAGE_TAG rule
 
