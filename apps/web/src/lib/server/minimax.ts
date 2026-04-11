@@ -151,7 +151,6 @@ export async function callMinimax(
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[Minimax] API error ${response.status}: ${errorText}`);
-      // Parse OpenRouter error for a readable message
       let detail = `API error ${response.status}`;
       try {
         const errJson = JSON.parse(errorText);
@@ -170,9 +169,6 @@ export async function callMinimax(
       return { content: null, error: "No content in response" };
     }
 
-<<<<<<< HEAD
-    return { content: (content as string).trim() };
-=======
     // Clean content: strip markdown code blocks, BOM, leading/trailing whitespace
     content = content.trim();
     content = content.replace(/^\uFEFF/, "");
@@ -180,7 +176,6 @@ export async function callMinimax(
     content = content.trim();
 
     return { content };
->>>>>>> e2a762a1685477c3b37aad1cdfb7112b8bc8349e
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error(`[Minimax] Request failed: ${message}`);
@@ -189,17 +184,10 @@ export async function callMinimax(
 }
 
 /**
-<<<<<<< HEAD
- * Call Minimax and parse JSON response.
- * Applies sanitizeMinimaxResponse() before JSON.parse().
- * Returns parsed JSON or null on error.
-=======
  * Attempt to repair truncated JSON by closing unclosed structures.
  * Handles the common case where the model response is cut off mid-object/array.
  */
 function repairTruncatedJSON(text: string): string {
-  // Trim to last complete value boundary — find the last comma-separated item end
-  // Strategy: count open brackets/braces and close them
   const stack: string[] = [];
   let inString = false;
   let escaped = false;
@@ -211,7 +199,7 @@ function repairTruncatedJSON(text: string): string {
     if (ch === "\\" && inString) { escaped = true; continue; }
     if (ch === '"') {
       inString = !inString;
-      if (!inString) lastSafePos = i + 1; // end of string literal
+      if (!inString) lastSafePos = i + 1;
       continue;
     }
     if (inString) continue;
@@ -223,16 +211,12 @@ function repairTruncatedJSON(text: string): string {
         stack.pop();
         lastSafePos = i + 1;
       }
-    } else if ((ch === "," || ch === ":") && stack.length > 0) {
-      // don't update lastSafePos here — trailing comma before truncation is invalid
     }
   }
 
-  if (stack.length === 0) return text; // already complete
+  if (stack.length === 0) return text;
 
-  // Truncate back to the last safe boundary and close all open structures
   let repaired = text.slice(0, lastSafePos);
-  // Close arrays/objects in reverse order
   repaired += stack.reverse().join("");
   return repaired;
 }
@@ -240,52 +224,27 @@ function repairTruncatedJSON(text: string): string {
 /**
  * Call Minimax and parse JSON response
  * Returns parsed JSON or null on error
->>>>>>> e2a762a1685477c3b37aad1cdfb7112b8bc8349e
  */
 export async function callMinimaxJSON<T>(
   systemPrompt: string,
   userPrompt: string
 ): Promise<{ data: T | null; error?: string }> {
   // 8192 is the safe output token limit for Gemini Flash via OpenRouter.
-  // Requesting more may cause silent truncation that breaks JSON parsing.
   const result = await callMinimax(systemPrompt, userPrompt, { json: true, maxTokens: 8192 });
 
   if (!result.content) {
     return { data: null, error: result.error };
   }
 
-<<<<<<< HEAD
-  const sanitized = sanitizeMinimaxResponse(result.content);
-
-  if (!sanitized.json) {
-    console.error(
-      "[Minimax] Sanitization failed:",
-      sanitized.reason,
-      "| Raw (first 500 chars):",
-      sanitized.raw.slice(0, 500)
-    );
-    return { data: null, error: sanitized.reason || "Failed to extract JSON from response" };
-  }
-
-=======
   // Attempt 1: direct parse
->>>>>>> e2a762a1685477c3b37aad1cdfb7112b8bc8349e
   try {
-    const data = JSON.parse(sanitized.json) as T;
+    const data = JSON.parse(result.content) as T;
     return { data };
-<<<<<<< HEAD
-  } catch {
-    console.error(
-      "[Minimax] Failed to parse JSON. Raw (first 500 chars):",
-      sanitized.raw.slice(0, 500)
-    );
-    return { data: null, error: "Failed to parse JSON response" };
-=======
   } catch { /* fall through */ }
 
   // Attempt 2: extract from markdown fences or find first {...} block
   const fenceMatch = result.content.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const braceMatch = result.content.match(/\{[\s\S]*/); // start of JSON even if truncated
+  const braceMatch = result.content.match(/\{[\s\S]*/);
   const candidate = fenceMatch?.[1]?.trim() ?? braceMatch?.[0];
 
   if (candidate) {
@@ -302,7 +261,6 @@ export async function callMinimaxJSON<T>(
       console.warn("[Minimax] Parsed after JSON repair — response was likely truncated");
       return { data };
     } catch { /* fall through */ }
->>>>>>> e2a762a1685477c3b37aad1cdfb7112b8bc8349e
   }
 
   console.error("[Minimax] Failed to parse JSON response:", result.content.slice(0, 500));

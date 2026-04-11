@@ -1,4 +1,4 @@
-import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
+import { collectNasDiagnostics } from "@/lib/server/nas";
 import {
   appendIssueEvidence,
   appendIssueMessage,
@@ -26,47 +26,12 @@ import {
   type NextStepPlanResult,
 } from "@/lib/server/issue-stage-models";
 import {
-  TOOL_DEFINITIONS,
-  buildApprovalToken,
-  type CopilotToolName,
-  type NasTarget,
-} from "@/lib/server/tools";
+  buildNasApiApprovalToken,
+  nasApiExec,
+  resolveNasApiConfig,
+} from "@/lib/server/nas-api-client";
 
-const MAX_AGENT_CYCLES = 3;
-
-const ALLOWED_DIAGNOSTIC_TOOLS: CopilotToolName[] = [
-  "check_drive_package_health",
-  "check_drive_database",
-  "check_share_database",
-  "check_cpu_iowait",
-  "search_webapi_log",
-  "search_all_logs",
-  "find_problematic_files",
-  "check_kernel_io_errors",
-  "check_filesystem_health",
-  "check_io_stalls",
-  "check_sharesync_status",
-  "tail_sharesync_log",
-  "tail_drive_server_log",
-  "search_drive_server_log",
-  "get_resource_snapshot",
-  "check_scheduled_tasks",
-  "check_backup_status",
-  "check_container_io",
-];
-
-const ALLOWED_REMEDIATION_TOOLS: CopilotToolName[] = [
-  "stop_monitor_agent",
-  "start_monitor_agent",
-  "restart_monitor_agent",
-  "pull_monitor_agent",
-  "build_monitor_agent",
-  "restart_synology_drive_sharesync",
-  "restart_synology_drive_server",
-  "rename_file_to_old",
-  "remove_invalid_chars",
-  "trigger_sharesync_resync",
-];
+const MAX_AGENT_CYCLES = 8;
 
 // Keep only the most recent row per unique field value (e.g. per task_id).
 function dedupeLatestByField<T extends Record<string, unknown>>(items: T[], field: keyof T): T[] {
@@ -412,7 +377,7 @@ function summarizeActionHistory(actions: IssueAction[]) {
   return actions.slice(-10).map((action) => ({
     kind: action.kind,
     status: action.status,
-    tool_name: action.tool_name,
+    command: action.command_preview,
     target: action.target,
     summary: action.summary,
     reason: action.reason,
@@ -440,45 +405,17 @@ function mergeStringLists(...lists: string[][]) {
   return Array.from(new Set(lists.flat().map((item) => item.trim()).filter(Boolean)));
 }
 
-function actionFingerprint(action: {
-  tool_name: string;
-  target: string | null;
-  filter?: string;
-}) {
-  return `${action.tool_name}:${action.target ?? "unknown"}:${action.filter ?? ""}`;
-}
-
-function buildCommandPreview(plan: ToolActionPlan) {
-  const tool = TOOL_DEFINITIONS[plan.tool_name];
-  if (!tool) {
-    throw new Error(`Unknown tool ${plan.tool_name}`);
-  }
-  return tool.buildPreview(plan.target, {
-    filter: plan.filter,
-    lookbackHours: plan.lookback_hours,
-  });
-}
-
-function ensureAllowed(plan: ToolActionPlan, kind: "diagnostic" | "remediation") {
-  const allowed = kind === "diagnostic" ? ALLOWED_DIAGNOSTIC_TOOLS : ALLOWED_REMEDIATION_TOOLS;
-  if (!allowed.includes(plan.tool_name)) {
-    throw new Error(`Tool ${plan.tool_name} is not allowed for ${kind}`);
-  }
-}
-
 function hasAlreadyTried(state: IssueFull, plan: ToolActionPlan) {
-  const fp = actionFingerprint(plan);
-  return state.actions.some((action) =>
-    actionFingerprint({
-      tool_name: action.tool_name,
-      target: action.target,
-      filter: action.command_preview,
-    }) === fp || (
-      action.tool_name === plan.tool_name &&
-      action.target === plan.target &&
-      (action.status === "rejected" || action.status === "completed" || action.status === "failed")
-    ),
-  );
+  const cmd = plan.command?.trim();
+  if (!cmd) return false;
+  return state.actions.some((action) => {
+    const sameCommand = action.command_preview?.trim() === cmd;
+    const sameTarget = action.target === plan.target;
+    if (sameCommand && sameTarget) return true;
+    // Also block if the same command was tried on any target and failed/completed
+    if (sameCommand && (action.status === "rejected" || action.status === "completed" || action.status === "failed")) return true;
+    return false;
+  });
 }
 
 async function appendEvidenceNotes(
@@ -496,13 +433,6 @@ async function appendEvidenceNotes(
       metadata: {},
     });
   }
-}
-
-function toolDescriptions(toolNames: CopilotToolName[]) {
-  return toolNames.map((toolName) => ({
-    tool_name: toolName,
-    description: TOOL_DEFINITIONS[toolName].description,
-  }));
 }
 
 function buildAgentResponse(
@@ -601,14 +531,12 @@ async function runPlanningStage(
       hypothesis,
       telemetry,
       recent_actions: recentActions.map((a) => ({
-        tool_name: a.tool_name ?? "",
+        command: a.command ?? "",
         status: a.status,
         summary: a.summary ?? "",
         result_text: a.result_text,
       })),
       completed_diagnostic_count: completedDiagnosticCount,
-      allowed_diagnostic_tools: toolDescriptions(ALLOWED_DIAGNOSTIC_TOOLS),
-      allowed_remediation_tools: toolDescriptions(ALLOWED_REMEDIATION_TOOLS),
     });
     await recordIssueStageRun(supabase, userId, state.issue.id, {
       stageKey: "next_step_plan",
@@ -653,7 +581,6 @@ async function runRemediationStage(
       hypothesis,
       plan,
       telemetry,
-      allowed_remediation_tools: toolDescriptions(ALLOWED_REMEDIATION_TOOLS),
     });
     await recordIssueStageRun(supabase, userId, state.issue.id, {
       stageKey: "next_step_plan",
@@ -767,12 +694,11 @@ async function executeDiagnosticAction(
   issueId: string,
   plan: ToolActionPlan,
 ) {
-  const commandPreview = buildCommandPreview(plan);
   const actionId = await createIssueAction(supabase, userId, issueId, {
     kind: "diagnostic",
     target: plan.target,
-    toolName: plan.tool_name,
-    commandPreview,
+    toolName: `shell:tier${plan.tier}`,
+    commandPreview: plan.command,
     summary: plan.summary,
     reason: plan.reason,
     expectedOutcome: plan.expected_outcome,
@@ -789,11 +715,15 @@ async function executeDiagnosticAction(
   let status: IssueAction["status"] = "completed";
 
   try {
-    const result = await executeApprovedCommand(plan.target, commandPreview);
+    const nasConfig = plan.target ? resolveNasApiConfig(plan.target) : null;
+    if (!nasConfig) {
+      throw new Error(`No NAS API config found for target: ${plan.target ?? "(none)"}`);
+    }
+    const result = await nasApiExec(nasConfig, plan.command, plan.tier as 1 | 2 | 3);
     stdout = result.stdout;
     stderr = result.stderr;
-    exitCode = result.exitCode;
-    status = result.exitCode === 0 ? "completed" : "failed";
+    exitCode = result.exit_code;
+    status = result.exit_code === 0 ? "completed" : "failed";
   } catch (error) {
     stderr = error instanceof Error ? error.message : "Unknown diagnostic execution error";
     status = "failed";
@@ -809,10 +739,11 @@ async function executeDiagnosticAction(
 
   await appendIssueEvidence(supabase, userId, issueId, {
     source_kind: "diagnostic",
-    title: `${plan.summary} (${plan.tool_name})`,
+    title: plan.summary,
     detail: resultText || "No output returned.",
     metadata: {
-      tool_name: plan.tool_name,
+      command: plan.command,
+      tier: plan.tier,
       target: plan.target,
       exit_code: exitCode,
       status,
@@ -836,10 +767,23 @@ async function executeApprovedActions(
   let status: IssueAction["status"] = "completed";
 
   try {
-    const result = await executeApprovedCommand(approved.target as NasTarget, approved.command_preview);
+    const nasConfig = approved.target ? resolveNasApiConfig(approved.target) : null;
+    if (!nasConfig) {
+      throw new Error(`No NAS API config found for target: ${approved.target ?? "(none)"}`);
+    }
+    // Recover tier from tool_name (stored as "shell:tier2", "shell:tier3")
+    const tierMatch = approved.tool_name?.match(/shell:tier(\d)/);
+    const tier = tierMatch ? (Number(tierMatch[1]) as 1 | 2 | 3) : 2;
+    const result = await nasApiExec(
+      nasConfig,
+      approved.command_preview,
+      tier,
+      approved.approval_token ?? undefined,
+      90_000,
+    );
     resultText = [result.stdout, result.stderr].filter(Boolean).join("\n\n").slice(0, 12000);
-    exitCode = result.exitCode;
-    status = result.exitCode === 0 ? "completed" : "failed";
+    exitCode = result.exit_code;
+    status = result.exit_code === 0 ? "completed" : "failed";
   } catch (error) {
     resultText = error instanceof Error ? error.message : "Unknown remediation execution error";
     status = "failed";
@@ -1014,8 +958,7 @@ export async function runIssueAgent(
     );
 
     if (plan.diagnostic_action) {
-      ensureAllowed(plan.diagnostic_action, "diagnostic");
-      if (!mergedBlockedTools.includes(plan.diagnostic_action.tool_name) && !hasAlreadyTried(state, plan.diagnostic_action)) {
+      if (!hasAlreadyTried(state, plan.diagnostic_action)) {
         await appendIssueMessage(supabase, userId, issueId, "agent", agentResponse);
         await executeDiagnosticAction(supabase, userId, issueId, plan.diagnostic_action);
         continue;
@@ -1023,8 +966,7 @@ export async function runIssueAgent(
     }
 
     if (plan.remediation_action) {
-      ensureAllowed(plan.remediation_action, "remediation");
-      if (!mergedBlockedTools.includes(plan.remediation_action.tool_name) && !hasAlreadyTried(state, plan.remediation_action)) {
+      if (!hasAlreadyTried(state, plan.remediation_action)) {
         if (!plan.remediation_action.target) {
           await updateIssue(supabase, userId, issueId, { status: "waiting_on_user" });
           await appendIssueMessage(
@@ -1036,19 +978,23 @@ export async function runIssueAgent(
           );
           return loadIssue(supabase, userId, issueId);
         }
-        const commandPreview = buildCommandPreview(plan.remediation_action);
+        const remTier = plan.remediation_action.tier as 2 | 3;
+        const nasConfig = resolveNasApiConfig(plan.remediation_action.target);
+        const approvalToken = nasConfig
+          ? buildNasApiApprovalToken(nasConfig, plan.remediation_action.command, remTier)
+          : undefined;
         await createIssueAction(supabase, userId, issueId, {
           kind: "remediation",
           target: plan.remediation_action.target,
-          toolName: plan.remediation_action.tool_name,
-          commandPreview,
+          toolName: `shell:tier${remTier}`,
+          commandPreview: plan.remediation_action.command,
           summary: plan.remediation_action.summary,
           reason: plan.remediation_action.reason,
           expectedOutcome: plan.remediation_action.expected_outcome,
           rollbackPlan: plan.remediation_action.rollback_plan ?? "",
           risk: plan.remediation_action.risk ?? "medium",
           requiresApproval: true,
-          approvalToken: buildApprovalToken(plan.remediation_action.target, commandPreview),
+          approvalToken,
         });
         await updateIssue(supabase, userId, issueId, { status: "waiting_for_approval" });
       } else {
@@ -1060,8 +1006,7 @@ export async function runIssueAgent(
 
     const remediationPlan = plan.remediation_action;
     const hasPendingApproval = remediationPlan
-      ? !mergedBlockedTools.includes(remediationPlan.tool_name)
-        && !hasAlreadyTried(state, remediationPlan)
+      ? !hasAlreadyTried(state, remediationPlan)
         && Boolean(remediationPlan.target)
       : false;
     const finalStatus = deriveTerminalPlanStatus(state, plan, hasPendingApproval);

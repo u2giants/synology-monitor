@@ -8,19 +8,20 @@ import {
   getVerifierModel,
 } from "@/lib/server/ai-settings";
 import { parseJsonObject } from "@/lib/server/model-json";
-import type { CopilotToolName, NasTarget } from "@/lib/server/tools";
 import type { IssueConfidence, IssueSeverity, IssueStatus } from "@/lib/server/issue-store";
 
 export type ToolActionPlan = {
-  tool_name: CopilotToolName;
-  target: NasTarget;
+  /** Raw shell command to run on the NAS. */
+  command: string;
+  /** 1 = read-only (auto), 2 = service ops (approval), 3 = file ops (approval) */
+  tier: 1 | 2 | 3;
+  /** NAS name to run on (e.g. "edgesynology1"). Null if unknown — operator must supply. */
+  target: string | null;
   summary: string;
   reason: string;
   expected_outcome: string;
   rollback_plan?: string;
   risk?: "low" | "medium" | "high";
-  filter?: string;
-  lookback_hours?: number;
 };
 
 export type HypothesisRankResult = {
@@ -38,7 +39,7 @@ export type NextStepPlanResult = {
   status: IssueStatus;
   next_step: string;
   constraints_to_add: string[];
-  blocked_tools: CopilotToolName[];
+  blocked_tools: string[];
   evidence_notes: Array<{ title: string; detail: string }>;
   user_question: string | null;
   diagnostic_action: ToolActionPlan | null;
@@ -129,54 +130,60 @@ export async function planIssueNextStep(input: {
   issue: object;
   hypothesis: HypothesisRankResult;
   telemetry: object;
-  recent_actions: Array<{ tool_name: string; status: string; summary: string; result_text: string }>;
+  recent_actions: Array<{ command: string; status: string; summary: string; result_text: string }>;
   completed_diagnostic_count: number;
-  allowed_diagnostic_tools: Array<{ tool_name: string; description: string }>;
-  allowed_remediation_tools: Array<{ tool_name: string; description: string }>;
 }) {
   const model = await getPlannerModel();
-  const prompt = `You are selecting the single best next step for one Synology NAS issue.
+  const prompt = `You are a Synology NAS expert selecting the single best next step for one issue.
+
+You have full shell access to the affected NAS via a tiered execution API. Write the exact shell command you want to run.
+
+Tier system:
+- tier 1 (read-only): df, cat, ls, ps, dmesg, grep on logs, smartctl -A, btrfs status, find, sqlite3 SELECT, docker ps, etc. Auto-executes, no approval needed.
+- tier 2 (service ops): docker start/stop/restart, synopkg restart, systemctl restart, docker compose up/down. Requires operator approval.
+- tier 3 (file ops): mv, cp, rm, touch, or any write to /volume*. Requires operator approval.
+Hard-blocked (never use): mkfs, fdisk, dd if=, rm -rf /, useradd/userdel/usermod, firmware flashing, apt/opkg install, umount /volume, shutdown/reboot/halt.
 
 Return JSON only:
 {
   "status": "running|waiting_on_user|waiting_for_approval|resolved|stuck",
   "next_step": "one-sentence next step",
   "constraints_to_add": ["new durable operator constraints"],
-  "blocked_tools": ["tool names to suppress unless evidence changes"],
+  "blocked_tools": ["short labels for commands to suppress if already tried"],
   "evidence_notes": [{"title":"", "detail":""}],
   "user_question": "one focused user question" or null,
   "diagnostic_action": {
-    "tool_name": "check_drive_database",
+    "command": "df -h /volume1 && cat /proc/mdstat",
+    "tier": 1,
     "target": "edgesynology1",
-    "summary": "what to run",
+    "summary": "what this checks",
     "reason": "why this is next",
-    "expected_outcome": "what this should clarify",
-    "filter": "",
-    "lookback_hours": 2
+    "expected_outcome": "what this should clarify"
   } or null,
   "remediation_action": {
-    "tool_name": "remove_invalid_chars",
+    "command": "/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+    "tier": 2,
     "target": "edgesynology1",
     "summary": "what exact change to make",
     "reason": "why it is justified now",
     "expected_outcome": "what should improve",
     "rollback_plan": "how to revert",
-    "risk": "low|medium|high",
-    "filter": "/exact/path",
-    "lookback_hours": 2
+    "risk": "low|medium|high"
   } or null
 }
 
 ESCALATION RULES — check these before anything else:
 1. If hypothesis_confidence is "high" AND completed_diagnostic_count >= 2: you MUST propose remediation_action or set status "waiting_on_user". Do NOT propose another diagnostic. The diagnosis is done.
-2. If completed_diagnostic_count >= 4 regardless of confidence: force a final decision — remediation_action, one focused user_question, or status "stuck". No more diagnostics.
-3. Never propose a tool_name that already appears in recent_actions with status "completed" or "failed". Those are done.
+2. If completed_diagnostic_count >= 6 regardless of confidence: force a final decision — remediation_action, one focused user_question, or status "stuck". No more diagnostics.
+3. Never propose a command that already appears in recent_actions with status "completed" or "failed". Those are done.
 4. If hypothesis already names a specific service restart or file operation AND confidence is medium or high: propose that as remediation_action now.
-5. If the root cause is confirmed by direct evidence in recent_actions results (e.g. logs show the exact error pattern, integrity checks passed): stop gathering evidence and escalate.
+5. If the root cause is confirmed by direct evidence in recent_actions results: stop gathering evidence and escalate.
 
 Additional rules:
 - Exactly one of user_question, diagnostic_action, remediation_action may be non-null.
-- Never propose a remediation without an exact target.
+- Never propose a remediation without an exact target (NAS name).
+- When predefined knowledge is insufficient (e.g. /proc/<pid>/status, BTRFS snapshot state, upgrade logs, custom paths), use the exact shell command needed — you are not limited to a fixed tool list.
+- Prefer composable commands: pipe grep/awk to extract the signal, avoid dumping gigabytes.
 - If evidence is genuinely thin AND escalation rules do not apply, prefer one discriminating diagnostic.
 - If you are blocked by operator knowledge, ask one focused question.
 
@@ -192,30 +199,32 @@ export async function planIssueRemediation(input: {
   hypothesis: HypothesisRankResult;
   plan: NextStepPlanResult;
   telemetry: object;
-  allowed_remediation_tools: Array<{ tool_name: string; description: string }>;
 }) {
   const model = await getRemediationPlannerModel();
   const prompt = `You are refining a single remediation candidate for one Synology NAS issue.
+
+Tier system for the command field:
+- tier 2 (service ops): docker/synopkg/systemctl restarts. Requires operator approval.
+- tier 3 (file ops): mv, cp, rm, writes to /volume*. Requires operator approval.
 
 Return JSON only:
 {
   "status": "running|waiting_on_user|waiting_for_approval|resolved|stuck",
   "next_step": "one-sentence next step",
   "constraints_to_add": ["new durable operator constraints"],
-  "blocked_tools": ["tool names to suppress unless evidence changes"],
+  "blocked_tools": ["short labels for commands to suppress"],
   "evidence_notes": [{"title":"", "detail":""}],
   "user_question": "one focused user question" or null,
   "diagnostic_action": null,
   "remediation_action": {
-    "tool_name": "remove_invalid_chars",
+    "command": "/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+    "tier": 2,
     "target": "edgesynology1",
     "summary": "what exact change to make",
     "reason": "why it is justified now",
     "expected_outcome": "what should improve",
     "rollback_plan": "how to revert",
-    "risk": "low|medium|high",
-    "filter": "/exact/path",
-    "lookback_hours": 2
+    "risk": "low|medium|high"
   } or null
 }
 
@@ -223,7 +232,7 @@ Rules:
 - This stage exists only to refine or refuse remediation.
 - Do not return a diagnostic action.
 - If exact remediation is still unsafe, return remediation_action = null and user_question or blocked status.
-- Never propose a remediation without an exact target.
+- Never propose a remediation without an exact target (NAS name).
 
 Context:
 ${JSON.stringify(input, null, 2)}`;

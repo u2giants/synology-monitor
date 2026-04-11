@@ -47,7 +47,7 @@ func (v *Verifier) VerifyAPIKey(bearer string) bool {
 
 // VerifyApprovalToken decodes and validates a base64url-encoded approval token.
 func (v *Verifier) VerifyApprovalToken(encoded, command string, tier int) error {
-	raw, err := base64.URLEncoding.DecodeString(encoded)
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		return errors.New("approval token: invalid base64")
 	}
