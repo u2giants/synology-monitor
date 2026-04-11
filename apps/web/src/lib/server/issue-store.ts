@@ -148,7 +148,7 @@ export async function createIssue(
 
   if (input.fingerprint) {
     const { data: existing, error: existingError } = await supabase
-      .from("smon_issues")
+      .from("issues")
       .select("id")
       .eq("user_id", userId)
       .eq("fingerprint", input.fingerprint)
@@ -160,7 +160,7 @@ export async function createIssue(
 
     if (existing?.id) {
       const { error: updateError } = await supabase
-        .from("smon_issues")
+        .from("issues")
         .update({
           title: payload.title,
           summary: payload.summary,
@@ -181,7 +181,7 @@ export async function createIssue(
   }
 
   const { data, error } = await supabase
-    .from("smon_issues")
+    .from("issues")
     .insert(payload)
     .select("id")
     .single();
@@ -196,10 +196,10 @@ export async function loadIssue(
   issueId: string
 ): Promise<IssueFull | null> {
   const [issueResult, messagesResult, evidenceResult, actionsResult] = await Promise.all([
-    supabase.from("smon_issues").select("*").eq("id", issueId).eq("user_id", userId).single(),
-    supabase.from("smon_issue_messages").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
-    supabase.from("smon_issue_evidence").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
-    supabase.from("smon_issue_actions").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
+    supabase.from("issues").select("*").eq("id", issueId).eq("user_id", userId).single(),
+    supabase.from("issue_messages").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
+    supabase.from("issue_evidence").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
+    supabase.from("issue_actions").select("*").eq("issue_id", issueId).eq("user_id", userId).order("created_at", { ascending: true }),
   ]);
 
   if (issueResult.error || !issueResult.data) return null;
@@ -214,7 +214,7 @@ export async function loadIssue(
 
 export async function listIssues(supabase: SupabaseClient, userId: string): Promise<Issue[]> {
   const { data, error } = await supabase
-    .from("smon_issues")
+    .from("issues")
     .select("*")
     .eq("user_id", userId)
     .order("updated_at", { ascending: false })
@@ -249,7 +249,7 @@ export async function updateIssue(
   let previousStatus: IssueStatus | null = null;
   if (updates.status) {
     const { data: current } = await supabase
-      .from("smon_issues")
+      .from("issues")
       .select("status")
       .eq("id", issueId)
       .eq("user_id", userId)
@@ -258,7 +258,7 @@ export async function updateIssue(
   }
 
   const { error } = await supabase
-    .from("smon_issues")
+    .from("issues")
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq("id", issueId)
     .eq("user_id", userId);
@@ -286,7 +286,7 @@ export async function appendIssueMessage(
   content: string,
   metadata: Record<string, unknown> = {}
 ) {
-  const { error } = await supabase.from("smon_issue_messages").insert({
+  const { error } = await supabase.from("issue_messages").insert({
     issue_id: issueId,
     user_id: userId,
     role,
@@ -307,7 +307,7 @@ export async function appendIssueEvidence(
   issueId: string,
   evidence: Omit<IssueEvidence, "id" | "created_at" | "issue_id" | "user_id">
 ) {
-  const { error } = await supabase.from("smon_issue_evidence").insert({
+  const { error } = await supabase.from("issue_evidence").insert({
     issue_id: issueId,
     user_id: userId,
     source_kind: evidence.source_kind,
@@ -326,7 +326,7 @@ export async function createIssueAction(
   action: ProposedIssueAction
 ): Promise<string> {
   const { data, error } = await supabase
-    .from("smon_issue_actions")
+    .from("issue_actions")
     .insert({
       issue_id: issueId,
       user_id: userId,
@@ -362,7 +362,7 @@ export async function updateIssueAction(
 ) {
   const payload = { ...updates, updated_at: new Date().toISOString() };
   const { error } = await supabase
-    .from("smon_issue_actions")
+    .from("issue_actions")
     .update(payload)
     .eq("id", actionId)
     .eq("user_id", userId);
@@ -371,7 +371,7 @@ export async function updateIssueAction(
 }
 
 export async function deleteIssue(supabase: SupabaseClient, userId: string, issueId: string) {
-  const { error } = await supabase.from("smon_issues").delete().eq("id", issueId).eq("user_id", userId);
+  const { error } = await supabase.from("issues").delete().eq("id", issueId).eq("user_id", userId);
   if (error) throw new Error(`Failed to delete issue: ${error.message}`);
 }
 
@@ -384,7 +384,7 @@ export async function recordIssueTransition(
   reason: string,
   metadata: Record<string, unknown> = {},
 ) {
-  const { error } = await supabase.from("smon_issue_state_transitions").insert({
+  const { error } = await supabase.from("issue_state_transitions").insert({
     issue_id: issueId,
     user_id: userId,
     from_status: fromStatus,

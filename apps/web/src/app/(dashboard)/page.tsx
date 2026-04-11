@@ -38,7 +38,7 @@ function useActiveIssues() {
   useEffect(() => {
     const supabase = createClient();
     supabase
-      .from("smon_issues")
+      .from("issues")
       .select("id, title, severity, status, summary, affected_nas, updated_at")
       .not("status", "in", "(resolved,cancelled)")
       .order("updated_at", { ascending: false })

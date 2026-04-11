@@ -84,7 +84,7 @@ export async function listIssueBackedSessions(
   userId: string,
 ): Promise<StoredSessionSummary[]> {
   const { data, error } = await supabase
-    .from("smon_issues")
+    .from("issues")
     .select("id, title, updated_at, created_at")
     .eq("user_id", userId)
     .order("updated_at", { ascending: false })
@@ -121,7 +121,7 @@ export async function deleteIssueBackedSession(
   issueId: string,
 ) {
   const { error } = await supabase
-    .from("smon_issues")
+    .from("issues")
     .delete()
     .eq("id", issueId)
     .eq("user_id", userId);
@@ -254,7 +254,7 @@ export async function executeIssueBackedCopilotAction(
   if (input.actionId) {
     await updateIssueAction(supabase, userId, input.actionId, { status: "approved" });
     const { data: issueAction, error } = await supabase
-      .from("smon_issue_actions")
+      .from("issue_actions")
       .select("issue_id")
       .eq("id", input.actionId)
       .eq("user_id", userId)
@@ -276,7 +276,7 @@ export async function executeIssueBackedCopilotAction(
         };
       }
       const refreshed = await supabase
-        .from("smon_issue_actions")
+        .from("issue_actions")
         .select("result_text, exit_code, status")
         .eq("id", input.actionId)
         .eq("user_id", userId)

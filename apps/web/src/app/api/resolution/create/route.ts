@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
     if (body.originType === "problem" && body.originId) {
       const { data: problem } = await supabase
-        .from("smon_analyzed_problems")
+        .from("analyzed_problems")
         .select("title, explanation, technical_diagnosis, severity, affected_nas")
         .eq("id", body.originId)
         .maybeSingle();
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
 
     if (body.originType === "alert" && body.originId) {
       const { data: alert } = await supabase
-        .from("smon_alerts")
+        .from("alerts")
         .select("title, message, severity")
         .eq("id", body.originId)
         .maybeSingle();

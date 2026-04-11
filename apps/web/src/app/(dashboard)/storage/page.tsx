@@ -32,8 +32,8 @@ export default function StoragePage() {
 
       // Get latest snapshot per volume
       const { data, error } = await supabase
-        .from("smon_storage_snapshots")
-        .select("*, smon_nas_units!inner(name)")
+        .from("storage_snapshots")
+        .select("*, nas_units!inner(name)")
         .order("recorded_at", { ascending: false })
         .limit(20);
 
@@ -46,7 +46,7 @@ export default function StoragePage() {
             seen.add(row.volume_id);
             deduped.push({
               ...row,
-              nas_name: (row.smon_nas_units as any)?.name ?? "Unknown",
+              nas_name: (row.nas_units as any)?.name ?? "Unknown",
             });
           }
         }

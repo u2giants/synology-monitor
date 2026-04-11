@@ -15,7 +15,7 @@ export async function getCustomMetricContext(
   resolutionId: string
 ): Promise<string> {
   const { data: schedules } = await supabase
-    .from("smon_custom_metric_schedules")
+    .from("custom_metric_schedules")
     .select("id, name, nas_id, description, referenced_count")
     .eq("resolution_id", resolutionId)
     .eq("is_active", true);
@@ -25,7 +25,7 @@ export async function getCustomMetricContext(
   const scheduleIds = schedules.map((s) => s.id);
 
   const { data: dataPoints } = await supabase
-    .from("smon_custom_metric_data")
+    .from("custom_metric_data")
     .select("schedule_id, captured_at, raw_output, error")
     .in("schedule_id", scheduleIds)
     .order("captured_at", { ascending: false })

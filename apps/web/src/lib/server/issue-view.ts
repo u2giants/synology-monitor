@@ -19,7 +19,7 @@ async function resolveIssueNasIds(
   if (nasNames.length === 0) return [] as string[];
   const filters = nasNames.flatMap((nas) => [`name.eq.${nas}`, `hostname.eq.${nas}`]).join(",");
   const { data, error } = await supabase
-    .from("smon_nas_units")
+    .from("nas_units")
     .select("id")
     .or(filters);
 
@@ -41,14 +41,14 @@ export async function loadIssueViewState(
     listIssueFacts(supabase, userId, state.issue.id),
     listCapabilityState(supabase, nasIds),
     supabase
-      .from("smon_issue_jobs")
+      .from("issue_jobs")
       .select("*")
       .eq("issue_id", state.issue.id)
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(20),
     supabase
-      .from("smon_issue_state_transitions")
+      .from("issue_state_transitions")
       .select("*")
       .eq("issue_id", state.issue.id)
       .eq("user_id", userId)

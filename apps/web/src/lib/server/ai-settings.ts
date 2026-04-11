@@ -27,7 +27,7 @@ async function loadSettings(): Promise<Record<string, string>> {
 
   try {
     const supabase = createAdminClient();
-    const { data } = await supabase.from("smon_ai_settings").select("key, value");
+    const { data } = await supabase.from("ai_settings").select("key, value");
 
     const settings: Record<string, string> = {};
     for (const row of data ?? []) {

@@ -51,14 +51,14 @@ export default function SyncRemediationPage() {
     const supabase = createClient();
     
     // Fetch NAS units for display
-    const nasResult = await supabase.from("smon_nas_units").select("id, name, hostname");
+    const nasResult = await supabase.from("nas_units").select("id, name, hostname");
     if (!nasResult.error && nasResult.data) {
       setNasUnits(nasResult.data);
     }
 
     // Fetch remediations
     let query = supabase
-      .from("smon_sync_remediations")
+      .from("sync_remediations")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(100);

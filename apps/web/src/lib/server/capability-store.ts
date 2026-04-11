@@ -29,7 +29,7 @@ export async function upsertCapabilityState(
 ) {
   const now = new Date().toISOString();
   const { error } = await supabase
-    .from("smon_capability_state")
+    .from("capability_state")
     .upsert({
       nas_id: input.nasId,
       capability_key: input.capabilityKey,
@@ -55,7 +55,7 @@ export async function listCapabilityState(
 ) {
   if (nasIds.length === 0) return [] as CapabilityRecord[];
   const { data, error } = await supabase
-    .from("smon_capability_state")
+    .from("capability_state")
     .select("*")
     .in("nas_id", nasIds)
     .order("checked_at", { ascending: false });

@@ -78,7 +78,7 @@ export async function getCopilotRole(
   }
 
   const { data, error } = await supabase
-    .from("smon_user_roles")
+    .from("user_roles")
     .select("role")
     .eq("user_id", user.id)
     .maybeSingle();

@@ -32,7 +32,7 @@ export async function enqueueIssueJob(
 ) {
   if (options.dedupe !== false) {
     const { data: existing, error: existingError } = await supabase
-      .from("smon_issue_jobs")
+      .from("issue_jobs")
       .select("id")
       .eq("issue_id", issueId)
       .eq("user_id", userId)
@@ -52,7 +52,7 @@ export async function enqueueIssueJob(
   }
 
   const { data, error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .insert({
       issue_id: issueId,
       user_id: userId,
@@ -78,7 +78,7 @@ export async function claimNextIssueJob(
 ) {
   const now = new Date().toISOString();
   const { data: candidates, error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .select("*")
     .eq("user_id", userId)
     .eq("status", "queued")
@@ -93,7 +93,7 @@ export async function claimNextIssueJob(
 
   for (const candidate of (candidates ?? []) as IssueJob[]) {
     const { data: updated, error: updateError } = await supabase
-      .from("smon_issue_jobs")
+      .from("issue_jobs")
       .update({
         status: "running",
         attempts: candidate.attempts + 1,
@@ -125,7 +125,7 @@ export async function claimNextIssueJobGlobal(
 ) {
   const now = new Date().toISOString();
   const { data: candidates, error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .select("*")
     .eq("status", "queued")
     .lte("run_at", now)
@@ -139,7 +139,7 @@ export async function claimNextIssueJobGlobal(
 
   for (const candidate of (candidates ?? []) as IssueJob[]) {
     const { data: updated, error: updateError } = await supabase
-      .from("smon_issue_jobs")
+      .from("issue_jobs")
       .update({
         status: "running",
         attempts: candidate.attempts + 1,
@@ -170,7 +170,7 @@ export async function completeIssueJob(
   jobId: string,
 ) {
   const { error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .update({
       status: "completed",
       locked_at: null,
@@ -199,7 +199,7 @@ export async function failIssueJob(
     : new Date(Date.now() + Math.min(job.attempts, 5) * 30_000).toISOString();
 
   const { error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .update({
       status: nextStatus,
       last_error: errorText,
@@ -223,7 +223,7 @@ export async function cancelQueuedIssueJobs(
   issueId: string,
 ) {
   const { error } = await supabase
-    .from("smon_issue_jobs")
+    .from("issue_jobs")
     .update({
       status: "cancelled",
       updated_at: new Date().toISOString(),

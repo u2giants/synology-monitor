@@ -87,7 +87,7 @@ export default function LogsPage() {
   const fetchLogs = useCallback(async () => {
     const supabase = createClient();
     let query = supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, source, severity, message, logged_at, metadata")
       .order("ingested_at", { ascending: false })
       .limit(250);

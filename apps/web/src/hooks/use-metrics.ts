@@ -41,7 +41,7 @@ export function useMetrics(
 
     for (const type of typesRef.current.split(",")) {
       const { data, error } = await supabase
-        .from("smon_metrics")
+        .from("metrics")
         .select("recorded_at, value, unit")
         .eq("nas_id", nasId)
         .eq("type", type)

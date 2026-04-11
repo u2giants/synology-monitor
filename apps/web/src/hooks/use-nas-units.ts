@@ -13,7 +13,7 @@ export function useNasUnits() {
 
     async function fetch() {
       const { data, error } = await supabase
-        .from("smon_nas_units")
+        .from("nas_units")
         .select("*")
         .order("name");
 
@@ -30,7 +30,7 @@ export function useNasUnits() {
       .channel("smon-nas-units")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "smon_nas_units" },
+        { event: "*", schema: "public", table: "nas_units" },
         (payload) => {
           if (payload.eventType === "UPDATE") {
             setUnits((prev) =>

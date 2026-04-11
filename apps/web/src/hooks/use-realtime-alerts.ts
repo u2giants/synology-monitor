@@ -14,7 +14,7 @@ export function useRealtimeAlerts() {
     // Initial fetch
     async function fetchAlerts() {
       const { data, error } = await supabase
-        .from("smon_alerts")
+        .from("alerts")
         .select("*")
         .eq("status", "active")
         .order("created_at", { ascending: false })
@@ -36,7 +36,7 @@ export function useRealtimeAlerts() {
         {
           event: "*",
           schema: "public",
-          table: "smon_alerts",
+          table: "alerts",
         },
         (payload) => {
           if (payload.eventType === "INSERT") {

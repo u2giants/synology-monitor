@@ -40,7 +40,7 @@ export async function upsertFact(
   const now = new Date().toISOString();
 
   const { data: existing, error: existingError } = await supabase
-    .from("smon_facts")
+    .from("facts")
     .select("id")
     .eq("fact_key", input.factKey)
     .eq("status", "active")
@@ -53,7 +53,7 @@ export async function upsertFact(
 
   if (existing?.id) {
     const { error } = await supabase
-      .from("smon_facts")
+      .from("facts")
       .update({
         nas_id: input.nasId ?? null,
         fact_type: input.factType,
@@ -76,7 +76,7 @@ export async function upsertFact(
   }
 
   const { data, error } = await supabase
-    .from("smon_facts")
+    .from("facts")
     .insert({
       nas_id: input.nasId ?? null,
       fact_type: input.factType,
@@ -106,7 +106,7 @@ export async function attachFactToIssue(
   factId: string,
 ) {
   const { error } = await supabase
-    .from("smon_issue_facts")
+    .from("issue_facts")
     .upsert({
       issue_id: issueId,
       fact_id: factId,
@@ -126,8 +126,8 @@ export async function listIssueFacts(
   issueId: string,
 ) {
   const { data, error } = await supabase
-    .from("smon_issue_facts")
-    .select("fact_id, smon_facts(*)")
+    .from("issue_facts")
+    .select("fact_id, facts(*)")
     .eq("issue_id", issueId)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
@@ -137,7 +137,7 @@ export async function listIssueFacts(
   }
 
   return ((data ?? [])
-    .flatMap((row) => Array.isArray(row.smon_facts) ? row.smon_facts : [row.smon_facts])
+    .flatMap((row) => Array.isArray(row.facts) ? row.facts : [row.facts])
     .filter(Boolean)) as unknown as FactRecord[];
 }
 

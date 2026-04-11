@@ -97,7 +97,7 @@ async function resolveNasUnitIds(
 ) {
   if (nasNames.length === 0) return [] as Array<{ id: string; name: string; hostname: string | null }>;
   const { data, error } = await supabase
-    .from("smon_nas_units")
+    .from("nas_units")
     .select("id, name, hostname")
     .or(nasNames.map((nas) => `name.eq.${nas},hostname.eq.${nas}`).join(","));
 
@@ -252,7 +252,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     dsmErrorsResult,
   ] = await Promise.all([
     supabase
-      .from("smon_alerts")
+      .from("alerts")
       .select("id, source, severity, title, message, created_at")
       .eq("status", "active")
       .order("created_at", { ascending: false })
@@ -263,7 +263,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     // hundreds of routine enumeration rows per hour that add no diagnostic
     // signal and fill the context window.
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since6h)
       .in("severity", ["critical", "error", "warning"])
@@ -281,7 +281,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     //   trail for scripts that spawn child processes.
     // - share_quota / share_health: low volume, all severities useful.
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since48h)
       .in("source", ["system", "storage", "scheduled_task", "share_quota", "share_health"])
@@ -289,7 +289,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .limit(80),
 
     supabase
-      .from("smon_process_snapshots")
+      .from("process_snapshots")
       // cmdline and pid are essential: without them the agent sees "grep" but
       // not what it's scanning for, making foreign/stuck processes invisible.
       // read_bps surfaces I/O-heavy processes that don't show up in CPU ranking.
@@ -299,14 +299,14 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .limit(20),
 
     supabase
-      .from("smon_disk_io_stats")
+      .from("disk_io_stats")
       .select("nas_id, captured_at, device, read_bps, write_bps, await_ms, util_pct")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
 
     supabase
-      .from("smon_scheduled_tasks")
+      .from("scheduled_tasks")
       .select("nas_id, task_id, task_name, task_type, owner, enabled, status, last_run_time, next_run_time, last_result, captured_at")
       .gte("captured_at", since48h)
       .or("last_result.neq.0,status.eq.error")
@@ -314,35 +314,35 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
       .limit(20),
 
     supabase
-      .from("smon_backup_tasks")
+      .from("backup_tasks")
       .select("nas_id, task_id, task_name, enabled, status, last_result, last_run_time, next_run_time, dest_type, dest_name, total_bytes, transferred_bytes, speed_bps, captured_at")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(30),
 
     supabase
-      .from("smon_snapshot_replicas")
+      .from("snapshot_replicas")
       .select("nas_id, task_id, task_name, status, src_share, dst_share, dst_host, last_result, last_run_time, next_run_time, captured_at")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
 
     supabase
-      .from("smon_container_io")
+      .from("container_io")
       .select("nas_id, captured_at, container_name, read_bps, write_bps, read_ops, write_ops")
       .gte("captured_at", since30m)
       .order("write_bps", { ascending: false })
       .limit(15),
 
     supabase
-      .from("smon_sync_task_snapshots")
+      .from("sync_task_snapshots")
       .select("nas_id, captured_at, task_id, task_name, status, backlog_count, backlog_bytes, current_file, retry_count, last_error, speed_bps")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(15),
 
     supabase
-      .from("smon_metrics")
+      .from("metrics")
       .select("nas_id, type, value, unit, metadata, recorded_at")
       .gte("recorded_at", since30m)
       .in("type", [
@@ -357,7 +357,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     // health.  Includes status (normal/degraded/crashed), raid_type, and disk
     // member details.  48h window so recovery context is preserved.
     supabase
-      .from("smon_storage_snapshots")
+      .from("storage_snapshots")
       .select("nas_id, volume_id, volume_path, total_bytes, used_bytes, status, raid_type, disks, recorded_at")
       .gte("recorded_at", since48h)
       .order("recorded_at", { ascending: false })
@@ -366,7 +366,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, issue: IssueFull
     // DSM Log Center errors — warning/error events from the NAS OS itself,
     // separate from the high-volume smon_logs stream.
     supabase
-      .from("smon_dsm_errors")
+      .from("dsm_errors")
       .select("nas_id, level, message, who, log_name, logged_at, created_at")
       .gte("logged_at", since48h)
       .order("logged_at", { ascending: false })

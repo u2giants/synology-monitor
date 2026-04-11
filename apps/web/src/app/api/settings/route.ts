@@ -16,7 +16,7 @@ export async function GET() {
       return NextResponse.json({ error: "Authentication required." }, { status: 401 });
     }
 
-    const { data } = await supabase.from("smon_ai_settings").select("key, value");
+    const { data } = await supabase.from("ai_settings").select("key, value");
 
     const settings: Record<string, string> = {};
     for (const row of data ?? []) {
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
     }
 
-    const { error } = await supabase.from("smon_ai_settings").upsert(
+    const { error } = await supabase.from("ai_settings").upsert(
       { key, value: value.trim(), updated_at: new Date().toISOString() },
       { onConflict: "key" },
     );

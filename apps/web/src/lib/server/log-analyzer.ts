@@ -111,26 +111,26 @@ async function fetchAnalysisData(lookbackMinutes: number) {
     driveLogsResult,
   ] = await Promise.all([
     supabase
-      .from("smon_alerts")
+      .from("alerts")
       .select("*")
       .eq("status", "active")
       .gte("created_at", since),
 
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("*")
       .in("severity", ["error", "warning", "critical"])
       .gte("ingested_at", since)
       .limit(200),
 
     supabase
-      .from("smon_security_events")
+      .from("security_events")
       .select("*")
       .gte("created_at", since)
       .limit(50),
 
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("*")
       .in("source", ["drive", "drive_server", "drive_sharesync", "smb"])
       .gte("ingested_at", since)
@@ -186,7 +186,7 @@ async function storeFailedRun(
   const supabase = await createSupabaseServerClient();
 
   const { data: runData, error: runError } = await supabase
-    .from("smon_analysis_runs")
+    .from("analysis_runs")
     .insert({
       status: "failed",
       error_message: errorMessage,
@@ -218,7 +218,7 @@ async function storeAnalysisResult(
   const supabase = await createSupabaseServerClient();
 
   const { data: runData, error: runError } = await supabase
-    .from("smon_analysis_runs")
+    .from("analysis_runs")
     .insert({
       status: "success",
       summary: result.summary,
@@ -256,7 +256,7 @@ async function storeAnalysisResult(
     }));
 
     const { error: problemsError } = await supabase
-      .from("smon_analyzed_problems")
+      .from("analyzed_problems")
       .insert(problemsToInsert);
 
     if (problemsError) {
@@ -278,7 +278,7 @@ async function autoResolveOldProblems(
   currentRunId: string
 ) {
   const previousOpenProblems = await supabase
-    .from("smon_analyzed_problems")
+    .from("analyzed_problems")
     .select("id, slug, raw_event_ids")
     .eq("status", "open")
     .neq("analysis_run_id", currentRunId);
@@ -296,7 +296,7 @@ async function autoResolveOldProblems(
 
     if (!hasOverlappingEvents) {
       await supabase
-        .from("smon_analyzed_problems")
+        .from("analyzed_problems")
         .update({
           status: "resolved",
           resolution: "Automatically resolved - no related events in latest analysis",
@@ -399,7 +399,7 @@ export async function getLatestAnalysis() {
   const supabase = await createSupabaseServerClient();
 
   const { data: latestRun, error: runError } = await supabase
-    .from("smon_analysis_runs")
+    .from("analysis_runs")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(1)
@@ -410,7 +410,7 @@ export async function getLatestAnalysis() {
   }
 
   const { data: problems, error: problemsError } = await supabase
-    .from("smon_analyzed_problems")
+    .from("analyzed_problems")
     .select("*")
     .eq("analysis_run_id", latestRun.id)
     .order("created_at", { ascending: true });
@@ -428,7 +428,7 @@ export async function getAnalysisById(runId: string) {
   const supabase = await createSupabaseServerClient();
 
   const { data: run, error: runError } = await supabase
-    .from("smon_analysis_runs")
+    .from("analysis_runs")
     .select("*")
     .eq("id", runId)
     .single();
@@ -438,7 +438,7 @@ export async function getAnalysisById(runId: string) {
   }
 
   const { data: problems, error: problemsError } = await supabase
-    .from("smon_analyzed_problems")
+    .from("analyzed_problems")
     .select("*")
     .eq("analysis_run_id", runId)
     .order("created_at", { ascending: true });

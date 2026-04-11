@@ -43,7 +43,7 @@ export async function recordIssueStageRun(
     completedAt?: string | null;
   },
 ) {
-  const { error } = await supabase.from("smon_issue_stage_runs").insert({
+  const { error } = await supabase.from("issue_stage_runs").insert({
     issue_id: issueId,
     user_id: userId,
     stage_key: input.stageKey,
@@ -68,7 +68,7 @@ export async function listIssueStageRuns(
   issueId: string,
 ) {
   const { data, error } = await supabase
-    .from("smon_issue_stage_runs")
+    .from("issue_stage_runs")
     .select("*")
     .eq("issue_id", issueId)
     .eq("user_id", userId)

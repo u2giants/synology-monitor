@@ -226,7 +226,7 @@ export default function SyncTriagePage() {
     const supabase = createClient();
 
     let errorLogsQuery = supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
       .in("source", syncSources)
       .in("severity", ["error", "warning", "critical"])
@@ -234,7 +234,7 @@ export default function SyncTriagePage() {
       .limit(1200);
 
     let driveInfoQuery = supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, source, severity, message, logged_at, metadata, ingested_at")
       .eq("source", "drive_server")
       .order("ingested_at", { ascending: false })
@@ -256,7 +256,7 @@ export default function SyncTriagePage() {
 
     // Fetch sync-related alerts (source='ai' or containing sync keywords)
     const alertsResult = await supabase
-      .from("smon_alerts")
+      .from("alerts")
       .select("*")
       .eq("status", "active")
       .or("source.eq.ai,title.ilike.%sync%,title.ilike.%sharesync%,title.ilike.%conflict%,title.ilike.%error%")
@@ -269,7 +269,7 @@ export default function SyncTriagePage() {
 
     // Fetch sync remediations if table exists
     const remediationsResult = await supabase
-      .from("smon_sync_remediations")
+      .from("sync_remediations")
       .select("*")
       .in("status", ["pending", "in_progress"])
       .order("created_at", { ascending: false })

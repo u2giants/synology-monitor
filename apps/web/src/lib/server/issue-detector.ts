@@ -92,7 +92,7 @@ function isActionableInfoLog(message: string) {
 }
 
 async function fetchNasNameMap(supabase: SupabaseClient): Promise<Map<string, string>> {
-  const { data } = await supabase.from("smon_nas_units").select("id, name, hostname");
+  const { data } = await supabase.from("nas_units").select("id, name, hostname");
   const map = new Map<string, string>();
   for (const row of data ?? []) {
     const name = (row.name || row.hostname || row.id) as string;
@@ -107,20 +107,20 @@ async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: 
 
   const [alertsResult, errorLogsResult, driveInfoResult, metricsResult] = await Promise.all([
     supabase
-      .from("smon_alerts")
+      .from("alerts")
       .select("id, nas_id, source, severity, title, message, details, created_at")
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(250),
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since)
       .in("severity", ["critical", "error", "warning"])
       .order("ingested_at", { ascending: false })
       .limit(1200),
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("id, nas_id, source, severity, message, metadata, ingested_at")
       .gte("ingested_at", since)
       .eq("source", "drive_server")
@@ -128,7 +128,7 @@ async function fetchDetectionContext(supabase: SupabaseClient, lookbackMinutes: 
       .limit(4000),
 
     supabase
-      .from("smon_metrics")
+      .from("metrics")
       .select("nas_id, type, value, recorded_at")
       .eq("type", "cpu_iowait_pct")
       .gte("recorded_at", sinceMetrics)

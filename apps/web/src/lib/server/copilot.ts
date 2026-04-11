@@ -270,15 +270,15 @@ export async function generateCopilotResponse(
     syncTaskSnapshots,
     netConnections,
   ] = await Promise.all([
-    supabase.from("smon_nas_units").select("id, name, hostname, model, status, last_seen").order("name"),
+    supabase.from("nas_units").select("id, name, hostname, model, status, last_seen").order("name"),
     supabase
-      .from("smon_alerts")
+      .from("alerts")
       .select("severity, status, source, title, message, created_at")
       .or(`status.eq.active,created_at.gte.${lookbackCutoff}`)
       .order("created_at", { ascending: false })
       .limit(10),
     supabase
-      .from("smon_logs")
+      .from("nas_logs")
       .select("source, severity, message, metadata, ingested_at")
       .in("source", ["drive", "drive_server", "drive_sharesync"])
       .gte("ingested_at", lookbackCutoff)
@@ -286,33 +286,33 @@ export async function generateCopilotResponse(
       .limit(60),
     collectNasDiagnostics(lookbackHours),
     supabase
-      .from("smon_security_events")
+      .from("security_events")
       .select("severity, type, title, description, file_path, user, detected_at")
       .gte("detected_at", lookbackCutoff)
       .order("detected_at", { ascending: false })
       .limit(20),
     // --- new resource attribution tables ---
     supabase
-      .from("smon_process_snapshots")
+      .from("process_snapshots")
       .select("nas_id, captured_at, snapshot_grp, pid, name, username, state, cpu_pct, mem_rss_kb, mem_pct, read_bps, write_bps, parent_service")
       .gte("captured_at", resourceCutoff)
       .order("captured_at", { ascending: false })
       .order("write_bps", { ascending: false })
       .limit(60),
     supabase
-      .from("smon_disk_io_stats")
+      .from("disk_io_stats")
       .select("nas_id, captured_at, device, volume_path, reads_ps, writes_ps, read_bps, write_bps, await_ms, util_pct, queue_depth")
       .gte("captured_at", resourceCutoff)
       .order("captured_at", { ascending: false })
       .limit(40),
     supabase
-      .from("smon_sync_task_snapshots")
+      .from("sync_task_snapshots")
       .select("nas_id, captured_at, task_id, task_name, task_type, status, backlog_count, current_file, current_folder, retry_count, last_error, speed_bps, indexing_queue")
       .gte("captured_at", resourceCutoff)
       .order("captured_at", { ascending: false })
       .limit(30),
     supabase
-      .from("smon_net_connections")
+      .from("net_connections")
       .select("nas_id, captured_at, remote_ip, local_port, protocol, conn_count, username")
       .gte("captured_at", resourceCutoff)
       .order("conn_count", { ascending: false })
@@ -526,7 +526,7 @@ export async function buildProblemPrompt(problemId: string): Promise<string | nu
   const supabase = await createSupabaseServerClient();
 
   const { data: problem } = await supabase
-    .from("smon_analyzed_problems")
+    .from("analyzed_problems")
     .select("title, explanation, severity, affected_nas, affected_shares, affected_users, affected_files, raw_event_count, technical_diagnosis, first_seen, last_seen")
     .eq("id", problemId)
     .maybeSingle();

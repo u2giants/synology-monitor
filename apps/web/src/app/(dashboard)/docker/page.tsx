@@ -42,18 +42,18 @@ export default function DockerPage() {
 
       const [statusResult, ioResult, nasResult] = await Promise.all([
         supabase
-          .from("smon_container_status")
-          .select("*, smon_nas_units!inner(id, name)")
+          .from("container_status")
+          .select("*, nas_units!inner(id, name)")
           .order("recorded_at", { ascending: false })
           .limit(50),
         supabase
-          .from("smon_container_io")
+          .from("container_io")
           .select("nas_id, container_name, read_bps, write_bps, captured_at")
           .gte("captured_at", since30m)
           .order("captured_at", { ascending: false })
           .limit(200),
         supabase
-          .from("smon_nas_units")
+          .from("nas_units")
           .select("id, name, agent_version, agent_built_at"),
       ]);
 
@@ -73,7 +73,7 @@ export default function DockerPage() {
         const seen = new Set<string>();
         const deduped: ContainerData[] = [];
         for (const row of statusResult.data) {
-          const nasUnit = (row.smon_nas_units as any);
+          const nasUnit = (row.nas_units as any);
           const nasId = nasUnit?.id ?? row.nas_id;
           const key = `${nasId}-${row.container_name}`;
           if (!seen.has(key)) {

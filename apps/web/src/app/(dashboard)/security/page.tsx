@@ -15,7 +15,7 @@ export default function SecurityPage() {
 
     async function fetch() {
       const { data, error } = await supabase
-        .from("smon_security_events")
+        .from("security_events")
         .select("*")
         .order("detected_at", { ascending: false })
         .limit(100);
@@ -33,7 +33,7 @@ export default function SecurityPage() {
       .channel("smon-security")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "smon_security_events" },
+        { event: "INSERT", schema: "public", table: "security_events" },
         (payload) => {
           setEvents((prev) => [payload.new as SecurityEvent, ...prev]);
         }

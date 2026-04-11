@@ -170,7 +170,7 @@ export default function SettingsPage() {
           String.fromCharCode(...new Uint8Array(sub.getKey("auth")!)),
         );
 
-        await supabase.from("smon_push_subscriptions").upsert({
+        await supabase.from("push_subscriptions").upsert({
           endpoint: sub.endpoint,
           p256dh,
           auth,

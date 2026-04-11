@@ -72,7 +72,7 @@ function useDiskIO(nasId: string | null, range: (typeof ranges)[number]) {
 
     // Fetch disk I/O stats
     const { data: ioRows } = await supabase
-      .from("smon_disk_io_stats")
+      .from("disk_io_stats")
       .select("captured_at, device, volume_path, read_bps, write_bps")
       .eq("nas_id", nasId)
       .gte("captured_at", from)
@@ -100,7 +100,7 @@ function useDiskIO(nasId: string | null, range: (typeof ranges)[number]) {
     // Fetch top processes from the most recent snapshot
     // First get the latest snapshot_grp
     const { data: latestSnap } = await supabase
-      .from("smon_process_snapshots")
+      .from("process_snapshots")
       .select("snapshot_grp, captured_at")
       .eq("nas_id", nasId)
       .order("captured_at", { ascending: false })
@@ -111,7 +111,7 @@ function useDiskIO(nasId: string | null, range: (typeof ranges)[number]) {
       setDataAge(latestSnap.captured_at);
 
       const { data: procRows } = await supabase
-        .from("smon_process_snapshots")
+        .from("process_snapshots")
         .select("pid, name, username, read_bps, write_bps, cpu_pct, mem_rss_kb")
         .eq("nas_id", nasId)
         .eq("snapshot_grp", latestSnap.snapshot_grp)
