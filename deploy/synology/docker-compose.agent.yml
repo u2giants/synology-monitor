@@ -43,8 +43,35 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Watchtower polls GHCR every 5 minutes and restarts synology-monitor-agent
-  # automatically when a new image is available.
+  # NAS API — three-tier HTTP shell execution service used by the issue agent.
+  # The web app (running in the cloud) calls this to investigate and remediate issues.
+  # Tier 1 commands auto-execute; Tier 2/3 require an HMAC-signed approval token.
+  nas-api:
+    image: ghcr.io/u2giants/synology-monitor-nas-api:${AGENT_IMAGE_TAG:-latest}
+    container_name: synology-monitor-nas-api
+    network_mode: host         # must see the same network interfaces as the NAS
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /proc:/proc:ro         # /proc access lets shell commands read process state
+      - /sys:/sys:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # Watchtower polls GHCR every 5 minutes and restarts updated containers
+  # automatically when new images are available.
   watchtower:
     image: containrrr/watchtower
     container_name: synology-monitor-watchtower
@@ -56,7 +83,7 @@ services:
       WATCHTOWER_POLL_INTERVAL: "300"
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_NO_STARTUP_MESSAGE: "true"
-    command: synology-monitor-agent
+    command: synology-monitor-agent synology-monitor-nas-api
 
 volumes:
   agent-data:
