@@ -1,5 +1,5 @@
 // Thin edge function: sends push notifications when alerts are created
-// Triggered via database webhook on smon_alerts INSERT
+// Triggered via database webhook on alerts INSERT
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
@@ -29,7 +29,7 @@ Deno.serve(async (req: Request) => {
 
     // Fetch push subscriptions
     const subsResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/smon_push_subscriptions?select=endpoint,p256dh,auth`,
+      `${SUPABASE_URL}/rest/v1/push_subscriptions?select=endpoint,p256dh,auth`,
       {
         headers: {
           apikey: SUPABASE_SERVICE_ROLE_KEY,

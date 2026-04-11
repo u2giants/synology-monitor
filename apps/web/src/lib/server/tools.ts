@@ -447,6 +447,8 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
   },
 };
 
+};
+
 export function toolCatalogText() {
   return Object.entries(TOOL_DEFINITIONS)
     .map(([name, tool]) => `- ${name}: ${tool.description}`)

@@ -73,7 +73,7 @@ function parseLine(line, nasId) {
 }
 
 async function insertRows(rows) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/smon_logs`, {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/nas_logs`, {
     method: "POST",
     headers: {
       apikey: SUPABASE_SERVICE_KEY,
