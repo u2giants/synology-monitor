@@ -106,7 +106,7 @@ type DriveActivityPayload struct {
 	RecordedAt time.Time `json:"recorded_at"`
 }
 
-// ProcessSnapshotPayload is a single process row in smon_process_snapshots
+// ProcessSnapshotPayload is a single process row in process_snapshots
 type ProcessSnapshotPayload struct {
 	NasID         string    `json:"nas_id"`
 	SnapshotGrp   string    `json:"snapshot_grp"`
@@ -125,7 +125,7 @@ type ProcessSnapshotPayload struct {
 	Cgroup        string    `json:"cgroup,omitempty"`
 }
 
-// DiskIOStatPayload is a single device row in smon_disk_io_stats
+// DiskIOStatPayload is a single device row in disk_io_stats
 type DiskIOStatPayload struct {
 	NasID      string    `json:"nas_id"`
 	CapturedAt time.Time `json:"captured_at"`
@@ -140,7 +140,7 @@ type DiskIOStatPayload struct {
 	QueueDepth float64   `json:"queue_depth"`
 }
 
-// SyncTaskSnapshotPayload is a row in smon_sync_task_snapshots
+// SyncTaskSnapshotPayload is a row in sync_task_snapshots
 type SyncTaskSnapshotPayload struct {
 	NasID            string    `json:"nas_id"`
 	CapturedAt       time.Time `json:"captured_at"`
@@ -160,7 +160,7 @@ type SyncTaskSnapshotPayload struct {
 	IndexingQueue    int       `json:"indexing_queue,omitempty"`
 }
 
-// ServiceHealthPayload is a row in smon_service_health
+// ServiceHealthPayload is a row in service_health
 type ServiceHealthPayload struct {
 	NasID       string    `json:"nas_id"`
 	ServiceName string    `json:"service_name"`
@@ -168,7 +168,7 @@ type ServiceHealthPayload struct {
 	CapturedAt  time.Time `json:"captured_at"`
 }
 
-// CustomMetricDataPayload is a row in smon_custom_metric_data
+// CustomMetricDataPayload is a row in custom_metric_data
 type CustomMetricDataPayload struct {
 	ScheduleID string    `json:"schedule_id"`
 	NasID      string    `json:"nas_id"`
@@ -177,7 +177,7 @@ type CustomMetricDataPayload struct {
 	CapturedAt time.Time `json:"captured_at"`
 }
 
-// NetConnectionPayload is a row in smon_net_connections
+// NetConnectionPayload is a row in net_connections
 type NetConnectionPayload struct {
 	NasID      string    `json:"nas_id"`
 	CapturedAt time.Time `json:"captured_at"`
@@ -189,7 +189,7 @@ type NetConnectionPayload struct {
 	Username   string    `json:"username,omitempty"`
 }
 
-// ScheduledTaskPayload is a row in smon_scheduled_tasks
+// ScheduledTaskPayload is a row in scheduled_tasks
 type ScheduledTaskPayload struct {
 	NasID       string    `json:"nas_id"`
 	TaskID      int       `json:"task_id"`
@@ -204,7 +204,7 @@ type ScheduledTaskPayload struct {
 	CapturedAt  time.Time `json:"captured_at"`
 }
 
-// BackupTaskPayload is a row in smon_backup_tasks
+// BackupTaskPayload is a row in backup_tasks
 type BackupTaskPayload struct {
 	NasID            string    `json:"nas_id"`
 	TaskID           string    `json:"task_id"`
@@ -222,7 +222,7 @@ type BackupTaskPayload struct {
 	CapturedAt       time.Time `json:"captured_at"`
 }
 
-// ContainerIOPayload is a row in smon_container_io
+// ContainerIOPayload is a row in container_io
 type ContainerIOPayload struct {
 	NasID         string    `json:"nas_id"`
 	CapturedAt    time.Time `json:"captured_at"`
@@ -234,7 +234,7 @@ type ContainerIOPayload struct {
 	WriteOPS      int64     `json:"write_ops"`
 }
 
-// PackageStatusPayload is an upserted row in smon_package_status.
+// PackageStatusPayload is an upserted row in package_status.
 // Represents the current install/run state of one DSM package.
 type PackageStatusPayload struct {
 	NasID       string    `json:"nas_id"`
@@ -246,7 +246,7 @@ type PackageStatusPayload struct {
 	CheckedAt   time.Time `json:"checked_at"`
 }
 
-// DSMErrorPayload is a row in smon_dsm_errors.
+// DSMErrorPayload is a row in dsm_errors.
 // Represents a warning or error level event from DSM Log Center.
 type DSMErrorPayload struct {
 	NasID    string    `json:"nas_id"`
@@ -257,7 +257,7 @@ type DSMErrorPayload struct {
 	LoggedAt time.Time `json:"logged_at"`
 }
 
-// SnapshotReplicaPayload is a row in smon_snapshot_replicas
+// SnapshotReplicaPayload is a row in snapshot_replicas
 type SnapshotReplicaPayload struct {
 	NasID       string    `json:"nas_id"`
 	TaskID      string    `json:"task_id"`

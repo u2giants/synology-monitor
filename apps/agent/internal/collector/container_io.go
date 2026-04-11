@@ -1,7 +1,7 @@
 package collector
 
 // ContainerIOCollector reads cgroup blkio/io stats for each Docker container
-// and emits per-container read/write BPS and IOPS into smon_container_io.
+// and emits per-container read/write BPS and IOPS into container_io.
 //
 // Tries host-mounted cgroups first (/host/sys/fs/cgroup/...),
 // then falls back to the container's own /sys view.

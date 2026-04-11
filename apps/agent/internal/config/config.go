@@ -90,7 +90,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SUPABASE_URL and SUPABASE_SERVICE_KEY are required")
 	}
 	if !looksLikeUUID(cfg.NasID) {
-		return nil, fmt.Errorf("NAS_ID must be a UUID to match smon_nas_units.id")
+		return nil, fmt.Errorf("NAS_ID must be a UUID to match nas_units.id")
 	}
 
 	return cfg, nil

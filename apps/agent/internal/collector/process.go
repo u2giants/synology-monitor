@@ -2,7 +2,7 @@ package collector
 
 // ProcessCollector reads /host/proc to collect per-process CPU, memory, and
 // disk I/O. It emits the top-N processes ranked by each dimension into
-// smon_process_snapshots, grouping each collection pass under a shared
+// process_snapshots, grouping each collection pass under a shared
 // snapshot_grp UUID so the copilot can query a coherent point-in-time view.
 //
 // Requires /proc:/host/proc:ro in the container volume mounts.

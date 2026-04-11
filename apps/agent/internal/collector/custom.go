@@ -1,6 +1,6 @@
 package collector
 
-// CustomCollector polls smon_custom_metric_schedules from Supabase and executes
+// CustomCollector polls custom_metric_schedules from Supabase and executes
 // read-only shell commands requested by the resolution agent at runtime.
 //
 // This allows the resolution agent to permanently expand what data the monitoring
@@ -26,7 +26,7 @@ import (
 // CustomCollector polls and executes custom metric collection schedules.
 type CustomCollector struct {
 	sender       *sender.Sender
-	nasName      string // matches smon_custom_metric_schedules.nas_id (e.g. "edgesynology1")
+	nasName      string // matches custom_metric_schedules.nas_id (e.g. "edgesynology1")
 	supabaseURL  string
 	serviceKey   string
 	httpClient   *http.Client
@@ -76,7 +76,7 @@ func (c *CustomCollector) runDue() {
 
 	// Fetch due schedules for this NAS via Supabase REST API
 	endpoint := fmt.Sprintf(
-		"%s/rest/v1/smon_custom_metric_schedules?nas_id=eq.%s&is_active=eq.true&next_run_at=lte.%s&select=id,name,description,collection_command,interval_minutes",
+		"%s/rest/v1/custom_metric_schedules?nas_id=eq.%s&is_active=eq.true&next_run_at=lte.%s&select=id,name,description,collection_command,interval_minutes",
 		c.supabaseURL,
 		url.QueryEscape(c.nasName),
 		url.QueryEscape(now),
@@ -131,7 +131,7 @@ func (c *CustomCollector) claim(sched customSchedule) bool {
 
 	// Filter: only update if still due (id match + next_run_at still in the past)
 	endpoint := fmt.Sprintf(
-		"%s/rest/v1/smon_custom_metric_schedules?id=eq.%s&next_run_at=lte.%s",
+		"%s/rest/v1/custom_metric_schedules?id=eq.%s&next_run_at=lte.%s",
 		c.supabaseURL,
 		url.QueryEscape(sched.ID),
 		url.QueryEscape(now.Format(time.RFC3339Nano)),

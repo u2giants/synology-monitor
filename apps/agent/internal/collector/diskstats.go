@@ -1,7 +1,7 @@
 package collector
 
 // DiskStatsCollector reads /host/proc/diskstats and emits per-device IOPS,
-// throughput, avg latency, utilisation, and queue depth into smon_disk_io_stats.
+// throughput, avg latency, utilisation, and queue depth into disk_io_stats.
 //
 // Requires /proc:/host/proc:ro in the container volume mounts.
 

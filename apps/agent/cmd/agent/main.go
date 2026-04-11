@@ -197,7 +197,7 @@ func main() {
 		storagePoolCollector.Run(stop)
 	}()
 
-	// Start custom metric collector (polls smon_custom_metric_schedules for AI-requested collections)
+	// Start custom metric collector (polls custom_metric_schedules for AI-requested collections)
 	customCollector := collector.NewCustomCollector(s, cfg.NasName, cfg.SupabaseURL, cfg.SupabaseServiceKey)
 	wg.Add(1)
 	go func() {

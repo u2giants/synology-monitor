@@ -189,7 +189,7 @@ func (c *ShareHealthCollector) collectPackages(now time.Time) {
 
 	for _, pkg := range packages {
 		// Push structured status for every package — gives a complete, queryable
-		// inventory in smon_package_status (upserted so one row per package).
+		// inventory in package_status (upserted so one row per package).
 		c.sender.QueuePackageStatus(sender.PackageStatusPayload{
 			NasID:       c.nasID,
 			PackageID:   pkg.ID,

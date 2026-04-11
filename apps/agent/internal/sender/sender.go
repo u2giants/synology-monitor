@@ -68,90 +68,90 @@ func (s *Sender) Close() error {
 // Queue methods write to local SQLite WAL
 
 func (s *Sender) QueueMetric(m MetricPayload) {
-	s.queue("smon_metrics", m)
+	s.queue("metrics", m)
 }
 
 func (s *Sender) QueueStorageSnapshot(p StoragePayload) {
-	s.queue("smon_storage_snapshots", p)
+	s.queue("storage_snapshots", p)
 }
 
 func (s *Sender) QueueContainerStatus(p ContainerPayload) {
-	s.queue("smon_container_status", p)
+	s.queue("container_status", p)
 }
 
 func (s *Sender) QueueLog(p LogPayload) {
-	s.queue("smon_logs", p)
+	s.queue("nas_logs", p)
 }
 
 func (s *Sender) QueueSecurityEvent(p SecurityEventPayload) {
-	s.queue("smon_security_events", p)
+	s.queue("security_events", p)
 }
 
 func (s *Sender) QueueAlert(p AlertPayload) {
-	s.queue("smon_alerts", p)
+	s.queue("alerts", p)
 }
 
 func (s *Sender) QueueDriveTeamFolder(p DriveTeamFolderPayload) {
-	s.queue("smon_drive_team_folders", p)
+	s.queue("drive_team_folders", p)
 }
 
 func (s *Sender) QueueDriveActivity(p DriveActivityPayload) {
-	s.queue("smon_drive_activities", p)
+	s.queue("drive_activities", p)
 }
 
 func (s *Sender) QueueProcessSnapshot(p ProcessSnapshotPayload) {
-	s.queue("smon_process_snapshots", p)
+	s.queue("process_snapshots", p)
 }
 
 func (s *Sender) QueueDiskIOStat(p DiskIOStatPayload) {
-	s.queue("smon_disk_io_stats", p)
+	s.queue("disk_io_stats", p)
 }
 
 func (s *Sender) QueueSyncTaskSnapshot(p SyncTaskSnapshotPayload) {
-	s.queue("smon_sync_task_snapshots", p)
+	s.queue("sync_task_snapshots", p)
 }
 
 func (s *Sender) QueueNetConnection(p NetConnectionPayload) {
-	s.queue("smon_net_connections", p)
+	s.queue("net_connections", p)
 }
 
 func (s *Sender) QueueServiceHealth(p ServiceHealthPayload) {
-	s.queue("smon_service_health", p)
+	s.queue("service_health", p)
 }
 
 func (s *Sender) QueueCustomMetricData(p CustomMetricDataPayload) {
-	s.queue("smon_custom_metric_data", p)
+	s.queue("custom_metric_data", p)
 }
 
 func (s *Sender) QueueScheduledTask(p ScheduledTaskPayload) {
-	s.queue("smon_scheduled_tasks", p)
+	s.queue("scheduled_tasks", p)
 }
 
 func (s *Sender) QueueBackupTask(p BackupTaskPayload) {
-	s.queue("smon_backup_tasks", p)
+	s.queue("backup_tasks", p)
 }
 
 func (s *Sender) QueueSnapshotReplica(p SnapshotReplicaPayload) {
-	s.queue("smon_snapshot_replicas", p)
+	s.queue("snapshot_replicas", p)
 }
 
 func (s *Sender) QueueContainerIO(p ContainerIOPayload) {
-	s.queue("smon_container_io", p)
+	s.queue("container_io", p)
 }
 
 func (s *Sender) QueuePackageStatus(p PackageStatusPayload) {
-	s.queue("smon_package_status", p)
+	s.queue("package_status", p)
 }
 
 func (s *Sender) QueueDSMError(p DSMErrorPayload) {
-	s.queue("smon_dsm_errors", p)
+	s.queue("dsm_errors", p)
 }
 
 // upsertTables lists tables that should use Supabase's merge-duplicates
 // resolution (INSERT … ON CONFLICT DO UPDATE).  The table must have a UNIQUE
 // constraint on its natural key for this to take effect.
 var upsertTables = map[string]bool{
-	"smon_package_status": true,
+	"package_status": true,
 }
 
 func (s *Sender) queue(table string, payload interface{}) {
@@ -400,7 +400,7 @@ func (s *Sender) SendHeartbeat(nasID, nasName, model, dsmVersion, agentVersion, 
 	}
 
 	body, _ := json.Marshal(payload)
-	url := fmt.Sprintf("%s/rest/v1/smon_nas_units", s.supabaseURL)
+	url := fmt.Sprintf("%s/rest/v1/nas_units", s.supabaseURL)
 
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {

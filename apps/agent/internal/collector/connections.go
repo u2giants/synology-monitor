@@ -2,7 +2,7 @@ package collector
 
 // ConnectionsCollector parses /host/proc/net/tcp and /host/proc/net/tcp6
 // to enumerate active ESTABLISHED connections grouped by remote IP and
-// service (local port). Results are written to smon_net_connections.
+// service (local port). Results are written to net_connections.
 //
 // This gives the copilot a top-N view of which clients are most actively
 // connected to the NAS at any given moment, without requiring netfilter

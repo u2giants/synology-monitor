@@ -39,7 +39,7 @@ type StoragePoolCollector struct {
 
 	// prevStates tracks the last reported health state per md device so we only
 	// emit a log/alert when the state actually changes (healthy→degraded or the
-	// reverse).  Without this the collector floods smon_logs with an identical
+	// reverse).  Without this the collector floods nas_logs with an identical
 	// "RAID degraded" entry every 60 s for as long as a drive is missing.
 	mu         sync.Mutex
 	prevStates map[string]string // device → "healthy" | "degraded"
@@ -191,7 +191,7 @@ func (c *StoragePoolCollector) collectMdstat() {
 		}
 
 		// Emit a log+alert only when the health state *changes*, not on every
-		// tick.  Logging every 60 s floods smon_logs with identical entries and
+		// tick.  Logging every 60 s floods nas_logs with identical entries and
 		// makes triage look like the problem is ongoing long after it resolved.
 		currentState := "healthy"
 		if dev.state == "degraded" {
