@@ -51,6 +51,8 @@ services:
     container_name: synology-monitor-nas-api
     network_mode: host         # must see the same network interfaces as the NAS
     restart: unless-stopped
+    security_opt:
+      - apparmor:unconfined    # Synology DSM rejects default apparmor profile on container init
     env_file:
       - .env
     environment:
