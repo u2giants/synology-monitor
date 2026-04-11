@@ -536,7 +536,7 @@ $$;
 -- ============================================================
 
 -- Remove old cron jobs (safe if pg_cron is installed; silently skips if not)
-DO $$
+DO $outer$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
     DELETE FROM cron.job WHERE jobname IN (
@@ -551,14 +551,14 @@ BEGIN
     );
 
     -- Re-register with clean names
-    PERFORM cron.schedule('partition-maintenance',  '0 7 * * *',   $$SELECT public.run_maintenance_proc()$$);
-    PERFORM cron.schedule('anomaly-detection',      '*/15 * * * *', $$SELECT smon_run_anomaly_detection()$$);
-    PERFORM cron.schedule('daily-health',           '0 12 * * *',  $$SELECT smon_run_daily_health()$$);
-    PERFORM cron.schedule('process-ai-responses',   '* * * * *',   $$SELECT smon_process_ai_responses()$$);
-    PERFORM cron.schedule('sync-anomaly-detection', '*/15 * * * *', $$SELECT smon_detect_sync_anomalies()$$);
-    PERFORM cron.schedule('sync-health-analysis',   '0 */4 * * *', $$SELECT smon_analyze_sync_health()$$);
-    PERFORM cron.schedule('weekly-sync-report',     '0 8 * * 0',   $$SELECT smon_generate_weekly_sync_report()$$);
-    PERFORM cron.schedule('sync-remediation',       '*/15 * * * *', $$SELECT smon_run_sync_remediation()$$);
+    PERFORM cron.schedule('partition-maintenance',  '0 7 * * *',   'SELECT public.run_maintenance_proc()');
+    PERFORM cron.schedule('anomaly-detection',      '*/15 * * * *', 'SELECT smon_run_anomaly_detection()');
+    PERFORM cron.schedule('daily-health',           '0 12 * * *',  'SELECT smon_run_daily_health()');
+    PERFORM cron.schedule('process-ai-responses',   '* * * * *',   'SELECT smon_process_ai_responses()');
+    PERFORM cron.schedule('sync-anomaly-detection', '*/15 * * * *', 'SELECT smon_detect_sync_anomalies()');
+    PERFORM cron.schedule('sync-health-analysis',   '0 */4 * * *', 'SELECT smon_analyze_sync_health()');
+    PERFORM cron.schedule('weekly-sync-report',     '0 8 * * 0',   'SELECT smon_generate_weekly_sync_report()');
+    PERFORM cron.schedule('sync-remediation',       '*/15 * * * *', 'SELECT smon_run_sync_remediation()');
   END IF;
 END;
-$$;
+$outer$;
