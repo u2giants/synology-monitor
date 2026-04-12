@@ -17,7 +17,7 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { cn, formatETFull, timeAgo } from "@/lib/utils";
+import { cn, formatETFull, timeAgoET } from "@/lib/utils";
 import {
   useResolution,
   type Resolution,
@@ -36,6 +36,7 @@ const statusDotConfig: Record<Resolution["status"], { color: string; pulse: bool
   running:              { color: "bg-blue-500",            pulse: true,  label: "Investigating" },
   waiting_on_user:      { color: "bg-primary",             pulse: false, label: "Needs your input" },
   waiting_for_approval: { color: "bg-amber-500",           pulse: false, label: "Needs your approval" },
+  waiting_on_issue:     { color: "bg-muted-foreground/50", pulse: false, label: "Waiting on another issue" },
   resolved:             { color: "bg-success",             pulse: false, label: "Resolved" },
   stuck:                { color: "bg-amber-500",           pulse: false, label: "Stuck — needs attention" },
   cancelled:            { color: "bg-muted-foreground/30", pulse: false, label: "Cancelled" },
@@ -318,6 +319,7 @@ export default function AssistantPage() {
                 loading={loading}
                 onContinue={continueResolution}
                 onCancel={cancelResolution}
+                resolutions={resolutions}
               />
 
               {/* Agent actively running — slim ambient indicator */}
@@ -425,18 +427,25 @@ function IssueHeader({
   loading,
   onContinue,
   onCancel,
+  resolutions,
 }: {
   state: ResolutionFull;
   loading: boolean;
   onContinue: () => void;
   onCancel: () => void;
+  resolutions: Resolution[];
 }) {
   const status = state.resolution.status;
   const dotConfig = statusDotConfig[status];
   const sevConfig = severityConfig[state.resolution.severity];
 
   const isOpenOrStuck = status === "open" || status === "stuck";
-  const isTerminal = status === "resolved" || status === "cancelled";
+  const isTerminal = status === "resolved" || status === "cancelled" || status === "waiting_on_issue";
+
+  // Resolve the title of the issue this one is waiting on, if any
+  const blockingIssue = state.resolution.depends_on_issue_id
+    ? resolutions.find((r) => r.id === state.resolution.depends_on_issue_id)
+    : null;
 
   return (
     <div className="rounded-xl border border-border bg-card p-4">
@@ -460,6 +469,25 @@ function IssueHeader({
               Device{state.resolution.affected_nas.length > 1 ? "s" : ""}:{" "}
               {state.resolution.affected_nas.join(", ")}
             </p>
+          )}
+          {status === "waiting_on_issue" && (
+            <div className="flex items-center gap-1.5 rounded-md border border-border bg-muted px-3 py-1.5 text-xs text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50 shrink-0" />
+              Paused — waiting for{" "}
+              {blockingIssue ? (
+                <button
+                  className="font-medium text-foreground underline-offset-2 hover:underline"
+                  onClick={() => {
+                    /* parent handles selection via resolutionId */
+                  }}
+                >
+                  {blockingIssue.title}
+                </button>
+              ) : (
+                <span className="font-medium text-foreground">another issue</span>
+              )}{" "}
+              to resolve first.
+            </div>
           )}
         </div>
 
@@ -585,7 +613,7 @@ function IssueSidebar({
                 {entry.detail && (
                   <p className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">{entry.detail}</p>
                 )}
-                <div className="mt-1 text-[11px] text-muted-foreground">{timeAgo(entry.created_at)}</div>
+                <div className="mt-1 text-[11px] text-muted-foreground">{timeAgoET(entry.created_at)}</div>
               </div>
             ))}
           </div>
@@ -662,7 +690,7 @@ function IssueSidebar({
                           </p>
                         )}
                         <div className="mt-2 text-[11px] text-muted-foreground">
-                          {timeAgo(transition.created_at)}
+                          {timeAgoET(transition.created_at)}
                         </div>
                       </div>
                     ))}
@@ -692,7 +720,7 @@ function FactCard({ fact }: { fact: ResolutionFact }) {
       <div className="text-xs font-medium">{fact.title}</div>
       <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{fact.detail}</p>
       <div className="mt-2 text-[11px] text-muted-foreground">
-        {fact.fact_type} · {timeAgo(fact.observed_at)}
+        {fact.fact_type} · {timeAgoET(fact.observed_at)}
       </div>
     </div>
   );
@@ -711,7 +739,7 @@ function CapabilityCard({ capability }: { capability: ResolutionCapability }) {
       <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
         {capability.raw_error || capability.evidence || capability.state}
       </p>
-      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(capability.checked_at)}</div>
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgoET(capability.checked_at)}</div>
     </div>
   );
 }
@@ -735,7 +763,7 @@ function JobCard({ job }: { job: ResolutionJob }) {
       {job.last_error && (
         <p className="mt-1 whitespace-pre-wrap text-xs text-critical">{job.last_error}</p>
       )}
-      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(job.updated_at)}</div>
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgoET(job.updated_at)}</div>
     </div>
   );
 }
@@ -760,7 +788,7 @@ function StageRunCard({ run }: { run: ResolutionStageRun }) {
       {run.error_text && (
         <p className="mt-1 whitespace-pre-wrap text-xs text-critical">{run.error_text}</p>
       )}
-      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(run.created_at)}</div>
+      <div className="mt-2 text-[11px] text-muted-foreground">{timeAgoET(run.created_at)}</div>
     </div>
   );
 }
@@ -1010,7 +1038,7 @@ function IssueListItem({
               <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{resolution.summary}</p>
             )}
             <div className="mt-1.5 text-[11px] text-muted-foreground">
-              {dotConfig.label} · {timeAgo(resolution.updated_at)}
+              {dotConfig.label} · {timeAgoET(resolution.updated_at)}
             </div>
           </div>
         </div>
