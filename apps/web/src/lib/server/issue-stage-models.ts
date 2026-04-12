@@ -44,6 +44,8 @@ export type NextStepPlanResult = {
   user_question: string | null;
   diagnostic_action: ToolActionPlan | null;
   remediation_action: ToolActionPlan | null;
+  /** ID of a sibling issue this issue is blocked by. If set, this investigation pauses until that issue resolves. */
+  depends_on_issue_id: string | null;
 };
 
 export type OperatorExplanationResult = {
@@ -146,7 +148,7 @@ Hard-blocked (never use): mkfs, fdisk, dd if=, rm -rf /, useradd/userdel/usermod
 
 Return JSON only:
 {
-  "status": "running|waiting_on_user|waiting_for_approval|resolved|stuck",
+  "status": "running|waiting_on_user|waiting_for_approval|waiting_on_issue|resolved|stuck",
   "next_step": "one-sentence next step",
   "constraints_to_add": ["new durable operator constraints"],
   "blocked_tools": ["short labels for commands to suppress if already tried"],
@@ -169,7 +171,8 @@ Return JSON only:
     "expected_outcome": "what should improve",
     "rollback_plan": "how to revert",
     "risk": "low|medium|high"
-  } or null
+  } or null,
+  "depends_on_issue_id": "uuid of sibling issue blocking this one" or null
 }
 
 ESCALATION RULES — check these before anything else:
@@ -180,7 +183,8 @@ ESCALATION RULES — check these before anything else:
 5. If the root cause is confirmed by direct evidence in recent_actions results: stop gathering evidence and escalate.
 
 Additional rules:
-- Exactly one of user_question, diagnostic_action, remediation_action may be non-null.
+- If the context includes sibling_issues and your hypothesis concludes this issue is DIRECTLY CAUSED BY or BLOCKED BY one of them (title/hypothesis match is clear and specific), set depends_on_issue_id to that issue's id and status to "waiting_on_issue". The investigation will pause and auto-resume when that issue resolves. Only use this when the dependency is unambiguous — not for loose correlation.
+- Exactly one of user_question, diagnostic_action, remediation_action may be non-null. When depends_on_issue_id is set, all three must be null.
 - CRITICAL: status "running" is ONLY valid when diagnostic_action is non-null with a concrete command. If you cannot commit to a specific shell command right now, use status "waiting_on_user" with a user_question. NEVER output status="running" with diagnostic_action=null — that strands the investigation.
 - Never propose a remediation without an exact target (NAS name).
 - When predefined knowledge is insufficient (e.g. /proc/<pid>/status, BTRFS snapshot state, upgrade logs, custom paths), use the exact shell command needed — you are not limited to a fixed tool list.

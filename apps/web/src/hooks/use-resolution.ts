@@ -8,7 +8,8 @@ export interface Resolution {
   title: string;
   summary: string;
   severity: "critical" | "warning" | "info";
-  status: "open" | "running" | "waiting_on_user" | "waiting_for_approval" | "resolved" | "stuck" | "cancelled";
+  status: "open" | "running" | "waiting_on_user" | "waiting_for_approval" | "waiting_on_issue" | "resolved" | "stuck" | "cancelled";
+  depends_on_issue_id: string | null;
   affected_nas: string[];
   current_hypothesis: string;
   hypothesis_confidence: "high" | "medium" | "low";

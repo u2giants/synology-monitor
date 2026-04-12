@@ -7,6 +7,7 @@ export type IssueStatus =
   | "running"
   | "waiting_on_user"
   | "waiting_for_approval"
+  | "waiting_on_issue"
   | "resolved"
   | "stuck"
   | "cancelled";
@@ -38,6 +39,7 @@ export interface Issue {
   last_agent_message: string | null;
   last_user_message: string | null;
   resolved_at: string | null;
+  depends_on_issue_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -244,6 +246,7 @@ export async function updateIssue(
     last_agent_message: string | null;
     last_user_message: string | null;
     resolved_at: string | null;
+    depends_on_issue_id: string | null;
   }>
 ) {
   let previousStatus: IssueStatus | null = null;
@@ -276,6 +279,21 @@ export async function updateIssue(
       { changed_fields: Object.keys(updates) },
     );
   }
+}
+
+/** Returns all issues in waiting_on_issue status that depend on the given blocker ID. */
+export async function listIssuesDependingOn(
+  supabase: SupabaseClient,
+  userId: string,
+  blockerIssueId: string,
+): Promise<Issue[]> {
+  const { data } = await supabase
+    .from("issues")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("depends_on_issue_id", blockerIssueId)
+    .eq("status", "waiting_on_issue");
+  return (data ?? []).map(normalizeIssue);
 }
 
 export async function appendIssueMessage(

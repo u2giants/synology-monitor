@@ -25,11 +25,15 @@ export async function POST(request: NextRequest) {
     const lookbackMinutes = Math.min(Math.max(requested, 15), 20160);
 
     const issueIds = await runIssueDetection(supabase, user.id, lookbackMinutes);
-    for (const issueId of issueIds.slice(0, 5)) {
+    // Queue ALL detected issues — no slice. Each queueIssueRun deduplicates
+    // by issue id so re-running detection won't double-queue anything.
+    for (const issueId of issueIds) {
       await queueIssueRun(supabase, user.id, issueId, "detect_issue", { lookback_minutes: lookbackMinutes });
     }
     if (shouldInlineDrain()) {
-      await drainIssueQueue(supabase, user.id, { limit: 5 });
+      // Drain only 3 per request to stay well within the 120s timeout.
+      // Remaining jobs will be picked up by the next user action or Continue click.
+      await drainIssueQueue(supabase, user.id, { limit: 3 });
     }
 
     const issues = await fetchDetectedIssues(user.id);

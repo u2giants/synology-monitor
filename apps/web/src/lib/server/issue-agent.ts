@@ -370,6 +370,27 @@ async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, 
     return nasFilter.some((nas) => nasValue.includes(nas) || String((row.metadata as Record<string, unknown> | null)?.nas_name ?? "").includes(nas));
   });
 
+  // Sibling issues: other open/active investigations for this user.
+  // Passed to the planner so it can recognise cross-issue dependencies
+  // (e.g. "ShareSync failures caused by disk I/O pressure on the same NAS").
+  const siblingResult = await supabase
+    .from("issues")
+    .select("id, title, summary, status, affected_nas, current_hypothesis")
+    .eq("user_id", userId)
+    .neq("id", issue.id)
+    .not("status", "in", '("resolved","cancelled")')
+    .order("updated_at", { ascending: false })
+    .limit(10);
+
+  const sibling_issues = (siblingResult.data ?? []).map((s) => ({
+    id: s.id as string,
+    title: s.title as string,
+    summary: s.summary as string,
+    status: s.status as string,
+    affected_nas: Array.isArray(s.affected_nas) ? s.affected_nas as string[] : [],
+    current_hypothesis: s.current_hypothesis as string | null,
+  }));
+
   // Resolve memories (started in parallel above; nearly always resolved by now)
   const agentMemory = await memoriesPromise;
 
@@ -398,6 +419,9 @@ async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, 
       tags: m.tags,
       nas_id: m.nas_id,
     })),
+    // Other open investigations for this user. The planner uses this to detect
+    // cross-issue dependencies (e.g. "my root cause is another active issue").
+    sibling_issues,
   };
 }
 
@@ -989,6 +1013,34 @@ export async function runIssueAgent(
       explanation.summary,
     );
 
+    // Cross-issue dependency: planner identified that this issue is blocked
+    // by another active investigation. Park this issue and let the workflow
+    // re-queue it when the blocker resolves.
+    if (plan.depends_on_issue_id) {
+      const { data: blocker } = await supabase
+        .from("issues")
+        .select("id, title, status")
+        .eq("id", plan.depends_on_issue_id)
+        .maybeSingle();
+
+      if (blocker && blocker.status !== "resolved" && blocker.status !== "cancelled") {
+        await updateIssue(supabase, userId, issueId, {
+          status: "waiting_on_issue",
+          depends_on_issue_id: plan.depends_on_issue_id as string,
+          next_step: `Waiting for "${blocker.title as string}" to resolve first.`,
+        });
+        await appendIssueMessage(
+          supabase,
+          userId,
+          issueId,
+          "agent",
+          `I've identified that this issue is directly caused by another active investigation: "${blocker.title as string}".\n\nI'll automatically resume once that issue is resolved. In the meantime, resolving the root cause there will likely clear this one too.`,
+        );
+        return loadIssue(supabase, userId, issueId);
+      }
+      // Blocker is already resolved/cancelled — ignore the dependency and continue
+    }
+
     if (plan.diagnostic_action) {
       if (!hasAlreadyTried(state, plan.diagnostic_action)) {
         await appendIssueMessage(supabase, userId, issueId, "agent", agentResponse);
@@ -1046,6 +1098,7 @@ export async function runIssueAgent(
     // Guard: if the planner returned status="running" but produced no action,
     // the investigation would silently stall with no follow-up job queued.
     // Treat this as "stuck" so the operator sees it and can click Continue.
+    // (waiting_on_issue is handled earlier and never reaches this point.)
     if (finalStatus === "running" && !plan.diagnostic_action && !plan.remediation_action) {
       finalStatus = "stuck";
     }
