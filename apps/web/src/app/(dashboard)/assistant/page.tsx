@@ -72,17 +72,17 @@ const jobTypeLabels: Record<string, string> = {
   gather_telemetry:  "Gather data",
 };
 
-function confidenceLabel(confidence: number | null | undefined): string | null {
+function confidenceLabel(confidence: "high" | "medium" | "low" | null | undefined): string | null {
   if (!confidence) return null;
-  if (confidence >= 0.7) return "High confidence";
-  if (confidence >= 0.4) return "Medium confidence";
+  if (confidence === "high") return "High confidence";
+  if (confidence === "medium") return "Medium confidence";
   return "Low confidence";
 }
 
-function confidenceBadgeClass(confidence: number | null | undefined): string {
+function confidenceBadgeClass(confidence: "high" | "medium" | "low" | null | undefined): string {
   if (!confidence) return "";
-  if (confidence >= 0.7) return "bg-success/10 text-success border-success/20";
-  if (confidence >= 0.4) return "bg-warning/10 text-warning border-warning/20";
+  if (confidence === "high") return "bg-success/10 text-success border-success/20";
+  if (confidence === "medium") return "bg-warning/10 text-warning border-warning/20";
   return "bg-muted text-muted-foreground border-border";
 }
 
