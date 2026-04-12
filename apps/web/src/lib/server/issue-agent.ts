@@ -1041,7 +1041,14 @@ export async function runIssueAgent(
       ? !hasAlreadyTried(state, remediationPlan)
         && Boolean(remediationPlan.target)
       : false;
-    const finalStatus = deriveTerminalPlanStatus(state, plan, hasPendingApproval);
+    let finalStatus = deriveTerminalPlanStatus(state, plan, hasPendingApproval);
+
+    // Guard: if the planner returned status="running" but produced no action,
+    // the investigation would silently stall with no follow-up job queued.
+    // Treat this as "stuck" so the operator sees it and can click Continue.
+    if (finalStatus === "running" && !plan.diagnostic_action && !plan.remediation_action) {
+      finalStatus = "stuck";
+    }
 
     await updateIssue(supabase, userId, issueId, { status: finalStatus });
     await appendIssueMessage(supabase, userId, issueId, "agent", agentResponse);

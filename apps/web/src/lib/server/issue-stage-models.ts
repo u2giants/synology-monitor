@@ -181,6 +181,7 @@ ESCALATION RULES — check these before anything else:
 
 Additional rules:
 - Exactly one of user_question, diagnostic_action, remediation_action may be non-null.
+- CRITICAL: status "running" is ONLY valid when diagnostic_action is non-null with a concrete command. If you cannot commit to a specific shell command right now, use status "waiting_on_user" with a user_question. NEVER output status="running" with diagnostic_action=null — that strands the investigation.
 - Never propose a remediation without an exact target (NAS name).
 - When predefined knowledge is insufficient (e.g. /proc/<pid>/status, BTRFS snapshot state, upgrade logs, custom paths), use the exact shell command needed — you are not limited to a fixed tool list.
 - Prefer composable commands: pipe grep/awk to extract the signal, avoid dumping gigabytes.
