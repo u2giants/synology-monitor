@@ -80,16 +80,22 @@ function getOpenAIClient() {
 async function callStageModel<T>(
   model: string,
   prompt: string,
+  maxTokens = 8192,
 ) {
   const client = getOpenAIClient();
   const response = await client.chat.completions.create({
     model,
     messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
-    max_tokens: 2200,
+    max_tokens: maxTokens,
   });
 
-  const raw = response.choices[0]?.message?.content ?? "{}";
+  const choice = response.choices[0];
+  const raw = choice?.message?.content;
+  if (!raw) {
+    throw new Error(
+      `Stage model returned null content (finish_reason=${choice?.finish_reason ?? "unknown"}, model=${model})`,
+    );
+  }
   return parseJsonObject<T>(raw);
 }
 
@@ -195,7 +201,7 @@ Additional rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<NextStepPlanResult>(model, prompt);
+  const parsed = await callStageModel<NextStepPlanResult>(model, prompt, 16000);
   return { model, parsed };
 }
 
