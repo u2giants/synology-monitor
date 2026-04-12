@@ -58,8 +58,8 @@ services:
     environment:
       TZ: ${TZ:-UTC}
     volumes:
-      - /proc:/proc:ro         # /proc access lets shell commands read process state
-      - /sys:/sys:ro
+      - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
+      - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
       interval: 30s
