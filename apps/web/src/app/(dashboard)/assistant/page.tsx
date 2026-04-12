@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Loader2,
   MessageSquare,
@@ -29,21 +30,61 @@ import {
   type ResolutionStep,
 } from "@/hooks/use-resolution";
 
-const severityConfig = {
-  critical: { icon: AlertTriangle, className: "text-critical", badge: "bg-critical/10 text-critical border-critical/20" },
-  warning: { icon: AlertTriangle, className: "text-warning", badge: "bg-warning/10 text-warning border-warning/20" },
-  info: { icon: CheckCircle2, className: "text-primary", badge: "bg-primary/10 text-primary border-primary/20" },
+// Status dot vocabulary: consistent color + label across all views
+const statusDotConfig: Record<Resolution["status"], { color: string; pulse: boolean; label: string }> = {
+  open:                 { color: "bg-muted-foreground/50", pulse: false, label: "Not yet investigated" },
+  running:              { color: "bg-blue-500",            pulse: true,  label: "Investigating" },
+  waiting_on_user:      { color: "bg-primary",             pulse: false, label: "Needs your input" },
+  waiting_for_approval: { color: "bg-amber-500",           pulse: false, label: "Needs your approval" },
+  resolved:             { color: "bg-success",             pulse: false, label: "Resolved" },
+  stuck:                { color: "bg-amber-500",           pulse: false, label: "Stuck — needs attention" },
+  cancelled:            { color: "bg-muted-foreground/30", pulse: false, label: "Cancelled" },
 };
 
-const statusLabels: Record<Resolution["status"], string> = {
-  open: "Open",
-  running: "Working",
-  waiting_on_user: "Waiting on you",
-  waiting_for_approval: "Awaiting approval",
-  resolved: "Resolved",
-  stuck: "Blocked",
-  cancelled: "Cancelled",
+const severityConfig = {
+  critical: { className: "text-critical", badge: "bg-critical/10 text-critical border-critical/20" },
+  warning:  { className: "text-warning",  badge: "bg-warning/10 text-warning border-warning/20" },
+  info:     { className: "text-primary",  badge: "bg-primary/10 text-primary border-primary/20" },
 };
+
+const capabilityKeyLabels: Record<string, string> = {
+  smart_data:    "Disk health data (SMART)",
+  ssh_access:    "SSH command access",
+  synology_api:  "Synology management API",
+  nas_api:       "NAS API connection",
+  log_access:    "System log access",
+  snmp:          "SNMP monitoring",
+};
+
+const stageKeyLabels: Record<string, string> = {
+  gather_telemetry: "Gather telemetry",
+  hypothesize:      "Form hypothesis",
+  plan:             "Plan next action",
+  diagnose:         "Run diagnostics",
+  remediate:        "Apply fix",
+  verify:           "Verify resolution",
+  detect_issue:     "Detect issues",
+};
+
+const jobTypeLabels: Record<string, string> = {
+  detect_issue:      "Initial detection",
+  run_agent:         "Agent investigation",
+  gather_telemetry:  "Gather data",
+};
+
+function confidenceLabel(confidence: number | null | undefined): string | null {
+  if (!confidence) return null;
+  if (confidence >= 0.7) return "High confidence";
+  if (confidence >= 0.4) return "Medium confidence";
+  return "Low confidence";
+}
+
+function confidenceBadgeClass(confidence: number | null | undefined): string {
+  if (!confidence) return "";
+  if (confidence >= 0.7) return "bg-success/10 text-success border-success/20";
+  if (confidence >= 0.4) return "bg-warning/10 text-warning border-warning/20";
+  return "bg-muted text-muted-foreground border-border";
+}
 
 export default function AssistantPage() {
   const searchParams = useSearchParams();
@@ -185,9 +226,9 @@ export default function AssistantPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Issue Agent</h1>
+        <h1 className="text-2xl font-bold">Issue Investigator</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          One persistent conversation per issue. The agent owns the diagnosis, remembers every result, and asks for approval only when it has one exact action to run.
+          The AI agent diagnoses NAS problems, gathers evidence, and asks for your approval before making any changes.
         </p>
       </div>
 
@@ -198,10 +239,11 @@ export default function AssistantPage() {
       )}
 
       <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+        {/* Left sidebar: issue list */}
         <aside className="space-y-3">
           <div className="rounded-xl border border-border bg-card p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="text-sm font-semibold">Issue Threads</h2>
+              <h2 className="text-sm font-semibold">Open Issues</h2>
               <button
                 onClick={() => setShowNewForm((value) => !value)}
                 className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
@@ -216,13 +258,13 @@ export default function AssistantPage() {
                 <input
                   value={newTitle}
                   onChange={(event) => setNewTitle(event.target.value)}
-                  placeholder="Issue title"
+                  placeholder="Describe the issue"
                   className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
                 />
                 <textarea
                   value={newDescription}
                   onChange={(event) => setNewDescription(event.target.value)}
-                  placeholder="What do you know so far?"
+                  placeholder="What are you seeing? (optional)"
                   className="min-h-20 w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
                 />
                 <button
@@ -230,14 +272,14 @@ export default function AssistantPage() {
                   disabled={loading || !newTitle.trim()}
                   className="w-full rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
                 >
-                  Start issue
+                  Start investigation
                 </button>
               </div>
             )}
 
             {resolutions.length === 0 ? (
               <div className="text-xs text-muted-foreground">
-                No issue threads yet. Create one manually or run issue detection from the dashboard.
+                No issues yet. Create one manually or run issue detection from the dashboard.
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -261,14 +303,16 @@ export default function AssistantPage() {
           </div>
         </aside>
 
+        {/* Main area */}
         <section className="space-y-4">
           {!current ? (
             <div className="rounded-xl border border-dashed border-border p-12 text-center text-muted-foreground">
               <Bot className="mx-auto mb-3 h-10 w-10 opacity-40" />
-              <p className="text-sm">Select an issue thread or create a new one.</p>
+              <p className="text-sm">Select an issue or create a new one to start investigating.</p>
             </div>
           ) : (
             <>
+              {/* Issue header */}
               <IssueHeader
                 state={current}
                 loading={loading}
@@ -276,6 +320,23 @@ export default function AssistantPage() {
                 onCancel={cancelResolution}
               />
 
+              {/* Agent actively running — slim ambient indicator */}
+              {activeJobs.length > 0 && (
+                <div className="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2.5 text-sm text-blue-700 dark:text-blue-300">
+                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  Agent is actively investigating — this page updates automatically.
+                </div>
+              )}
+
+              {/* Failed jobs — only show when not running */}
+              {activeJobs.length === 0 && failedJobs.length > 0 && (
+                <div className="flex items-center gap-2 rounded-lg border border-critical/20 bg-critical/5 px-4 py-2.5 text-sm text-critical">
+                  <XCircle className="h-3.5 w-3.5 shrink-0" />
+                  {failedJobs.length} background job{failedJobs.length === 1 ? "" : "s"} failed. Use Continue to retry.
+                </div>
+              )}
+
+              {/* Action approval banner */}
               {primaryPendingAction && (
                 <ActionRequiredBanner
                   step={primaryPendingAction}
@@ -286,13 +347,21 @@ export default function AssistantPage() {
                 />
               )}
 
-              <IssueStatusSummary
-                activeJobs={activeJobs}
-                failedJobs={failedJobs}
-                capabilityGaps={capabilityGaps}
-              />
+              {/* Agent needs input */}
+              {current.resolution.status === "waiting_on_user" && (
+                <NeedsInputPanel
+                  nextStep={current.resolution.next_step}
+                  latestAgentMessage={latestAgentMessage?.content ?? null}
+                />
+              )}
 
-              {pendingActions.length > 0 && (
+              {/* Approval state mismatch */}
+              {current.resolution.status === "waiting_for_approval" && pendingActions.length === 0 && (
+                <ApprovalMismatchPanel onContinue={continueResolution} loading={loading} />
+              )}
+
+              {/* Multiple pending actions */}
+              {pendingActions.length > 1 && (
                 <ActionPanel
                   steps={pendingActions}
                   loading={loading}
@@ -301,36 +370,32 @@ export default function AssistantPage() {
                 />
               )}
 
-              {current.resolution.status === "waiting_on_user" && (
-                <NeedsInputPanel
-                  nextStep={current.resolution.next_step}
-                  latestAgentMessage={latestAgentMessage?.content ?? null}
-                />
-              )}
-
-              {current.resolution.status === "waiting_for_approval" && pendingActions.length === 0 && (
-                <ApprovalMismatchPanel />
-              )}
-
-              <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
+              {/* Conversation + sidebar */}
+              <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
                 <div className="rounded-xl border border-border bg-card p-4">
                   <div className="mb-3 flex items-center gap-2">
                     <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                    <h2 className="text-sm font-semibold">Conversation</h2>
+                    <h2 className="text-sm font-semibold">Investigation Thread</h2>
                   </div>
 
-                  <div className="space-y-3">
-                    {current.messages.map((message) => (
-                      <MessageBubble key={message.id} message={message} />
-                    ))}
-                  </div>
+                  {current.messages.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      The agent will post its findings here as the investigation progresses.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {current.messages.map((message) => (
+                        <MessageBubble key={message.id} message={message} />
+                      ))}
+                    </div>
+                  )}
 
                   <div className="mt-4 flex gap-2">
                     <textarea
                       value={draft}
                       onChange={(event) => setDraft(event.target.value)}
-                      placeholder="Reply to this issue thread..."
-                      className="min-h-24 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+                      placeholder="Add context or answer the agent's question..."
+                      className="min-h-20 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
                     />
                     <button
                       onClick={handleSend}
@@ -343,7 +408,7 @@ export default function AssistantPage() {
                   </div>
                 </div>
 
-                <IssueSidebar state={current} />
+                <IssueSidebar state={current} capabilityGaps={capabilityGaps} />
               </div>
             </>
           )}
@@ -353,59 +418,7 @@ export default function AssistantPage() {
   );
 }
 
-function IssueStatusSummary({
-  activeJobs,
-  failedJobs,
-  capabilityGaps,
-}: {
-  activeJobs: ResolutionJob[];
-  failedJobs: ResolutionJob[];
-  capabilityGaps: ResolutionCapability[];
-}) {
-  if (activeJobs.length === 0 && failedJobs.length === 0 && capabilityGaps.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="grid gap-3 lg:grid-cols-3">
-      <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-primary">
-          <Loader2 className={cn("h-4 w-4", activeJobs.length > 0 && "animate-spin")} />
-          Background worker
-        </div>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {activeJobs.length > 0
-            ? `${activeJobs.length} job${activeJobs.length === 1 ? "" : "s"} queued or running for this issue. The backend worker owns progression now.`
-            : "No queued or running jobs for this issue right now."}
-        </p>
-      </div>
-
-      <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-warning">
-          <AlertTriangle className="h-4 w-4" />
-          Telemetry visibility
-        </div>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {capabilityGaps.length > 0
-            ? `${capabilityGaps.length} capability gap${capabilityGaps.length === 1 ? "" : "s"} may limit diagnosis on this issue.`
-            : "No known telemetry capability gaps are attached to this issue."}
-        </p>
-      </div>
-
-      <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-critical">
-          <XCircle className="h-4 w-4" />
-          Workflow failures
-        </div>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {failedJobs.length > 0
-            ? `${failedJobs.length} job${failedJobs.length === 1 ? "" : "s"} failed recently. Review the workflow panel below for exact errors.`
-            : "No recent worker failures recorded for this issue."}
-        </p>
-      </div>
-    </div>
-  );
-}
+// ─── Issue header ─────────────────────────────────────────────────────────────
 
 function IssueHeader({
   state,
@@ -418,47 +431,65 @@ function IssueHeader({
   onContinue: () => void;
   onCancel: () => void;
 }) {
-  const config = severityConfig[state.resolution.severity];
-  const Icon = config.icon;
+  const status = state.resolution.status;
+  const dotConfig = statusDotConfig[status];
+  const sevConfig = severityConfig[state.resolution.severity];
+
+  const isOpenOrStuck = status === "open" || status === "stuck";
+  const isTerminal = status === "resolved" || status === "cancelled";
 
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-start justify-between gap-4">
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Icon className={cn("h-5 w-5", config.className)} />
-            <h2 className="text-lg font-semibold">{state.resolution.title}</h2>
-            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", config.badge)}>
+        <div className="min-w-0 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn("rounded-full border px-2 py-0.5 text-xs font-medium", sevConfig.badge)}>
               {state.resolution.severity}
             </span>
-            <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
-              {statusLabels[state.resolution.status]}
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className={cn("h-2 w-2 shrink-0 rounded-full", dotConfig.color, dotConfig.pulse && "animate-pulse")} />
+              {dotConfig.label}
             </span>
           </div>
-          <p className="text-sm text-muted-foreground">{state.resolution.summary}</p>
+          <h2 className="text-lg font-semibold leading-snug">{state.resolution.title}</h2>
+          {state.resolution.summary && (
+            <p className="text-sm text-muted-foreground">{state.resolution.summary}</p>
+          )}
           {state.resolution.affected_nas.length > 0 && (
             <p className="text-xs text-muted-foreground">
-              Affects: {state.resolution.affected_nas.join(", ")}
+              Device{state.resolution.affected_nas.length > 1 ? "s" : ""}:{" "}
+              {state.resolution.affected_nas.join(", ")}
             </p>
           )}
         </div>
 
-        <div className="flex gap-2">
-          <button
-            onClick={onContinue}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
-          >
-            <Play className="h-4 w-4" />
-            Continue
-          </button>
-          {state.resolution.status !== "resolved" && state.resolution.status !== "cancelled" && (
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          {isOpenOrStuck ? (
+            <button
+              onClick={onContinue}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {status === "open" ? "Start Investigation" : "Resume Investigation"}
+            </button>
+          ) : !isTerminal ? (
+            <button
+              onClick={onContinue}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+            >
+              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Continue
+            </button>
+          ) : null}
+          {!isTerminal && (
             <button
               onClick={onCancel}
               disabled={loading}
-              className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:text-critical disabled:opacity-50"
+              className="text-xs text-muted-foreground hover:text-critical disabled:opacity-50"
             >
-              Cancel
+              Dismiss issue
             </button>
           )}
         </div>
@@ -467,23 +498,72 @@ function IssueHeader({
   );
 }
 
-function IssueSidebar({ state }: { state: ResolutionFull }) {
+// ─── Issue sidebar ─────────────────────────────────────────────────────────────
+
+function IssueSidebar({
+  state,
+  capabilityGaps,
+}: {
+  state: ResolutionFull;
+  capabilityGaps: ResolutionCapability[];
+}) {
+  const [showTechDetails, setShowTechDetails] = useState(false);
+
+  const confLabel = confidenceLabel(state.resolution.hypothesis_confidence);
+  const confBadge = confidenceBadgeClass(state.resolution.hypothesis_confidence);
+
+  const hasActivity = state.log.length > 0;
+  const hasTechData =
+    capabilityGaps.length > 0 ||
+    state.jobs.length > 0 ||
+    state.stage_runs.length > 0 ||
+    state.transitions.length > 0;
+
   return (
     <div className="space-y-4">
+      {/* Likely cause */}
       <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Working Theory</h3>
-        <p className="mt-2 text-sm">{state.resolution.current_hypothesis || "No stable hypothesis yet."}</p>
-        <div className="mt-3 text-xs text-muted-foreground">
-          Confidence: {state.resolution.hypothesis_confidence}
-        </div>
-        <div className="mt-2 text-xs text-muted-foreground">
-          Next step: {state.resolution.next_step || "Awaiting next agent step."}
-        </div>
+        <h3 className="text-sm font-semibold">Likely Cause</h3>
+        {state.resolution.current_hypothesis ? (
+          <>
+            <p className="mt-2 text-sm">{state.resolution.current_hypothesis}</p>
+            {confLabel && (
+              <span className={cn("mt-2 inline-block rounded-full border px-2 py-0.5 text-xs font-medium", confBadge)}>
+                {confLabel}
+              </span>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-muted-foreground">
+            {state.resolution.status === "open"
+              ? "Start the investigation to identify the likely cause."
+              : "Still gathering data..."}
+          </p>
+        )}
+        {state.resolution.next_step && (
+          <div className="mt-3 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium">Next: </span>
+            {state.resolution.next_step}
+          </div>
+        )}
       </div>
 
+      {/* Key findings (facts) */}
+      {state.facts.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">Key Findings</h3>
+          <div className="mt-3 space-y-2">
+            {state.facts.slice(0, 8).map((fact) => (
+              <FactCard key={fact.id} fact={fact} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Operator constraints */}
       {state.resolution.operator_constraints.length > 0 && (
         <div className="rounded-xl border border-border bg-card p-4">
-          <h3 className="text-sm font-semibold">Operator Constraints</h3>
+          <h3 className="text-sm font-semibold">Restrictions</h3>
           <div className="mt-2 space-y-2">
             {state.resolution.operator_constraints.map((constraint) => (
               <div key={constraint} className="rounded-md bg-muted px-3 py-2 text-xs">
@@ -494,115 +574,123 @@ function IssueSidebar({ state }: { state: ResolutionFull }) {
         </div>
       )}
 
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Normalized Facts</h3>
-        <div className="mt-3 space-y-2">
-          {state.facts.length === 0 ? (
-            <div className="text-xs text-muted-foreground">No normalized facts attached yet.</div>
-          ) : (
-            state.facts.slice(0, 8).map((fact) => (
-              <FactCard key={fact.id} fact={fact} />
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Capability Gaps</h3>
-        <div className="mt-3 space-y-2">
-          {state.capabilities.filter((capability) => capability.state !== "supported").length === 0 ? (
-            <div className="text-xs text-muted-foreground">No known telemetry capability gaps for this issue.</div>
-          ) : (
-            state.capabilities
-              .filter((capability) => capability.state !== "supported")
-              .slice(0, 8)
-              .map((capability) => (
-                <CapabilityCard key={capability.id} capability={capability} />
-              ))
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Workflow State</h3>
-        <div className="mt-3 space-y-2">
-          {state.jobs.length === 0 ? (
-            <div className="text-xs text-muted-foreground">No queued workflow jobs yet.</div>
-          ) : (
-            state.jobs.slice(0, 6).map((job) => (
-              <JobCard key={job.id} job={job} />
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Stage Runs</h3>
-        <div className="mt-3 space-y-2">
-          {state.stage_runs.length === 0 ? (
-            <div className="text-xs text-muted-foreground">No stage runs recorded yet.</div>
-          ) : (
-            state.stage_runs.slice(0, 8).map((run) => (
-              <StageRunCard key={run.id} run={run} />
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">State Transitions</h3>
-        <div className="mt-3 space-y-2">
-          {state.transitions.length === 0 ? (
-            <div className="text-xs text-muted-foreground">No recorded state transitions yet.</div>
-          ) : (
-            state.transitions.slice(0, 6).map((transition) => (
-              <div key={transition.id} className="rounded-lg border border-border bg-background p-3">
-                <div className="text-xs font-medium">
-                  {(transition.from_status ?? "none").replaceAll("_", " ")}{" "}
-                  <ChevronRight className="mx-1 inline h-3 w-3" />
-                  {transition.to_status.replaceAll("_", " ")}
-                </div>
-                {transition.reason && (
-                  <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{transition.reason}</p>
-                )}
-                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(transition.created_at)}</div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-card p-4">
-        <h3 className="text-sm font-semibold">Evidence Timeline</h3>
-        <div className="mt-3 space-y-2">
-          {state.log.length === 0 ? (
-            <div className="text-xs text-muted-foreground">No evidence captured yet.</div>
-          ) : (
-            state.log.slice(-8).reverse().map((entry) => (
-              <div key={entry.id} className="rounded-lg border border-border bg-background p-3">
+      {/* Activity log */}
+      {hasActivity && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h3 className="text-sm font-semibold">Activity</h3>
+          <div className="mt-3 space-y-3">
+            {state.log.slice(-8).reverse().map((entry) => (
+              <div key={entry.id} className="border-l-2 border-border pl-3">
                 <div className="text-xs font-medium">{entry.title}</div>
-                <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{entry.detail}</p>
-                <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(entry.created_at)}</div>
+                {entry.detail && (
+                  <p className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">{entry.detail}</p>
+                )}
+                <div className="mt-1 text-[11px] text-muted-foreground">{timeAgo(entry.created_at)}</div>
               </div>
-            ))
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Technical details — collapsed by default */}
+      {hasTechData && (
+        <div className="rounded-xl border border-border bg-card">
+          <button
+            onClick={() => setShowTechDetails(!showTechDetails)}
+            className="flex w-full items-center justify-between px-4 py-3 text-sm text-muted-foreground hover:text-foreground"
+          >
+            <span className="font-medium text-sm">Technical details</span>
+            {showTechDetails ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          </button>
+          {showTechDetails && (
+            <div className="space-y-4 border-t border-border px-4 pb-4 pt-3">
+              {capabilityGaps.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Limited data sources
+                  </h4>
+                  <div className="space-y-1.5">
+                    {capabilityGaps.map((cap) => (
+                      <CapabilityCard key={cap.id} capability={cap} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.jobs.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Background jobs
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.jobs.slice(0, 6).map((job) => (
+                      <JobCard key={job.id} job={job} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.stage_runs.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Analysis steps
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.stage_runs.slice(0, 8).map((run) => (
+                      <StageRunCard key={run.id} run={run} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.transitions.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Status history
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.transitions.slice(0, 6).map((transition) => (
+                      <div key={transition.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="text-xs font-medium">
+                          {(transition.from_status ?? "none").replaceAll("_", " ")}
+                          <ChevronRight className="mx-1 inline h-3 w-3" />
+                          {transition.to_status.replaceAll("_", " ")}
+                        </div>
+                        {transition.reason && (
+                          <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+                            {transition.reason}
+                          </p>
+                        )}
+                        <div className="mt-2 text-[11px] text-muted-foreground">
+                          {timeAgo(transition.created_at)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
+// ─── Sub-components ────────────────────────────────────────────────────────────
+
 function FactCard({ fact }: { fact: ResolutionFact }) {
-  const severityClass = fact.severity === "critical"
-    ? "border-critical/20 bg-critical/5"
-    : fact.severity === "warning"
-      ? "border-warning/20 bg-warning/5"
-      : "border-primary/20 bg-primary/5";
+  const severityClass =
+    fact.severity === "critical"
+      ? "border-critical/20 bg-critical/5"
+      : fact.severity === "warning"
+        ? "border-warning/20 bg-warning/5"
+        : "border-primary/20 bg-primary/5";
 
   return (
     <div className={cn("rounded-lg border p-3", severityClass)}>
       <div className="text-xs font-medium">{fact.title}</div>
-      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{fact.detail}</p>
+      <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{fact.detail}</p>
       <div className="mt-2 text-[11px] text-muted-foreground">
         {fact.fact_type} · {timeAgo(fact.observed_at)}
       </div>
@@ -611,29 +699,41 @@ function FactCard({ fact }: { fact: ResolutionFact }) {
 }
 
 function CapabilityCard({ capability }: { capability: ResolutionCapability }) {
-  const stateClass = capability.state === "unsupported"
-    ? "border-critical/20 bg-critical/5"
-    : "border-warning/20 bg-warning/5";
+  const stateClass =
+    capability.state === "unsupported"
+      ? "border-critical/20 bg-critical/5"
+      : "border-warning/20 bg-warning/5";
+  const label = capabilityKeyLabels[capability.capability_key] ?? capability.capability_key.replaceAll("_", " ");
 
   return (
     <div className={cn("rounded-lg border p-3", stateClass)}>
-      <div className="text-xs font-medium">{capability.capability_key}</div>
-      <p className="mt-1 text-xs text-muted-foreground">{capability.state}</p>
-      <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{capability.raw_error || capability.evidence}</p>
+      <div className="text-xs font-medium">{label}</div>
+      <p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">
+        {capability.raw_error || capability.evidence || capability.state}
+      </p>
       <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(capability.checked_at)}</div>
     </div>
   );
 }
 
 function JobCard({ job }: { job: ResolutionJob }) {
+  const label = jobTypeLabels[job.job_type] ?? job.job_type.replaceAll("_", " ");
+  const statusClass =
+    job.status === "failed"
+      ? "text-critical"
+      : job.status === "running" || job.status === "queued"
+        ? "text-blue-500"
+        : "text-muted-foreground";
+
   return (
     <div className="rounded-lg border border-border bg-background p-3">
-      <div className="text-xs font-medium">{job.job_type}</div>
-      <div className="mt-1 text-xs text-muted-foreground">
-        {job.status} · attempt {job.attempts}
+      <div className="text-xs font-medium">{label}</div>
+      <div className={cn("mt-1 text-xs", statusClass)}>
+        {job.status}
+        {job.attempts > 1 ? ` · attempt ${job.attempts}` : ""}
       </div>
       {job.last_error && (
-        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{job.last_error}</p>
+        <p className="mt-1 whitespace-pre-wrap text-xs text-critical">{job.last_error}</p>
       )}
       <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(job.updated_at)}</div>
     </div>
@@ -641,24 +741,24 @@ function JobCard({ job }: { job: ResolutionJob }) {
 }
 
 function StageRunCard({ run }: { run: ResolutionStageRun }) {
-  const stateClass = run.status === "failed"
-    ? "border-critical/20 bg-critical/5"
-    : run.status === "running"
-      ? "border-primary/20 bg-primary/5"
-      : "border-border bg-background";
+  const stateClass =
+    run.status === "failed"
+      ? "border-critical/20 bg-critical/5"
+      : run.status === "running"
+        ? "border-primary/20 bg-primary/5"
+        : "border-border bg-background";
+  const label = stageKeyLabels[run.stage_key] ?? run.stage_key.replaceAll("_", " ");
 
   return (
     <div className={cn("rounded-lg border p-3", stateClass)}>
-      <div className="text-xs font-medium">
-        {run.stage_key.replaceAll("_", " ")}
-      </div>
+      <div className="text-xs font-medium">{label}</div>
       <div className="mt-1 text-xs text-muted-foreground">
         {run.status}
         {run.model_tier ? ` · ${run.model_tier}` : ""}
         {run.model_name ? ` · ${run.model_name}` : ""}
       </div>
       {run.error_text && (
-        <p className="mt-1 text-xs text-critical whitespace-pre-wrap">{run.error_text}</p>
+        <p className="mt-1 whitespace-pre-wrap text-xs text-critical">{run.error_text}</p>
       )}
       <div className="mt-2 text-[11px] text-muted-foreground">{timeAgo(run.created_at)}</div>
     </div>
@@ -680,7 +780,7 @@ function ActionPanel({
     <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
       <div className="mb-3 flex items-center gap-2">
         <Wrench className="h-4 w-4 text-warning" />
-        <h3 className="text-sm font-semibold">Pending approval</h3>
+        <h3 className="text-sm font-semibold">Actions pending your approval</h3>
       </div>
       <div className="space-y-3">
         {steps.map((step) => (
@@ -692,7 +792,9 @@ function ActionPanel({
                   {step.target} · {step.tool_name} · risk {step.risk}
                 </div>
                 <p className="text-sm text-muted-foreground">{step.reason}</p>
-                <p className="text-xs text-muted-foreground">Expected outcome: {step.expected_outcome}</p>
+                <p className="text-xs text-muted-foreground">
+                  Expected outcome: {step.expected_outcome}
+                </p>
                 {step.rollback_plan && (
                   <p className="text-xs text-muted-foreground">Rollback: {step.rollback_plan}</p>
                 )}
@@ -743,16 +845,15 @@ function ActionRequiredBanner({
   onReject: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-critical/30 bg-critical/10 p-4">
+    <div className="rounded-xl border border-warning/30 bg-warning/5 p-4">
       <div className="flex items-start justify-between gap-4">
-        <div className="space-y-3">
+        <div className="min-w-0 space-y-3">
           <div className="flex items-center gap-2">
-            <Wrench className="h-4 w-4 text-critical" />
-            <h3 className="text-sm font-semibold">Action required</h3>
+            <Wrench className="h-4 w-4 text-warning" />
+            <h3 className="text-sm font-semibold">Your approval needed</h3>
           </div>
-          <div className="rounded-lg border border-critical/30 bg-critical/15 p-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-critical">Approve this exact action</div>
-            <p className="mt-1 text-sm font-semibold text-critical">{step.summary}</p>
+          <div className="rounded-lg border border-warning/20 bg-warning/10 p-3">
+            <p className="text-sm font-semibold">{step.summary}</p>
             <p className="mt-2 text-sm text-muted-foreground">{step.reason}</p>
             <div className="mt-2 text-xs text-muted-foreground">
               {step.target} · {step.tool_name} · risk {step.risk}
@@ -760,16 +861,15 @@ function ActionRequiredBanner({
           </div>
           {latestAgentMessage && (
             <div className="rounded-lg border border-border bg-card p-3">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
-              <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+              <p className="whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
             </div>
           )}
         </div>
-        <div className="flex shrink-0 gap-2">
+        <div className="flex shrink-0 flex-col gap-2">
           <button
             onClick={onApprove}
             disabled={loading}
-            className="rounded-md bg-critical px-4 py-2 text-sm font-medium text-white hover:bg-critical/90 disabled:opacity-50"
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             Approve
           </button>
@@ -797,31 +897,48 @@ function NeedsInputPanel({
     <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
       <div className="mb-2 flex items-center gap-2">
         <MessageSquare className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-semibold">Agent needs input from you</h3>
+        <h3 className="text-sm font-semibold">Agent has a question for you</h3>
       </div>
       <p className="text-sm text-muted-foreground">
-        {nextStep || "The agent is waiting for more information before it can continue."}
+        {nextStep || "The agent needs more information before it can continue. Reply below."}
       </p>
       {latestAgentMessage && (
         <div className="mt-3 rounded-lg border border-border bg-card p-3">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest agent message</div>
-          <p className="mt-2 whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
+          <p className="whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
         </div>
       )}
     </div>
   );
 }
 
-function ApprovalMismatchPanel() {
+function ApprovalMismatchPanel({
+  onContinue,
+  loading,
+}: {
+  onContinue: () => void;
+  loading: boolean;
+}) {
   return (
-    <div className="rounded-xl border border-critical/20 bg-critical/5 p-4">
-      <div className="mb-2 flex items-center gap-2">
-        <XCircle className="h-4 w-4 text-critical" />
-        <h3 className="text-sm font-semibold">Approval state mismatch</h3>
+    <div className="rounded-xl border border-warning/20 bg-warning/5 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-warning" />
+            <h3 className="text-sm font-semibold">Investigation paused</h3>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            The agent stopped before completing its recommendation. Click Continue to resume.
+          </p>
+        </div>
+        <button
+          onClick={onContinue}
+          disabled={loading}
+          className="shrink-0 inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+        >
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          Continue
+        </button>
       </div>
-      <p className="text-sm text-muted-foreground">
-        This issue is marked as awaiting approval, but no proposed action is attached. Use Continue to re-run the worker and rebuild the approval step.
-      </p>
     </div>
   );
 }
@@ -842,12 +959,10 @@ function MessageBubble({ message }: { message: ResolutionMessage }) {
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span className="text-xs font-medium text-muted-foreground">
           {isUser ? "You" : isSystem ? "System" : "Agent"}
         </span>
-        <span className="text-[11px] text-muted-foreground">
-          {formatETFull(message.created_at)}
-        </span>
+        <span className="text-[11px] text-muted-foreground">{formatETFull(message.created_at)}</span>
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm">{message.content}</p>
     </div>
@@ -865,8 +980,8 @@ function IssueListItem({
   onClick: () => void;
   onDelete: () => void;
 }) {
-  const config = severityConfig[resolution.severity];
-  const Icon = config.icon;
+  const dotConfig = statusDotConfig[resolution.status];
+  const sevConfig = severityConfig[resolution.severity];
 
   return (
     <div
@@ -877,22 +992,32 @@ function IssueListItem({
     >
       <button onClick={onClick} className="w-full text-left">
         <div className="flex items-start gap-2">
-          <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", config.className)} />
+          <span
+            className={cn(
+              "mt-1.5 h-2 w-2 shrink-0 rounded-full",
+              dotConfig.color,
+              dotConfig.pulse && "animate-pulse"
+            )}
+          />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-medium">{resolution.title}</span>
-              <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <div className="flex items-start justify-between gap-1">
+              <span className="text-sm font-medium leading-snug">{resolution.title}</span>
+              <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium", sevConfig.badge)}>
+                {resolution.severity}
+              </span>
             </div>
-            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{resolution.summary}</p>
-            <div className="mt-2 text-[11px] text-muted-foreground">
-              {statusLabels[resolution.status]} · {timeAgo(resolution.updated_at)}
+            {resolution.summary && (
+              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{resolution.summary}</p>
+            )}
+            <div className="mt-1.5 text-[11px] text-muted-foreground">
+              {dotConfig.label} · {timeAgo(resolution.updated_at)}
             </div>
           </div>
         </div>
       </button>
       <button
         onClick={onDelete}
-        className="mt-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-critical"
+        className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-critical group-hover:opacity-100"
       >
         <Trash2 className="h-3 w-3" />
         Delete
