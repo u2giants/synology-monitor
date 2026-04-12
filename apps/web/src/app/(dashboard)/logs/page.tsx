@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, timeAgo, formatET } from "@/lib/utils";
 import { Search, Filter, FolderSync, UserRound, ArrowRightLeft, Trash2, Pencil, Download, Upload, ShieldAlert } from "lucide-react";
 
 interface LogEntry {
@@ -318,7 +318,7 @@ export default function LogsPage() {
                   </div>
 
                   <div className="text-right text-xs text-muted-foreground">
-                    <div>{new Date(log.logged_at).toLocaleString()}</div>
+                    <div>{formatET(log.logged_at)} ET</div>
                     <div className="mt-1">{timeAgo(log.logged_at)}</div>
                   </div>
                 </div>

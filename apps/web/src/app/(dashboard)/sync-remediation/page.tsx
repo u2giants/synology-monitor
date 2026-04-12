@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Wrench, CheckCircle, Clock, AlertTriangle, RefreshCw, FileText, ArrowRightLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { cn, timeAgo } from "@/lib/utils";
+import { cn, timeAgo, formatET } from "@/lib/utils";
 
 interface SyncRemediation {
   id: string;
@@ -327,7 +327,7 @@ export default function SyncRemediationPage() {
                         Completed At
                       </label>
                       <p className="mt-1 text-sm">
-                        {new Date(selectedRemediation.completed_at).toLocaleString()}
+                        {formatET(selectedRemediation.completed_at)} ET
                       </p>
                     </div>
                   )}

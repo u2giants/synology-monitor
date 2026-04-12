@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowRightLeft, FolderSync, Search, ShieldAlert, UserRound, ExternalLink, Wrench, Globe, CheckSquare, Square, Loader2, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { cn, timeAgoET } from "@/lib/utils";
+import { cn, timeAgoET, formatET } from "@/lib/utils";
 import { ProblemsSection } from "@/components/dashboard/problems-section";
 import type { Alert } from "@synology-monitor/shared";
 import Link from "next/link";
@@ -764,7 +764,7 @@ export default function SyncTriagePage() {
                   </div>
 
                   <div className="text-right text-xs text-muted-foreground">
-                    <div>{new Date(log.logged_at).toLocaleString()}</div>
+                    <div>{formatET(log.logged_at)} ET</div>
                     <div className="mt-1">{timeAgoET(log.logged_at)}</div>
                   </div>
                 </div>
@@ -792,7 +792,7 @@ export default function SyncTriagePage() {
                       {selectedAlert.severity}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {new Date(selectedAlert.created_at).toLocaleString()}
+                      {formatET(selectedAlert.created_at)} ET
                     </span>
                   </div>
                 </div>

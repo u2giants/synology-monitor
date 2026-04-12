@@ -328,7 +328,7 @@ export default function MetricsPage() {
                             formatBytes(value) + "/s",
                             name === "read_bps" ? "Read" : "Write",
                           ]}
-                          labelFormatter={(ts) => new Date(ts).toLocaleTimeString()}
+                          labelFormatter={(ts) => new Date(ts).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: true }) + " ET"}
                         />
                         <Line
                           type="monotone"
@@ -458,11 +458,12 @@ function mergeSeriesData(
 }
 
 function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return `${d.getHours().toString().padStart(2, "0")}:${d
-    .getMinutes()
-    .toString()
-    .padStart(2, "0")}`;
+  return new Date(ts).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 
 function formatSnapshotAge(capturedAt: string): string {

@@ -171,7 +171,7 @@ export function AlertDetailModal({ alert, onClose }: AlertDetailModalProps) {
                     {alert.severity}
                   </span>
                   <span className="text-xs text-muted-foreground">
-                    {new Date(alert.created_at).toLocaleString()}
+                    {formatET(alert.created_at)} ET
                   </span>
                 </div>
               </div>
