@@ -30,6 +30,7 @@ services:
       # System folders for ShareSync monitoring
       - ${SHARE_SYNO_DRIVE_PATH:-/volume1/@synologydrive}:/host/shares/@synologydrive:ro
       - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/host/shares/@SynologyDriveShareSync:ro
+      - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/host/appdata/HyperBackup:ro
       - agent-data:/app/data
     healthcheck:
       test: ["CMD", "test", "-f", "/app/data/wal.db"]
@@ -60,6 +61,24 @@ services:
     volumes:
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
+      - /etc/passwd:/host/etc/passwd:ro
+      - /var/log:/host/log:ro
+      - /var/packages:/host/packages:ro
+      - ${SHARE_FILES_PATH:-/volume1/files}:/volume1/files:ro
+      - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/volume1/styleguides:ro
+      - ${SHARE_USERS_PATH:-/volume1/users}:/volume1/users:ro
+      - ${SHARE_HOMES_PATH:-/volume1/homes}:/volume1/homes:ro
+      - ${SHARE_COLDLION_PATH:-/volume1/Coldlion}:/volume1/Coldlion:ro
+      - ${SHARE_PHOTOGRAPHY_PATH:-/volume1/Photography}:/volume1/Photography:ro
+      - ${SHARE_FREELANCERS_PATH:-/volume1/freelancers}:/volume1/freelancers:ro
+      - ${SHARE_MGMT_PATH:-/volume1/mgmt}:/volume1/mgmt:ro
+      - ${SHARE_MAC_PATH:-/volume1/mac}:/volume1/mac:ro
+      - ${SHARE_OLDSTYLEGUIDES_PATH:-/volume1/oldStyleguides}:/volume1/oldStyleguides:ro
+      - ${SHARE_SYNO_DRIVE_PATH:-/volume1/@synologydrive}:/volume1/@synologydrive:ro
+      - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/volume1/@SynologyDriveShareSync:ro
+      - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/volume1/@appdata/HyperBackup:ro
+      - ${MONITOR_STACK_PATH:-/volume1/docker/synology-monitor-agent}:/volume1/docker/synology-monitor-agent:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
       interval: 30s

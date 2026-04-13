@@ -60,7 +60,10 @@ func (c *HyperBackupCollector) collect() {
 			Message:  "Hyper Backup API unavailable: " + err.Error(),
 			LoggedAt: now,
 		})
-		return
+		tasks = collectHyperBackupFallbackTasks()
+	}
+	if len(tasks) == 0 {
+		tasks = collectHyperBackupFallbackTasks()
 	}
 	if len(tasks) == 0 {
 		return
@@ -105,6 +108,43 @@ func (c *HyperBackupCollector) collect() {
 	}
 
 	log.Printf("[hyperbackup] collected %d backup tasks", len(tasks))
+}
+
+func collectHyperBackupFallbackTasks() []dsm.BackupTask {
+	statePath := "/host/appdata/HyperBackup/config/task_state.conf"
+	resultPath := "/host/appdata/HyperBackup/last_result/backup.last"
+
+	taskStates := parseIniSections(readSmallFile(statePath))
+	taskResults := parseIniSections(readSmallFile(resultPath))
+	if len(taskResults) == 0 {
+		return nil
+	}
+
+	var tasks []dsm.BackupTask
+	for section, fields := range taskResults {
+		if !strings.HasPrefix(section, "task_") {
+			continue
+		}
+		taskID := strings.TrimPrefix(section, "task_")
+		stateFields := taskStates[section]
+		status := firstNonEmpty(stateFields["state"], stateFields["last_state"])
+		tasks = append(tasks, dsm.BackupTask{
+			ID:          taskID,
+			Name:        firstNonEmpty(fields["task_name"], section),
+			Status:      status,
+			LastResult:  fields["result"],
+			LastRunTime: unixToRFC3339(fields["end_time"]),
+			DestName:    fields["dest_name"],
+			DestType:    fields["dest_type"],
+			TotalBytes:  parseInt64(fields["target_size"]),
+		})
+	}
+	return tasks
+}
+
+func parseInt64(raw string) int64 {
+	value, _ := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	return value
 }
 
 // isFailed returns true when the result or status indicates a failure.

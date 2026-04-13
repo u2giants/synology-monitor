@@ -31,6 +31,7 @@ type Config struct {
 	ProcessInterval     time.Duration // per-process CPU/mem/IO sampling
 	DiskStatsInterval   time.Duration // per-disk IOPS/latency sampling
 	ConnectionsInterval time.Duration // active network connection enumeration
+	InfraInterval       time.Duration // low-impact network/share lifecycle sampling
 
 	// File system monitoring
 	WatchPaths     []string
@@ -69,6 +70,7 @@ func Load() (*Config, error) {
 		ProcessInterval:     getEnvDuration("PROCESS_INTERVAL", 15*time.Second),
 		DiskStatsInterval:   getEnvDuration("DISKSTATS_INTERVAL", 15*time.Second),
 		ConnectionsInterval: getEnvDuration("CONNECTIONS_INTERVAL", 30*time.Second),
+		InfraInterval:       getEnvDuration("INFRA_INTERVAL", 2*time.Minute),
 
 		WatchPaths:     getEnvList("WATCH_PATHS", []string{"/host/volume1"}),
 		ChecksumPaths:  getEnvList("CHECKSUM_PATHS", []string{"/host/volume1"}),

@@ -189,6 +189,14 @@ func main() {
 		hyperBackupCollector.Run(stop)
 	}()
 
+	// Start low-impact infrastructure collector (interfaces, share usage, backup fallback)
+	infraCollector := collector.NewInfraCollector(s, cfg.NasID, cfg.WatchPaths, cfg.InfraInterval)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		infraCollector.Run(stop)
+	}()
+
 	// Start storage pool / RAID scrub / snapshot replication collector
 	storagePoolCollector := collector.NewStoragePoolCollector(dsmClient, s, cfg.NasID)
 	wg.Add(1)

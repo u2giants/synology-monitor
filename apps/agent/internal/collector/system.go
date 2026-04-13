@@ -3,6 +3,7 @@ package collector
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/synology-monitor/agent/internal/dsm"
@@ -113,18 +114,22 @@ func (c *SystemCollector) collect() {
 
 // StorageCollector collects SMART, RAID, volume metrics
 type StorageCollector struct {
-	client   *dsm.Client
-	sender   *sender.Sender
-	nasID    string
-	interval time.Duration
+	client           *dsm.Client
+	sender           *sender.Sender
+	nasID            string
+	interval         time.Duration
+	prevVolumeStatus map[string]string
+	prevDiskHealth   map[string]string
 }
 
 func NewStorageCollector(client *dsm.Client, s *sender.Sender, nasID string, interval time.Duration) *StorageCollector {
 	return &StorageCollector{
-		client:   client,
-		sender:   s,
-		nasID:    nasID,
-		interval: interval,
+		client:           client,
+		sender:           s,
+		nasID:            nasID,
+		interval:         interval,
+		prevVolumeStatus: make(map[string]string),
+		prevDiskHealth:   make(map[string]string),
 	}
 }
 
@@ -188,7 +193,33 @@ func (c *StorageCollector) collect() {
 				NasID: c.nasID, Type: fmt.Sprintf("volume_usage_%s", vol.ID),
 				Value: usedPct, Unit: "percent", RecordedAt: now,
 			})
+			c.sender.QueueMetric(sender.MetricPayload{
+				NasID: c.nasID, Type: "volume_used_bytes",
+				Value: float64(vol.UsedSize), Unit: "bytes", RecordedAt: now,
+				Metadata: map[string]interface{}{"volume_id": vol.ID, "volume_path": vol.VolPath},
+			})
+			c.sender.QueueMetric(sender.MetricPayload{
+				NasID: c.nasID, Type: "volume_free_bytes",
+				Value: float64(vol.TotalSize - vol.UsedSize), Unit: "bytes", RecordedAt: now,
+				Metadata: map[string]interface{}{"volume_id": vol.ID, "volume_path": vol.VolPath},
+			})
 		}
+
+		if prev := c.prevVolumeStatus[vol.ID]; prev != "" && prev != status {
+			severity := "warning"
+			if status == "crashed" || status == "degraded" {
+				severity = "error"
+			}
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "storage_health",
+				Severity: severity,
+				Message:  fmt.Sprintf("Volume %s status changed: %s -> %s", vol.VolPath, prev, status),
+				Metadata: map[string]interface{}{"volume_id": vol.ID, "volume_path": vol.VolPath, "previous_status": prev, "status": status},
+				LoggedAt: now,
+			})
+		}
+		c.prevVolumeStatus[vol.ID] = status
 	}
 
 	// Disk temperatures
@@ -196,9 +227,36 @@ func (c *StorageCollector) collect() {
 		c.sender.QueueMetric(sender.MetricPayload{
 			NasID: c.nasID, Type: "temperature_disk",
 			Value: float64(disk.Temp), Unit: "celsius",
-			Metadata: map[string]interface{}{"disk_id": disk.ID, "disk_name": disk.Name},
+			Metadata:   map[string]interface{}{"disk_id": disk.ID, "disk_name": disk.Name},
 			RecordedAt: now,
 		})
+
+		smartHealthy := 1.0
+		if normalized := strings.ToLower(strings.TrimSpace(disk.SmartStatus)); normalized != "" &&
+			normalized != "normal" && normalized != "healthy" && normalized != "passed" {
+			smartHealthy = 0
+		}
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID: c.nasID, Type: "disk_smart_healthy",
+			Value: smartHealthy, Unit: "bool", RecordedAt: now,
+			Metadata: map[string]interface{}{"disk_id": disk.ID, "disk_name": disk.Name, "smart_status": disk.SmartStatus},
+		})
+
+		if prev := c.prevDiskHealth[disk.ID]; prev != "" && prev != disk.SmartStatus {
+			severity := "warning"
+			if smartHealthy == 0 {
+				severity = "error"
+			}
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "disk_health",
+				Severity: severity,
+				Message:  fmt.Sprintf("Disk %s SMART status changed: %s -> %s", disk.Name, prev, disk.SmartStatus),
+				Metadata: map[string]interface{}{"disk_id": disk.ID, "disk_name": disk.Name, "previous_status": prev, "smart_status": disk.SmartStatus},
+				LoggedAt: now,
+			})
+		}
+		c.prevDiskHealth[disk.ID] = disk.SmartStatus
 	}
 
 	log.Printf("[storage] collected: %d volumes, %d disks", len(info.Volumes), len(info.Disks))
@@ -222,18 +280,24 @@ func convertDisks(disks []dsm.DiskInfo) []sender.DiskPayload {
 
 // DockerCollector collects Docker container status
 type DockerCollector struct {
-	client   *dsm.Client
-	sender   *sender.Sender
-	nasID    string
-	interval time.Duration
+	client     *dsm.Client
+	sender     *sender.Sender
+	nasID      string
+	interval   time.Duration
+	prevStatus map[string]string
+	prevUptime map[string]int64
+	restarts   map[string]int
 }
 
 func NewDockerCollector(client *dsm.Client, s *sender.Sender, nasID string, interval time.Duration) *DockerCollector {
 	return &DockerCollector{
-		client:   client,
-		sender:   s,
-		nasID:    nasID,
-		interval: interval,
+		client:     client,
+		sender:     s,
+		nasID:      nasID,
+		interval:   interval,
+		prevStatus: make(map[string]string),
+		prevUptime: make(map[string]int64),
+		restarts:   make(map[string]int),
 	}
 }
 
@@ -291,6 +355,50 @@ func (c *DockerCollector) collect() {
 			UptimeSeconds: ct.UpTime,
 			RecordedAt:    now,
 		})
+		running := 0.0
+		if status == "running" {
+			running = 1
+		}
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID: c.nasID, Type: "container_running",
+			Value: running, Unit: "bool", RecordedAt: now,
+			Metadata: map[string]interface{}{"container_id": ct.ID, "container_name": ct.Name, "image": ct.Image},
+		})
+
+		prevStatus := c.prevStatus[ct.ID]
+		prevUptime := c.prevUptime[ct.ID]
+		if prevStatus != "" && prevStatus != status {
+			severity := "info"
+			if status == "restarting" || status == "exited" || status == "stopped" {
+				severity = "warning"
+			}
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "container_lifecycle",
+				Severity: severity,
+				Message:  fmt.Sprintf("Container %s status changed: %s -> %s", ct.Name, prevStatus, status),
+				Metadata: map[string]interface{}{"container_id": ct.ID, "container_name": ct.Name, "previous_status": prevStatus, "status": status, "image": ct.Image},
+				LoggedAt: now,
+			})
+		}
+		if prevUptime > 0 && ct.UpTime > 0 && ct.UpTime < prevUptime && status == "running" {
+			c.restarts[ct.ID]++
+			c.sender.QueueLog(sender.LogPayload{
+				NasID:    c.nasID,
+				Source:   "container_lifecycle",
+				Severity: "warning",
+				Message:  fmt.Sprintf("Container %s appears to have restarted", ct.Name),
+				Metadata: map[string]interface{}{"container_id": ct.ID, "container_name": ct.Name, "restart_count": c.restarts[ct.ID], "image": ct.Image},
+				LoggedAt: now,
+			})
+		}
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID: c.nasID, Type: "container_restart_count",
+			Value: float64(c.restarts[ct.ID]), Unit: "count", RecordedAt: now,
+			Metadata: map[string]interface{}{"container_id": ct.ID, "container_name": ct.Name, "image": ct.Image},
+		})
+		c.prevStatus[ct.ID] = status
+		c.prevUptime[ct.ID] = ct.UpTime
 	}
 
 	log.Printf("[docker] collected: %d containers", len(containers))

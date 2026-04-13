@@ -658,13 +658,13 @@ func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
 
 // ShareInfo represents a DSM shared folder (SYNO.Core.Share)
 type ShareInfo struct {
-	Name          string            `json:"name"`
-	Path          string            `json:"vol_path"`
-	Description   string            `json:"desc"`
-	IsUSB         bool              `json:"is_usb_share"`
-	RecycleBinEnabled bool          `json:"enable_recycle_bin"`
-	Encryption    int               `json:"encryption"`
-	Additional    map[string]interface{} `json:"additional"`
+	Name              string                 `json:"name"`
+	Path              string                 `json:"vol_path"`
+	Description       string                 `json:"desc"`
+	IsUSB             bool                   `json:"is_usb_share"`
+	RecycleBinEnabled bool                   `json:"enable_recycle_bin"`
+	Encryption        int                    `json:"encryption"`
+	Additional        map[string]interface{} `json:"additional"`
 }
 
 // GetShares returns all shared folders and their configuration.
@@ -723,12 +723,12 @@ func (c *Client) GetInstalledPackages() ([]PackageInfo, error) {
 
 // SystemLogEntry represents a log from DSM's structured log system.
 type SystemLogEntry struct {
-	Time     string `json:"time"`
-	Level    LogLevel `json:"level"`
-	Message  string `json:"msg"`
-	Who      string `json:"who"`
-	Descr    string `json:"descr"`
-	LogName  string `json:"logname"`
+	Time    string   `json:"time"`
+	Level   LogLevel `json:"level"`
+	Message string   `json:"msg"`
+	Who     string   `json:"who"`
+	Descr   string   `json:"descr"`
+	LogName string   `json:"logname"`
 }
 
 // LogLevel accepts DSM log severity values encoded as either numbers or strings.
@@ -771,8 +771,8 @@ func (l *LogLevel) UnmarshalJSON(data []byte) error {
 // events like share database errors that may not appear in text log files.
 func (c *Client) GetRecentSystemLogs(limit int) ([]SystemLogEntry, error) {
 	data, err := c.request("SYNO.Core.SyslogClient.Log", 1, "list", url.Values{
-		"limit":      {fmt.Sprintf("%d", limit)},
-		"offset":     {"0"},
+		"limit":  {fmt.Sprintf("%d", limit)},
+		"offset": {"0"},
 	})
 	if err != nil {
 		return nil, err
@@ -810,31 +810,9 @@ type ScheduledTask struct {
 // GetRunningScheduledTasks returns task scheduler entries that are currently
 // running. Returns nil (no error) when the API is unavailable.
 func (c *Client) GetRunningScheduledTasks() ([]ScheduledTask, error) {
-	data, err := c.request("SYNO.Core.TaskScheduler", 4, "list", url.Values{
-		"sort_by":    {"next_trigger_time"},
-		"sort_order": {"ASC"},
-		"limit":      {"50"},
-		"offset":     {"0"},
-	})
+	tasks, err := c.getScheduledTasks(50)
 	if err != nil {
 		return nil, err
-	}
-
-	var response struct {
-		Tasks []ScheduledTask `json:"tasks"`
-		Items []ScheduledTask `json:"items"`
-		List  []ScheduledTask `json:"list"`
-	}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, fmt.Errorf("parsing scheduled tasks: %w", err)
-	}
-
-	tasks := response.Tasks
-	if len(tasks) == 0 {
-		tasks = response.Items
-	}
-	if len(tasks) == 0 {
-		tasks = response.List
 	}
 
 	var running []ScheduledTask
@@ -849,34 +827,48 @@ func (c *Client) GetRunningScheduledTasks() ([]ScheduledTask, error) {
 // GetAllScheduledTasks returns ALL task scheduler entries without filtering.
 // Returns nil (no error) when the API is unavailable.
 func (c *Client) GetAllScheduledTasks() ([]ScheduledTask, error) {
-	data, err := c.request("SYNO.Core.TaskScheduler", 4, "list", url.Values{
-		"sort_by":    {"next_trigger_time"},
-		"sort_order": {"ASC"},
-		"limit":      {"200"},
-		"offset":     {"0"},
-	})
-	if err != nil {
-		return nil, err
+	return c.getScheduledTasks(200)
+}
+
+func (c *Client) getScheduledTasks(limit int) ([]ScheduledTask, error) {
+	var errs []string
+
+	for _, version := range []int{4, 3, 2, 1} {
+		data, err := c.request("SYNO.Core.TaskScheduler", version, "list", url.Values{
+			"sort_by":    {"next_trigger_time"},
+			"sort_order": {"ASC"},
+			"limit":      {fmt.Sprintf("%d", limit)},
+			"offset":     {"0"},
+		})
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("v%d list: %v", version, err))
+			continue
+		}
+
+		var response struct {
+			Tasks []ScheduledTask `json:"tasks"`
+			Items []ScheduledTask `json:"items"`
+			List  []ScheduledTask `json:"list"`
+		}
+		if err := json.Unmarshal(data, &response); err != nil {
+			errs = append(errs, fmt.Sprintf("v%d parse: %v", version, err))
+			continue
+		}
+
+		tasks := response.Tasks
+		if len(tasks) == 0 {
+			tasks = response.Items
+		}
+		if len(tasks) == 0 {
+			tasks = response.List
+		}
+		return tasks, nil
 	}
 
-	var response struct {
-		Tasks []ScheduledTask `json:"tasks"`
-		Items []ScheduledTask `json:"items"`
-		List  []ScheduledTask `json:"list"`
+	if len(errs) == 0 {
+		return nil, nil
 	}
-	if err := json.Unmarshal(data, &response); err != nil {
-		return nil, fmt.Errorf("parsing scheduled tasks: %w", err)
-	}
-
-	tasks := response.Tasks
-	if len(tasks) == 0 {
-		tasks = response.Items
-	}
-	if len(tasks) == 0 {
-		tasks = response.List
-	}
-
-	return tasks, nil
+	return nil, fmt.Errorf("scheduled task API unavailable: %s", strings.Join(errs, "; "))
 }
 
 // === Hyper Backup API ===
@@ -960,7 +952,7 @@ type SnapshotReplicaTask struct {
 }
 
 // GetSnapshotReplicationTasks tries SYNO.Core.Share.Snapshot.ReplicaTask v1
-// list, then SYNO.SynologyDrive.SnapshotReplication v1 list.
+// list, then the Snapshot Replication package APIs actually advertised on DSM.
 // Returns nil/nil if both fail.
 func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 	var errs []string
@@ -970,8 +962,15 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 		version int
 		method  string
 	}{
+		{"SYNO.DR.Plan", 3, "list"},
+		{"SYNO.DR.Plan", 2, "list"},
+		{"SYNO.DR.Plan", 1, "list"},
+		{"SYNO.DR.Plan.Site", 1, "list"},
 		{"SYNO.Core.Share.Snapshot.ReplicaTask", 1, "list"},
 		{"SYNO.SynologyDrive.SnapshotReplication", 1, "list"},
+		{"SYNO.Replica.Share", 1, "list"},
+		{"SYNO.Replica.Volume", 1, "list"},
+		{"SYNO.Btrfs.Replica", 1, "list"},
 	} {
 		data, err := c.request(apiSpec.api, apiSpec.version, apiSpec.method, url.Values{
 			"limit":  {"-1"},
@@ -982,21 +981,10 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 			continue
 		}
 
-		var wrapped struct {
-			Tasks []SnapshotReplicaTask `json:"tasks"`
-			Items []SnapshotReplicaTask `json:"items"`
-			List  []SnapshotReplicaTask `json:"list"`
-		}
-		if err := json.Unmarshal(data, &wrapped); err != nil {
+		tasks, err := parseSnapshotReplicaTasks(data)
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s v%d %s parse: %v", apiSpec.api, apiSpec.version, apiSpec.method, err))
 			continue
-		}
-		tasks := wrapped.Tasks
-		if len(tasks) == 0 {
-			tasks = wrapped.Items
-		}
-		if len(tasks) == 0 {
-			tasks = wrapped.List
 		}
 		return tasks, nil
 	}
@@ -1005,4 +993,93 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("snapshot replication API unavailable: %s", strings.Join(errs, "; "))
+}
+
+func parseSnapshotReplicaTasks(data []byte) ([]SnapshotReplicaTask, error) {
+	var direct struct {
+		Tasks []SnapshotReplicaTask `json:"tasks"`
+		Items []SnapshotReplicaTask `json:"items"`
+		List  []SnapshotReplicaTask `json:"list"`
+		Plans []SnapshotReplicaTask `json:"plans"`
+	}
+	if err := json.Unmarshal(data, &direct); err == nil {
+		switch {
+		case len(direct.Tasks) > 0:
+			return direct.Tasks, nil
+		case len(direct.Items) > 0:
+			return direct.Items, nil
+		case len(direct.List) > 0:
+			return direct.List, nil
+		case len(direct.Plans) > 0:
+			return direct.Plans, nil
+		}
+	}
+
+	var generic struct {
+		Tasks []map[string]interface{} `json:"tasks"`
+		Items []map[string]interface{} `json:"items"`
+		List  []map[string]interface{} `json:"list"`
+		Plans []map[string]interface{} `json:"plans"`
+	}
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return nil, err
+	}
+
+	var rawItems []map[string]interface{}
+	switch {
+	case len(generic.Tasks) > 0:
+		rawItems = generic.Tasks
+	case len(generic.Items) > 0:
+		rawItems = generic.Items
+	case len(generic.List) > 0:
+		rawItems = generic.List
+	case len(generic.Plans) > 0:
+		rawItems = generic.Plans
+	default:
+		return nil, nil
+	}
+
+	tasks := make([]SnapshotReplicaTask, 0, len(rawItems))
+	for _, item := range rawItems {
+		task := SnapshotReplicaTask{
+			ID:           firstMapString(item, "task_id", "id", "plan_id", "uuid"),
+			Name:         firstMapString(item, "task_name", "name", "plan_name"),
+			Status:       firstMapString(item, "status", "state"),
+			SrcShareName: firstMapString(item, "src_share_name", "source_share_name", "src_share", "source_share"),
+			DstShareName: firstMapString(item, "dst_share_name", "destination_share_name", "dst_share", "target_share"),
+			DstHost:      firstMapString(item, "dst_host", "destination_host", "remote_host", "target_host"),
+			LastResult:   firstMapString(item, "last_result", "result"),
+			LastRunTime:  firstMapString(item, "last_run_time", "last_time", "last_exec_time"),
+			NextRunTime:  firstMapString(item, "next_run_time", "next_time", "next_exec_time"),
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
+}
+
+func firstMapString(item map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value, ok := item[key]
+		if !ok || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return typed
+			}
+		case float64:
+			return fmt.Sprintf("%.0f", typed)
+		case bool:
+			if typed {
+				return "true"
+			}
+			return "false"
+		default:
+			if s := strings.TrimSpace(fmt.Sprint(typed)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+	return ""
 }

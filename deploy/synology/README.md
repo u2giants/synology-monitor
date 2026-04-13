@@ -116,6 +116,7 @@ The canonical compose file mounts:
 | `/etc/passwd` | `/host/etc/passwd` | UID to username resolution |
 | `/var/log` | `/host/log` | system logs, Drive logs, backup logs |
 | `/var/packages` | `/host/packages` | Synology package logs |
+| `/volume1/@appdata/HyperBackup` | `/host/appdata/HyperBackup` | Hyper Backup task fallback metadata |
 
 This `/sys` mount is not optional for the current design. Without it:
 - cgroup-based container I/O becomes incomplete
@@ -134,11 +135,31 @@ If a share path does not exist on a NAS:
 You should see startup lines for all major collectors, including:
 - `schedtasks`
 - `hyperbackup`
+- `infra`
 - `storagepool`
 - `container-io`
 - `share-health`
 - `service-health`
 - `sys-extras`
+
+## Low-I/O design
+
+The agent is intentionally conservative about host disk I/O:
+- the new `infra` collector reads only small proc/sys counters, `statfs`, and small Hyper Backup metadata files
+- it does not recursively scan shares
+- it does not tail large files beyond the existing log watcher behavior
+- default cadence is `INFRA_INTERVAL=2m`
+
+The highest-I/O collectors remain:
+- process snapshots
+- diskstats
+- log watcher
+
+If NAS disk pressure becomes a concern, raise these env vars first:
+- `PROCESS_INTERVAL`
+- `DISKSTATS_INTERVAL`
+- `LOG_INTERVAL`
+- `INFRA_INTERVAL`
 
 ## Live telemetry expectations
 
@@ -146,8 +167,10 @@ You should see startup lines for all major collectors, including:
 
 - `smon_container_io` should receive rows after the second 30-second sample
 - `smon_metrics.type='cpu_iowait_pct'` should continue to receive rows
+- `smon_metrics.type in ('net_rx_errors_ps','net_tx_errors_ps','share_used_bytes','share_growth_bytes')` should receive rows
 - `scheduled_task` warnings can appear in `smon_logs`
 - snapshot-replication API warnings can appear in `smon_logs`
+- Hyper Backup fallback metrics can appear even when the DSM API does not return task rows
 
 Operator-visible surfaces that depend on that telemetry:
 - `/metrics` CPU chart includes `cpu_iowait_pct`
@@ -190,8 +213,9 @@ Current behavior:
 
 Current behavior:
 - collector is deployed
-- rows are not yet confirmed on the live NASes
-- failures now surface as warning logs rather than silent emptiness
+- DSM API task rows may still be unavailable on some DSM builds
+- fallback task metadata is now read from Hyper Backup appdata
+- last-success age and error-code metrics can continue even when the API is empty
 
 ### DSM structured Log Center entries
 
