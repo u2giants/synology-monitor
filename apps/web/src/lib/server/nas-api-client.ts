@@ -9,6 +9,7 @@
  */
 
 import { createHmac } from "node:crypto";
+import type { NasTarget } from "@/lib/server/tools";
 
 export interface NasApiConfig {
   /** Logical NAS name used in issue.affected_nas (e.g. "edgesynology1") */
@@ -33,6 +34,12 @@ export interface NasApiPreviewResult {
   tier: number;   // -1=blocked, 1=read, 2=service, 3=file
   summary: string;
   blocked: boolean;
+}
+
+export interface NasCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
 }
 
 /** Reads NAS API configs from environment variables. */
@@ -143,4 +150,75 @@ export async function nasApiPreview(
   }
 
   return response.json() as Promise<NasApiPreviewResult>;
+}
+
+export async function executeNasCommand(
+  target: NasTarget,
+  command: string,
+  timeoutMs = 90_000,
+): Promise<NasCommandResult> {
+  const config = resolveNasApiConfig(target);
+  if (!config) {
+    throw new Error(`NAS API config is missing for target: ${target}`);
+  }
+
+  const preview = await nasApiPreview(config, command);
+  if (preview.blocked || preview.tier < 1 || preview.tier > 3) {
+    throw new Error(`Command is blocked by NAS API validation: ${preview.summary}`);
+  }
+
+  const tier = preview.tier as 1 | 2 | 3;
+  let approvalToken: string | undefined;
+  if (tier === 2 || tier === 3) {
+    approvalToken = buildNasApiApprovalToken(config, command, tier);
+  }
+
+  const result = await nasApiExec(config, command, tier, approvalToken, timeoutMs);
+  return {
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+    exitCode: result.exit_code,
+  };
+}
+
+export async function collectNasDiagnostics(lookbackHours = 2) {
+  const configs = getNasApiConfigs();
+  const driveLines = Math.max(60, Math.min(300, lookbackHours * 50));
+  const shareSyncLines = Math.max(40, Math.min(240, lookbackHours * 30));
+  const command = [
+    "set -e",
+    "echo '## hostname'",
+    "hostname",
+    "echo '## uptime'",
+    "uptime",
+    "echo '## volume1'",
+    "df -h /volume1 2>/dev/null || true",
+    "echo '## agent'",
+    "/usr/local/bin/docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
+    "echo '## drive_log'",
+    `tail -n ${driveLines} /var/log/synologydrive.log 2>/dev/null || true`,
+    "echo '## sharesync_log'",
+    `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "$f"; tail -n ${shareSyncLines} "$f"; done 2>/dev/null || true`,
+  ].join("\n");
+
+  return Promise.all(
+    configs.map(async (config) => {
+      try {
+        const result = await nasApiExec(config, command, 1, undefined, 30_000);
+        return {
+          target: config.name,
+          ok: result.exit_code === 0,
+          stdout: result.stdout.trim(),
+          stderr: result.stderr.trim(),
+        };
+      } catch (error) {
+        return {
+          target: config.name,
+          ok: false,
+          stdout: "",
+          stderr: error instanceof Error ? error.message : "Unknown NAS API error",
+        };
+      }
+    }),
+  );
 }

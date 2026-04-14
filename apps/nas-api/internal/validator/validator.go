@@ -58,6 +58,9 @@ var hardBlocked = []*regexp.Regexp{
 	// Mount destructive operations
 	regexp.MustCompile(`(?i)\bumount\s+/volume`),
 	regexp.MustCompile(`(?i)\bmount\s+.*--bind.*/volume`),
+	// Docker socket is effectively host-level control, so only a tiny allowlist
+	// of monitor-stack actions may use it. Everything else is blocked outright.
+	regexp.MustCompile(`(?i)\bdocker\s+(run|create|exec|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
 }
 
 // writePatterns identifies commands that modify state (tier 2+).
@@ -69,8 +72,8 @@ var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
 	regexp.MustCompile(`(?i)\bsync\b`),
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
-	regexp.MustCompile(`(?i)\bdocker\s+(start|stop|restart|rm|create|run|exec)\b`),
-	regexp.MustCompile(`(?i)\bdocker\s+compose\s+(up|down|restart|stop|start|rm)\b`),
+	regexp.MustCompile(`(?i)\bdocker\s+(start|stop|restart|rm)\b`),
+	regexp.MustCompile(`(?i)\bdocker\s+compose\s+(restart|stop|up|pull|build)\b`),
 	regexp.MustCompile(`(?i)\bssh-keygen\b`),
 	regexp.MustCompile(`(?i)\bkill\b`),
 	regexp.MustCompile(`(?i)\bpkill\b`),
@@ -82,22 +85,59 @@ var writePatterns = []*regexp.Regexp{
 // filePatterns identifies file-system write operations that touch user data.
 // These require Tier 3 (approval + preview required).
 var filePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)/volume\d+/`),             // any path under a volume
-	regexp.MustCompile(`(?i)\b(rm|mv|cp)\b.*\S`),      // file manipulation
+	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b.*(/volume\d+/|/home/\w|/root/)`),
+	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b.*(/volume\d+/|/home/\w|/root/)`),
+	regexp.MustCompile(`(?i)\b(echo|printf|tee|cat)\b.*(>>?|\\|\\s*tee\\s+)(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(>>?)\s*/volume`),              // redirect into volume
+	regexp.MustCompile(`(>>?)\s*/home/\w`),
+	regexp.MustCompile(`(>>?)\s*/root/`),
 	regexp.MustCompile(`(?i)\brename\b.*\.old\b`),
-	regexp.MustCompile(`(?i)/home/\w`),
-	regexp.MustCompile(`(?i)/root/`),
 }
+
+var (
+	allowedServiceCommands = []*regexp.Regexp{
+		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart SynologyDrive$`),
+		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart SynologyDriveShareSync$`),
+		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg status [A-Za-z0-9._-]+(?: 2>&1)?(?: \|\| .+)?$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose restart$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose stop$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose up -d$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose pull$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose build --pull$`),
+	}
+
+	allowedReadDockerCommands = []*regexp.Regexp{
+		regexp.MustCompile(`^(?:/usr/local/bin/)?docker ps --format .+$`),
+		regexp.MustCompile(`^docker stats --no-stream --format .+$`),
+		regexp.MustCompile(`^docker inspect --format .+$`),
+		regexp.MustCompile(`(?s)^for dir in /sys/fs/cgroup/blkio/docker/\*/; do.+docker inspect --format .+$`),
+	}
+)
 
 // Validate checks a command against tier rules.
 // It returns an error if the command is hard-blocked or if it
 // requires a higher tier than what was requested.
 func Validate(command string, requestedTier int) error {
+	if disallowedDockerCompose(command) {
+		return errors.New("docker compose command is not in the allowlist")
+	}
+
 	// 1. Hard-block check — always fails regardless of tier
 	for _, re := range hardBlocked {
 		if re.MatchString(command) {
 			return errors.New("command is hard-blocked: " + re.String())
+		}
+	}
+
+	if strings.Contains(command, "docker") {
+		if requestedTier == TierRead {
+			if !matchesAny(command, allowedReadDockerCommands) {
+				return errors.New("docker read command is not in the allowlist")
+			}
+		} else if requestedTier >= TierService {
+			if !matchesAny(command, allowedServiceCommands) {
+				return errors.New("service command is not in the allowlist")
+			}
 		}
 	}
 
@@ -112,6 +152,9 @@ func Validate(command string, requestedTier int) error {
 
 	// 3. Tier 2: may be a service op but must not touch user files
 	if requestedTier == TierService {
+		if strings.Contains(command, "/volume1/") && !strings.Contains(command, "/volume1/docker/synology-monitor-agent") {
+			return errors.New("tier 2 commands may not touch user data paths")
+		}
 		for _, re := range filePatterns {
 			if re.MatchString(command) {
 				return errors.New("command touches user data and requires tier 3")
@@ -126,6 +169,9 @@ func Validate(command string, requestedTier int) error {
 // The caller (web app issue agent) uses this to decide whether to
 // auto-execute (tier 1) or prompt for approval (tier 2/3).
 func ClassifyTier(command string) int {
+	if disallowedDockerCompose(command) {
+		return -1
+	}
 	for _, re := range hardBlocked {
 		if re.MatchString(command) {
 			return -1 // never
@@ -151,6 +197,9 @@ func ClassifyTier(command string) int {
 
 // IsHardBlocked returns true if the command can never be executed.
 func IsHardBlocked(command string) bool {
+	if disallowedDockerCompose(command) {
+		return true
+	}
 	for _, re := range hardBlocked {
 		if re.MatchString(command) {
 			return true
@@ -176,4 +225,33 @@ func Summary(command string) string {
 		return "Rename file to .old (quarantine)"
 	}
 	return cmd
+}
+
+func matchesAny(command string, patterns []*regexp.Regexp) bool {
+	for _, re := range patterns {
+		if re.MatchString(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func disallowedDockerCompose(command string) bool {
+	cmd := strings.TrimSpace(command)
+	if !strings.Contains(cmd, "docker compose") {
+		return false
+	}
+	allowed := []string{
+		"docker compose restart",
+		"docker compose stop",
+		"docker compose up -d",
+		"docker compose pull",
+		"docker compose build --pull",
+	}
+	for _, prefix := range allowed {
+		if strings.Contains(cmd, prefix) {
+			return false
+		}
+	}
+	return true
 }

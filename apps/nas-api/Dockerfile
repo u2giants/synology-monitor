@@ -14,7 +14,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 # Runtime stage — needs bash because executor runs /bin/bash -c
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata bash
+RUN apk add --no-cache \
+  bash \
+  btrfs-progs \
+  ca-certificates \
+  coreutils \
+  docker-cli \
+  docker-cli-compose \
+  e2fsprogs \
+  findutils \
+  grep \
+  lsof \
+  procps \
+  sqlite \
+  tzdata \
+  util-linux
 
 COPY --from=builder /nas-api /usr/local/bin/nas-api
 

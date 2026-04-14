@@ -61,6 +61,7 @@ services:
     volumes:
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
+      - /usr/syno:/host/usr/syno:ro
       - /etc/passwd:/host/etc/passwd:ro
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro

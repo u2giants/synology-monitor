@@ -86,7 +86,7 @@ Core files:
 - [copilot-issues.ts](/worksp/monitor/app/apps/web/src/lib/server/copilot-issues.ts)
 - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
 - [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
+- [nas-api-client.ts](/worksp/monitor/app/apps/web/src/lib/server/nas-api-client.ts)
 - [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
 
 The current system is issue-centric:

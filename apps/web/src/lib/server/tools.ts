@@ -136,12 +136,12 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
   restart_synology_drive_server: {
     description: "Write. Restart the Synology Drive package.",
     write: true,
-    buildPreview: () => "/usr/syno/bin/synopkg restart SynologyDrive",
+    buildPreview: () => "/host/usr/syno/bin/synopkg restart SynologyDrive",
   },
   restart_synology_drive_sharesync: {
     description: "Write. Restart the Synology Drive ShareSync package.",
     write: true,
-    buildPreview: () => "/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+    buildPreview: () => "/host/usr/syno/bin/synopkg restart SynologyDriveShareSync",
   },
   check_sharesync_status: {
     description: "Read-only. Check current ShareSync task status and any stuck sync operations.",
@@ -208,7 +208,7 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
       if (!folder) {
         throw new Error("trigger_sharesync_resync requires the exact ShareSync folder or task identifier.");
       }
-      return `/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
+      return `/host/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
     },
   },
 
@@ -240,10 +240,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     write: false,
     buildPreview: () => [
       "echo '=== SHARE DATABASE ENUMERATION ==='",
-      "/usr/syno/sbin/synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
+      "/host/usr/syno/sbin/synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
       "echo ''",
       "echo '=== SHARE DETAILS (first 10) ==='",
-      `/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; /usr/syno/sbin/synoshare --get "$name" 2>&1 | head -15; done`,
+      `/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; /host/usr/syno/sbin/synoshare --get "$name" 2>&1 | head -15; done`,
     ].join("\n"),
   },
   check_drive_package_health: {
@@ -251,11 +251,11 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     write: false,
     buildPreview: () => [
       "echo '=== DRIVE PACKAGE STATUS ==='",
-      "/usr/syno/bin/synopkg status SynologyDrive 2>&1",
-      "/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+      "/host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
+      "/host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
       "echo ''",
       "echo '=== DRIVE VERSION ==='",
-      "/usr/syno/bin/synopkg version SynologyDrive 2>&1",
+      "/host/usr/syno/bin/synopkg version SynologyDrive 2>&1",
       "echo ''",
       "echo '=== DRIVE PACKAGE FILES ==='",
       "ls -la /var/packages/SynologyDrive/target/ 2>/dev/null | head -20",
@@ -386,8 +386,8 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
       const lines = Math.max(20, Math.min(80, (input.lookbackHours ?? 4) * 10));
       return [
         "echo '=== SCHEDULED TASKS (DSM Task Scheduler) ==='",
-        "if [ -f /usr/syno/etc/schedule/synoscheduler.db ]; then",
-        "  sqlite3 /usr/syno/etc/schedule/synoscheduler.db \"SELECT id, name, type, enable, status, last_work_time, next_trigger_time FROM task\" 2>/dev/null | head -40",
+        "if [ -f /host/usr/syno/etc/schedule/synoscheduler.db ]; then",
+        "  sqlite3 /host/usr/syno/etc/schedule/synoscheduler.db \"SELECT id, name, type, enable, status, last_work_time, next_trigger_time FROM task\" 2>/dev/null | head -40",
         "else",
         "  echo 'Scheduler DB not at expected path — trying synoscgi'",
         "fi",
@@ -396,7 +396,7 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
         `grep -iE 'error|fail|exit [^0]' /var/log/synolog/synoscheduler.log 2>/dev/null | tail -${lines} || echo 'No scheduler log found'`,
         "echo ''",
         "echo '=== RUNNING TASKS (DSM API) ==='",
-        "/usr/syno/bin/synoscgi 'SYNO.Core.TaskScheduler' 4 list sort_by=next_trigger_time sort_order=ASC limit=30 2>/dev/null | python3 -m json.tool 2>/dev/null | grep -E 'name|status|last_result|enable' | head -60 || echo 'synoscgi not available'",
+        "/host/usr/syno/bin/synoscgi 'SYNO.Core.TaskScheduler' 4 list sort_by=next_trigger_time sort_order=ASC limit=30 2>/dev/null | python3 -m json.tool 2>/dev/null | grep -E 'name|status|last_result|enable' | head -60 || echo 'synoscgi not available'",
       ].join("\n");
     },
   },
@@ -408,10 +408,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
       const lines = Math.max(40, Math.min(200, (input.lookbackHours ?? 6) * 20));
       return [
         "echo '=== HYPER BACKUP PACKAGE STATUS ==='",
-        "/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
+        "/host/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
         "echo ''",
         "echo '=== BACKUP TASK LIST ==='",
-        "/usr/syno/bin/synobackup --list 2>/dev/null || /usr/syno/bin/hibackup --list 2>/dev/null || echo 'No backup CLI available'",
+        "/host/usr/syno/bin/synobackup --list 2>/dev/null || /host/usr/syno/bin/hibackup --list 2>/dev/null || echo 'No backup CLI available'",
         "echo ''",
         "echo '=== RECENT BACKUP LOG (errors/results) ==='",
         `grep -iE 'error|fail|warn|complete|success|abort|cancel|destination' /var/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /var/log/synolog/synobackup.log 2>/dev/null || tail -${lines} /var/log/synobackup.log 2>/dev/null || echo 'Backup log not found'`,

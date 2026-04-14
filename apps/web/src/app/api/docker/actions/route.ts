@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { executeApprovedCommand } from "@/lib/server/nas";
+import { executeNasCommand } from "@/lib/server/nas-api-client";
 import { getCopilotRole } from "@/lib/server/copilot-store";
 import {
   TOOL_DEFINITIONS,
@@ -46,7 +46,7 @@ export async function POST(request: Request) {
 
     const tool = TOOL_DEFINITIONS[body.toolName];
     const command = tool.buildPreview(body.target, {});
-    const result = await executeApprovedCommand(body.target, command);
+    const result = await executeNasCommand(body.target, command);
 
     return NextResponse.json({
       ok: result.exitCode === 0,

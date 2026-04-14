@@ -5,7 +5,7 @@ import { loadIssueViewState } from "@/lib/server/issue-view";
 import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import type { CopilotRole, StoredEvidenceItem, StoredSession, StoredSessionSummary } from "@/lib/server/copilot-store";
 import type { SupabaseClient } from "@/lib/server/issue-store";
-import { executeApprovedCommand } from "@/lib/server/nas";
+import { executeNasCommand } from "@/lib/server/nas-api-client";
 import { verifyApprovalToken, type NasTarget } from "@/lib/server/tools";
 
 function buildIssueTitle(content: string) {
@@ -290,7 +290,7 @@ export async function executeIssueBackedCopilotAction(
     }
   }
 
-  const result = await executeApprovedCommand(input.target as NasTarget, input.commandPreview);
+  const result = await executeNasCommand(input.target as NasTarget, input.commandPreview);
   const chunks = [result.stdout, result.stderr].filter(Boolean);
   return {
     ok: result.exitCode === 0,

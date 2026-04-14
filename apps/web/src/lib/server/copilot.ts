@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { collectNasDiagnostics, executeApprovedCommand } from "@/lib/server/nas";
+import { collectNasDiagnostics, executeNasCommand } from "@/lib/server/nas-api-client";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { callMinimax, callMinimaxJSON } from "./minimax";
 import { getRemediationModel } from "./ai-settings";
@@ -95,7 +95,7 @@ function buildEvidenceBundle(input: {
       id: randomId(),
       kind: "ssh",
       target: diagnostic.target,
-      title: `${diagnostic.target} SSH diagnostics`,
+      title: `${diagnostic.target} NAS diagnostics`,
       detail: diagnostic.ok ? diagnostic.stdout.slice(0, 1200) : diagnostic.stderr.slice(0, 1200),
     });
   }
@@ -499,7 +499,7 @@ export async function runApprovedAction(
   approvalToken: string
 ) {
   verifyApprovalToken(target, commandPreview, approvalToken);
-  const result = await executeApprovedCommand(target, commandPreview);
+  const result = await executeNasCommand(target, commandPreview);
   const chunks = [];
 
   if (result.stdout) {

@@ -364,7 +364,7 @@ Guardrails:
 
 Current code touchpoints:
 - [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
+- [nas-api-client.ts](/worksp/monitor/app/apps/web/src/lib/server/nas-api-client.ts)
 
 ## Recommended model allocation
 

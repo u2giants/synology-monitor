@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,6 +14,11 @@ import (
 	"github.com/synology-monitor/nas-api/internal/auth"
 	"github.com/synology-monitor/nas-api/internal/executor"
 	"github.com/synology-monitor/nas-api/internal/validator"
+)
+
+const (
+	maxBodyBytes     = 16 * 1024
+	maxCommandLength = 4096
 )
 
 // Build-time version info — injected via -ldflags by the Dockerfile.
@@ -63,7 +69,15 @@ func main() {
 
 	addr := ":" + port
 	log.Printf("Listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      120 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }
@@ -80,6 +94,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleExec validates, optionally verifies an approval token, and executes the command.
 func handleExec(v *auth.Verifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 		var req execRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
@@ -92,6 +107,10 @@ func handleExec(v *auth.Verifier) http.HandlerFunc {
 		}
 		if req.Tier < 1 || req.Tier > 3 {
 			writeJSON(w, http.StatusBadRequest, errResp{"tier must be 1, 2, or 3"})
+			return
+		}
+		if len(req.Command) > maxCommandLength {
+			writeJSON(w, http.StatusBadRequest, errResp{fmt.Sprintf("command exceeds %d bytes", maxCommandLength)})
 			return
 		}
 
@@ -123,6 +142,7 @@ func handleExec(v *auth.Verifier) http.HandlerFunc {
 // handlePreview classifies a command's tier and returns a human-readable summary
 // without executing anything. Used by the web app to build the approval prompt.
 func handlePreview(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	var req previewRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
@@ -130,6 +150,10 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Command == "" {
 		writeJSON(w, http.StatusBadRequest, errResp{"command is required"})
+		return
+	}
+	if len(req.Command) > maxCommandLength {
+		writeJSON(w, http.StatusBadRequest, errResp{fmt.Sprintf("command exceeds %d bytes", maxCommandLength)})
 		return
 	}
 
