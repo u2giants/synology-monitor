@@ -36,6 +36,8 @@ import {
   loadMemoriesForIssue,
   saveMemories,
 } from "@/lib/server/agent-memory-store";
+import { loadDriveForensics, buildDriveForensicFacts } from "@/lib/server/forensics-drive";
+import { loadBackupCleanupTimeline, buildBackupTimelineFacts } from "@/lib/server/forensics-hyperbackup";
 
 const MAX_AGENT_CYCLES = 8;
 
@@ -189,12 +191,81 @@ async function syncIssueFacts(
     console.error("[syncIssueFacts] log compressor failed:", err);
   }
 
+  // 3. Forensic Drive attribution and delete/rename classification.
+  //    Only runs when there is evidence of Drive churn in recent logs.
+  let forensicDriveFactCount = 0;
+  try {
+    const driveChurnInLogs = (
+      Array.isArray(telemetry.logs) ? telemetry.logs as Array<Record<string, unknown>> : []
+    ).some((row) => row.source === "drive_churn_signal" || row.source === "drive_client_attribution");
+
+    if (driveChurnInLogs || state.issue.affected_nas.length > 0) {
+      const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+      const { attribution, eventSummary } = await loadDriveForensics(
+        supabase,
+        state.issue.affected_nas,
+        since48h,
+      );
+
+      const nasId = nasContext;
+      const attrForNas = attribution.find((a) => a.nas_id.includes(nasId) || nasId.includes(a.nas_id));
+      const summaryForNas = eventSummary.find((s) => s.nas_id.includes(nasId) || nasId.includes(s.nas_id));
+
+      const driveFacts = buildDriveForensicFacts(nasId, attrForNas, summaryForNas);
+      for (const fact of driveFacts) {
+        const factId = await upsertFact(supabase, fact);
+        await attachFactToIssue(supabase, userId, state.issue.id, factId);
+        forensicDriveFactCount++;
+      }
+    }
+  } catch (err) {
+    console.error("[syncIssueFacts] drive forensics failed:", err);
+  }
+
+  // 4. Forensic Hyper Backup cleanup timeline.
+  //    Only runs when backup tasks are in scope and there is evidence of issues.
+  let forensicBackupFactCount = 0;
+  try {
+    const backupTasksInTelemetry = Array.isArray(telemetry.backup_tasks)
+      ? telemetry.backup_tasks as Array<Record<string, unknown>>
+      : [];
+    const hasBackupActivity =
+      backupTasksInTelemetry.length > 0 ||
+      state.issue.title.toLowerCase().includes("backup") ||
+      state.issue.title.toLowerCase().includes("hyper");
+
+    if (hasBackupActivity && state.issue.affected_nas.length > 0) {
+      for (const nasName of state.issue.affected_nas) {
+        try {
+          const timeline = await loadBackupCleanupTimeline(nasName);
+          if (timeline) {
+            const backupFacts = buildBackupTimelineFacts(nasContext, timeline);
+            for (const fact of backupFacts) {
+              const factId = await upsertFact(supabase, fact);
+              await attachFactToIssue(supabase, userId, state.issue.id, factId);
+              forensicBackupFactCount++;
+            }
+          }
+        } catch (err) {
+          console.error(`[syncIssueFacts] backup timeline failed for ${nasName}:`, err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[syncIssueFacts] backup forensics failed:", err);
+  }
+
   const facts = await listIssueFacts(supabase, userId, state.issue.id);
   await recordIssueStageRun(supabase, userId, state.issue.id, {
     stageKey: "fact_refresh",
     status: "completed",
     modelTier: "deterministic",
-    inputSummary: { derived_fact_count: derivedFacts.length, compressed_log_fact_count: compressedFactCount },
+    inputSummary: {
+      derived_fact_count: derivedFacts.length,
+      compressed_log_fact_count: compressedFactCount,
+      forensic_drive_fact_count: forensicDriveFactCount,
+      forensic_backup_fact_count: forensicBackupFactCount,
+    },
     output: { attached_fact_count: facts.length, compressor_model: compressorModel },
     startedAt,
   });

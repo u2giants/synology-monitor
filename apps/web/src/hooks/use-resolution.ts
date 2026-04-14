@@ -69,6 +69,7 @@ export interface ResolutionFact {
   title: string;
   detail: string;
   observed_at: string;
+  value?: Record<string, unknown>;
 }
 
 export interface ResolutionCapability {
