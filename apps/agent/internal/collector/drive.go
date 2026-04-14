@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -75,6 +76,9 @@ func (c *DriveCollector) collect() {
 
 	// Collect ShareSync task snapshots (API-first, log-based fallback)
 	c.collectShareSyncTasks()
+
+	// Low-impact anomaly scan over recent Drive sync logs.
+	c.collectDriveLogSignals()
 }
 
 func (c *DriveCollector) collectTeamFolders() {
@@ -342,4 +346,132 @@ func parseShareSyncLog(logPath string) sender.SyncTaskSnapshotPayload {
 	snap.LastError   = lastError
 
 	return snap
+}
+
+func (c *DriveCollector) collectDriveLogSignals() {
+	logDir := "/host/shares/@synologydrive/log"
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return
+	}
+
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	var candidates []candidate
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "syncfolder.log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			path: filepath.Join(logDir, name),
+			mod:  info.ModTime(),
+		})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].mod.After(candidates[j].mod) })
+	if len(candidates) > 3 {
+		candidates = candidates[:3]
+	}
+
+	var renameHits, deleteHits, moveHits, conflictHits, connectHits, disconnectHits, macHits int
+	for _, file := range candidates {
+		lines, err := tailLines(file.path, 300)
+		if err != nil {
+			continue
+		}
+		for _, line := range lines {
+			lower := strings.ToLower(line)
+			if strings.Contains(lower, "rename") {
+				renameHits++
+			}
+			if strings.Contains(lower, "delete") || strings.Contains(lower, "removed") {
+				deleteHits++
+			}
+			if strings.Contains(lower, "move") || strings.Contains(lower, "moved") {
+				moveHits++
+			}
+			if strings.Contains(lower, "conflict") {
+				conflictHits++
+			}
+			if strings.Contains(lower, "connect") {
+				connectHits++
+			}
+			if strings.Contains(lower, "disconnect") {
+				disconnectHits++
+			}
+			if strings.Contains(lower, "/mac/") {
+				macHits++
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	metrics := map[string]float64{
+		"drive_log_rename_hits":     float64(renameHits),
+		"drive_log_delete_hits":     float64(deleteHits),
+		"drive_log_move_hits":       float64(moveHits),
+		"drive_log_conflict_hits":   float64(conflictHits),
+		"drive_log_connect_hits":    float64(connectHits),
+		"drive_log_disconnect_hits": float64(disconnectHits),
+		"drive_log_mac_hits":        float64(macHits),
+	}
+	for metric, value := range metrics {
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID:      c.nasID,
+			Type:       metric,
+			Value:      value,
+			Unit:       "count",
+			RecordedAt: now,
+		})
+	}
+
+	if renameHits+deleteHits+moveHits >= 100 || conflictHits >= 25 || macHits >= 25 {
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "drive_churn_signal",
+			Severity: "warning",
+			Message:  fmt.Sprintf("Drive churn signal: rename=%d delete=%d move=%d conflict=%d mac_hits=%d", renameHits, deleteHits, moveHits, conflictHits, macHits),
+			Metadata: map[string]interface{}{
+				"rename_hits":     renameHits,
+				"delete_hits":     deleteHits,
+				"move_hits":       moveHits,
+				"conflict_hits":   conflictHits,
+				"connect_hits":    connectHits,
+				"disconnect_hits": disconnectHits,
+				"mac_hits":        macHits,
+				"log_dir":         logDir,
+			},
+			LoggedAt: now,
+		})
+	}
+}
+
+func tailLines(path string, maxLines int) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	lines := make([]string, 0, maxLines)
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+		if len(lines) > maxLines {
+			lines = lines[1:]
+		}
+	}
+	return lines, scanner.Err()
 }

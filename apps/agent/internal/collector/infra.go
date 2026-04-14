@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,6 +27,10 @@ type hyperBackupFallbackState struct {
 	lastResult string
 	errorCode  int
 }
+
+var (
+	reHBStorageStats = regexp.MustCompile(`Storage Statistics: .*NewFile:\[(\d+)\].*RemoveFile:\[(\d+)\].*RenameFile:\[(\d+)\].*CopyMissFile:\[(\d+)\]`)
+)
 
 type InfraCollector struct {
 	sender     *sender.Sender
@@ -73,6 +78,7 @@ func (c *InfraCollector) collect() {
 	c.collectInterfaceStats(now)
 	c.collectShareUsage(now)
 	c.collectHyperBackupFallback(now)
+	c.collectHyperBackupChurn(now)
 }
 
 func (c *InfraCollector) collectInterfaceStats(now time.Time) {
@@ -285,6 +291,85 @@ func (c *InfraCollector) collectHyperBackupFallback(now time.Time) {
 			})
 		}
 		c.prevHBState[taskID] = hyperBackupFallbackState{lastResult: result, errorCode: errorCode}
+	}
+}
+
+func (c *InfraCollector) collectHyperBackupChurn(now time.Time) {
+	logPath := "/host/appdata/HyperBackup/log/hyperbackup.log"
+	f, err := os.Open(logPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	var latest string
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if reHBStorageStats.MatchString(line) {
+			latest = line
+		}
+	}
+	if latest == "" {
+		return
+	}
+
+	m := reHBStorageStats.FindStringSubmatch(latest)
+	if len(m) != 5 {
+		return
+	}
+
+	newFiles := mustInt(m[1])
+	removeFiles := mustInt(m[2])
+	renameFiles := mustInt(m[3])
+	copyMissFiles := mustInt(m[4])
+
+	c.sender.QueueMetric(sender.MetricPayload{
+		NasID:      c.nasID,
+		Type:       "hyperbackup_last_new_files",
+		Value:      float64(newFiles),
+		Unit:       "files",
+		RecordedAt: now,
+	})
+	c.sender.QueueMetric(sender.MetricPayload{
+		NasID:      c.nasID,
+		Type:       "hyperbackup_last_removed_files",
+		Value:      float64(removeFiles),
+		Unit:       "files",
+		RecordedAt: now,
+	})
+	c.sender.QueueMetric(sender.MetricPayload{
+		NasID:      c.nasID,
+		Type:       "hyperbackup_last_renamed_files",
+		Value:      float64(renameFiles),
+		Unit:       "files",
+		RecordedAt: now,
+	})
+	c.sender.QueueMetric(sender.MetricPayload{
+		NasID:      c.nasID,
+		Type:       "hyperbackup_last_copy_miss_files",
+		Value:      float64(copyMissFiles),
+		Unit:       "files",
+		RecordedAt: now,
+	})
+
+	if newFiles >= 100000 || removeFiles >= 100000 || renameFiles >= 100000 || copyMissFiles >= 1000 {
+		c.sender.QueueLog(sender.LogPayload{
+			NasID:    c.nasID,
+			Source:   "hyperbackup_churn",
+			Severity: "warning",
+			Message:  fmt.Sprintf("Hyper Backup churn spike: new=%d removed=%d renamed=%d copy_miss=%d", newFiles, removeFiles, renameFiles, copyMissFiles),
+			Metadata: map[string]interface{}{
+				"new_files":       newFiles,
+				"removed_files":   removeFiles,
+				"renamed_files":   renameFiles,
+				"copy_miss_files": copyMissFiles,
+				"log_path":        logPath,
+			},
+			LoggedAt: now,
+		})
 	}
 }
 
