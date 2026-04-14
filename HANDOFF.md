@@ -1,321 +1,596 @@
-# NAS Monitor — Handoff
+# Synology Monitor — Forensic Capability Handoff
 
-Last verified: 2026-04-09 UTC
+Last verified: 2026-04-14 UTC
 
-Scope:
-- Read this first in a new engineering session.
-- This is the shortest authoritative summary of what the system is, how it works, and what is still missing.
-- It should stay compact.
+Purpose:
+- This handoff is for the next AI or engineer.
+- Its job is to make the remaining forensic investigation tricks first-class product capabilities.
+- It is intentionally detailed and prescriptive so implementation does not drift.
 
-This file is the shortest accurate handoff for the current system.
+Read these first:
+- [CAPABILITY_AUDIT.md](./CAPABILITY_AUDIT.md)
+- [AGENTS.md](./AGENTS.md)
+- [deploy/synology/README.md](./deploy/synology/README.md)
 
-## What this product is
+## What Was Already Solved
 
-NAS Monitor watches two Synology NAS units and gives the operator a persistent issue-centric interface in the web app. The intended behavior is:
-- one durable issue thread per problem
-- one linear conversation per issue
-- persistent memory across refreshes and restarts
-- diagnostics and approvals tied to that issue record
+The April 2026 incident investigation already proved the system can collect enough raw evidence to explain a complex Synology Drive / Hyper Backup failure.
 
-The old “phase machine” approach is gone from the primary architecture. The current system centers on issue state and issue conversation.
+Specifically, the investigation established all of the following:
+- Hyper Backup on `edgesynology2` finished the backup successfully.
+- The task then entered version deletion / version rotation.
+- The version-delete cleanup got stuck and later failed.
+- `cpu_iowait_pct` was high because storage was saturated by cleanup work.
+- kernel logs and Synology Drive logs showed share snapshot deletion and Btrfs snapshot drop activity.
+- Synology Drive logs showed real rename, remove, upload, and conflict activity.
+- The change pattern was primarily a large reorganization / conflict-cleanup wave, not a one-way destructive wipe.
 
-## Core architecture
+The system already has:
+- agent-side churn signals
+- web-side fused issue/fact detection for this pattern
+- NAS API and relay read access to the required logs and metadata
 
-### Web
+What is still missing is not “more raw access.” What is missing is productized forensic tooling.
 
-Key files:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
-- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
-- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
-- [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
-- [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
-- [issue-view.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-view.ts)
-- [copilot-issues.ts](/worksp/monitor/app/apps/web/src/lib/server/copilot-issues.ts)
-- [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
-- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [nas.ts](/worksp/monitor/app/apps/web/src/lib/server/nas.ts)
+## The Four Tasks To Implement
 
-The web app:
-- stores issues, messages, evidence, and actions in Supabase
-- stores normalized facts, capability state, issue jobs, and state transitions
-- queries telemetry on each issue-agent cycle
-- treats missing telemetry as degraded visibility when query errors occur
-- can run in `inline` or `background` issue-worker mode
-- exposes current iowait and restricted monitor-stack controls to operators
+The next engineer must implement these four tasks:
 
-### Agent
+1. Drive client attribution
+2. delete/create-vs-rename matcher
+3. Hyper Backup cleanup timeline tool
+4. unified forensic incident explainer UI
 
-Key files:
-- [main.go](/worksp/monitor/app/apps/agent/cmd/agent/main.go)
-- [sender.go](/worksp/monitor/app/apps/agent/internal/sender/sender.go)
-- [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go)
-- [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go)
-- [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
-- [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go)
-- [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
-- [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
+These tasks are not optional refinements. They are the direct productization of the manual forensic work already proven valuable in production.
 
-The Go agent:
-- runs 17 collectors
-- buffers writes through a local SQLite WAL
-- flushes to Supabase every 30 seconds
-- emits `cpu_iowait_pct` into `smon_metrics`
+## Non-Negotiable Constraints
 
-## Deployment truth
+### 1. Do not regress into direct web-side SSH
 
-### Web deployment
+The app runtime path must remain:
+- web / AI / operator -> relay -> NAS API -> NAS
 
-Web deployment is not “direct Coolify on git push”.
+Do not reintroduce:
+- web-side direct SSH helpers
+- browser-facing NAS secrets
 
-Actual flow:
-1. push to `master`
-2. GitHub Actions workflow builds and pushes `ghcr.io/u2giants/synology-monitor-web:latest`
-3. the workflow triggers Coolify redeploy
+### 2. Do not assume Synology host binaries will execute cleanly inside the NAS API container
 
-Relevant file:
-- [.github/workflows/web-image.yml](/worksp/monitor/app/.github/workflows/web-image.yml)
+This was already tested and failed.
 
-### Agent deployment
+Do not build new features that depend on:
+- `/host/usr/syno/bin/synopkg`
+- `/host/usr/syno/bin/synobackup`
+- `/host/usr/syno/bin/hibackup`
 
-Agent deployment flow:
-1. push to `master`
-2. GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-agent:latest`
-3. each NAS must `pull`, remove old container, and recreate
+being executable inside the Alpine NAS API container.
 
-Relevant files:
-- [.github/workflows/agent-image.yml](/worksp/monitor/app/.github/workflows/agent-image.yml)
-- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+Preferred sources:
+- mounted logs
+- mounted metadata
+- DSM API responses
+- agent-collected structured telemetry
 
-Canonical NAS path:
-- `/volume1/docker/synology-monitor-agent`
+### 3. Keep NAS I/O impact low
 
-Docker binary on Synology:
-- `/var/packages/ContainerManager/target/usr/bin/docker`
+The user explicitly cares about not causing extra disk thrash on the Synology hosts.
 
-## Database truth
+Do not implement:
+- recursive share scans
+- full-drive file walks
+- large repeated `find` or `grep` sweeps across user content
+- repeated full-file reads of huge logs
 
-Extended telemetry is now tracked in-repo and live:
-- `smon_scheduled_tasks`
-- `smon_backup_tasks`
-- `smon_snapshot_replicas`
-- `smon_container_io`
+Prefer:
+- recent-line windows
+- rolling summaries
+- sampling
+- derived telemetry written by the agent
 
-Rebuild foundation tables are also live:
-- `smon_capability_state`
-- `smon_ingestion_health`
-- `smon_ingestion_events`
-- `smon_facts`
-- `smon_fact_sources`
-- `smon_issue_facts`
-- `smon_issue_jobs`
-- `smon_issue_state_transitions`
+### 4. Treat `edgesynology2` shell access as unreliable
 
-Migration:
-- [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
-- [00026_rebuild_foundation_schema.sql](/worksp/monitor/app/supabase/migrations/00026_rebuild_foundation_schema.sql)
+Known reality:
+- `popdam` SSH works on `edgesynology1`
+- `popdam` SSH has been unreliable or unavailable on `edgesynology2`
+- `ahazan` exists on `edgesynology2` but a valid password was not available in-session
 
-Important rule:
-- do not add fields to an existing sender payload unless the Supabase table already has those columns
-- when in doubt, add a migration first
+So anything you build should not require direct shell access to `edgesynology2`.
 
-## What was fixed in the latest pass
+## Current Relevant Code And Commits
 
-### iowait visibility
+### Agent-side churn collection
 
-`cpu_iowait_pct` was already being collected, but it was not prominent enough in the operator UI and the issue agent lacked an explicit read-only tool for direct checks.
-
-That is now fixed:
-- `/metrics` includes `cpu_iowait_pct` in the CPU chart
-- `/metrics` shows a top-line current iowait card
-- the tool catalog includes `check_cpu_iowait`
+Committed:
+- `e10f2e9` — `Add Drive and Hyper Backup churn signals`
 
 Files:
-- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/metrics/page.tsx)
-- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [apps/agent/internal/collector/drive.go](./apps/agent/internal/collector/drive.go)
+- [apps/agent/internal/collector/infra.go](./apps/agent/internal/collector/infra.go)
 
-### Monitor-stack Docker controls
+Existing signals added there:
+- Hyper Backup:
+  - `hyperbackup_last_new_files`
+  - `hyperbackup_last_removed_files`
+  - `hyperbackup_last_renamed_files`
+  - `hyperbackup_last_copy_miss_files`
+  - log source: `hyperbackup_churn`
+- Drive:
+  - `drive_log_rename_hits`
+  - `drive_log_delete_hits`
+  - `drive_log_move_hits`
+  - `drive_log_conflict_hits`
+  - `drive_log_connect_hits`
+  - `drive_log_disconnect_hits`
+  - `drive_log_mac_hits`
+  - log source: `drive_churn_signal`
 
-The web app and issue agent can now operate the monitor stack itself.
+### Web-side fused incident reasoning
 
-Allowed actions:
-- stop
-- start
-- restart
-- pull
-- build
-
-Scope restriction:
-- these actions are limited to `/volume1/docker/synology-monitor-agent`
-- they are not general Docker controls for arbitrary NAS containers
-
-Files:
-- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
-- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
-
-### Schema contract
-
-The extended collector work originally targeted tables that were not present in tracked schema. That is fixed now via:
-- [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
-
-### Log source contract
-
-New collector sources were being rejected by the `smon_logs` check constraint. That is fixed in the same migration and now includes:
-- `scheduled_task`
-- `hyperbackup`
-- `service_restart`
-- `btrfs_error`
-- `sharesync_detail`
-- `share_quota`
-
-### Runtime mount mismatch
-
-New collectors assumed `/sys` was available, but the canonical compose file did not mount it. That is fixed in:
-- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
-
-### Container I/O collection
-
-Synology’s cgroup layout does not always expose blkio throttle files. The collector now:
-- tries `/host/sys`
-- falls back to `/sys`
-- falls back again to `/proc/<pid>/io` for tasks in the container cgroup
-
-File:
-- [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go)
-
-This is verified live: `smon_container_io` now has rows.
-
-### Silent API failure behavior
-
-The DSM client used to swallow several failures and return nil data. It now returns real errors for:
-- scheduled tasks
-- Hyper Backup tasks
-- snapshot replication
-
-File:
-- [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go)
-
-### Silent blind spots in production
-
-Collectors now write warning logs when an advertised DSM API is unsupported or not working on the current NAS:
-- scheduled tasks
-- Hyper Backup
-- snapshot replication
-- DSM structured system logs
+Committed:
+- `5c6d4d2` — `Fuse Drive churn into backup incident detection`
 
 Files:
-- [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go)
-- [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
-- [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
-- [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
+- [apps/web/src/lib/server/fact-store.ts](./apps/web/src/lib/server/fact-store.ts)
+- [apps/web/src/lib/server/issue-detector.ts](./apps/web/src/lib/server/issue-detector.ts)
+- [apps/web/src/lib/server/issue-agent.ts](./apps/web/src/lib/server/issue-agent.ts)
 
-## Verified live status
+This already creates:
+- a fused fact when Drive churn + backup cleanup failure + storage pressure line up
+- a fused detected issue for that same pattern
 
-Verified:
-- both NASes deployed from the current compose shape with `/host/sys`
-- `smon_container_io` is receiving live rows
-- `scheduled_task` warnings reach `smon_logs`
-- snapshot-replication API warnings reach `smon_logs`
+### NAS API / relay forensic read path
 
-Not yet verified as working data streams:
-- `smon_scheduled_tasks`
-- `smon_backup_tasks`
-- `smon_snapshot_replicas`
-- `dsm_system_log` rows
+Important files:
+- [apps/web/src/lib/server/nas-api-client.ts](./apps/web/src/lib/server/nas-api-client.ts)
+- [apps/relay/src/server.mjs](./apps/relay/src/server.mjs)
+- [apps/nas-api/cmd/server/main.go](./apps/nas-api/cmd/server/main.go)
+- [apps/nas-api/internal/validator/validator.go](./apps/nas-api/internal/validator/validator.go)
 
-Pending live verification from the newest web deploy:
-- `/metrics` current iowait card
-- `/docker` monitor-stack action buttons
-- `check_cpu_iowait` inside a live issue thread
+Important live truth:
+- `apps/relay/` exists locally and is deployed live
+- but `apps/relay/` is currently untracked in git
 
-That does not mean those subsystems are healthy. It means the NAS DSM APIs for those collectors still need additional reverse-engineering or package-state detection.
+## Task 1 — Drive Client Attribution
 
-## Known live blind spots
+### Goal
 
-### Scheduled tasks
+Given a Drive-heavy issue, the system should be able to answer:
+- which Drive client devices were involved
+- which users/share contexts they belong to
+- which shares or task IDs were most active
+- whether the churn was likely single-client or multi-client
 
-Observed behavior:
-- `SYNO.Core.TaskScheduler` is advertised by DSM
-- current request shape returns `API error code: 103`
+### Why this matters
 
-Current system behavior:
-- no task rows
-- explicit warning log instead of silent success
+Manual investigation found device names like:
+- `DESKTOP-R78HRI5`
+- `DESKTOP-497E0EB`
+- `DESKTOP-HKGCSV3`
+- `LAPTOP-461OGMB5`
+- `Elizabeths-MacBook-Pro.local`
+- `Vies-MacBook-Pro.local`
 
-### Snapshot replication
+That came from Drive DB metadata and conflict-style filenames, but it is not yet exposed as a first-class product capability.
 
-Observed behavior:
-- current attempted APIs return unsupported/unavailable responses
+### Required behavior
 
-Current system behavior:
-- no snapshot rows
-- explicit warning log instead of silent success
+Create a deterministic forensic function that returns:
+- `devices`: array of device summaries
+- `users`: array of likely usernames tied to those devices
+- `shares`: array of shares seen in recent relevant Drive log events
+- `active_task_ids`: array of active `NativeSyncTask #...` ids
+- `conflict_device_names`: array of device names inferred from conflict-style filenames
+- `attribution_confidence`: `high | medium | low`
+- `notes`: explanatory caveats
 
-### Hyper Backup
+### Data sources to use
 
-Observed behavior:
-- task rows are not yet verified
-- API surfacing now exists if it fails
+Primary:
+- `/volume1/@synologydrive/@sync/user-db.sqlite`
+- `/volume1/@synologydrive/@sync/client-udc-db.sqlite`
+- `/volume1/@synologydrive/@sync/job-db.sqlite`
+- `/volume1/@synologydrive/@sync/syncfolder-db.sqlite`
+- `/volume1/@synologydrive/log/syncfolder.log*`
 
-### DSM Log Center structured logs
+Secondary:
+- issue telemetry already in Supabase:
+  - `nas_logs`
+  - `metrics`
+  - `process_snapshots`
 
-Observed behavior:
-- parser no longer crashes on string log levels
-- rows still not observed yet on the current NASes
+### Important implementation rule
 
-## How the system is supposed to behave
+Do not require `sqlite3` on the NAS host unless it already exists in the runtime you are actually using.
 
-### Issue agent
+Safer choices:
+- extend the Go agent to extract compact attribution summaries into structured telemetry
+- or add a low-I/O parser that reads only selected DB strings and selected recent log windows
 
-For one issue:
-1. load issue record, recent messages, actions, evidence
-2. load telemetry context
-3. derive normalized facts from that telemetry
-4. update capability state for the affected NAS units
-5. decide on one next step
-6. persist the reply and any evidence
-7. execute auto-approvable diagnostics
-8. stop at approval boundaries for remediation
+Recommended implementation:
+- implement DB parsing in the Go agent, not in ad hoc shell
+- emit a compact structured log or metric summary once per interval
 
-### Issue workflow ownership
+### Exact files to modify
 
-Current architecture:
-- routes enqueue issue jobs into `smon_issue_jobs`
-- the backend worker drains those jobs
-- issue transitions are recorded in `smon_issue_state_transitions`
+Agent:
+- [apps/agent/internal/collector/drive.go](./apps/agent/internal/collector/drive.go)
 
-Worker modes:
-- `ISSUE_WORKER_MODE=inline`
-  - request paths enqueue and immediately drain jobs
-  - this is the compatibility mode
-- `ISSUE_WORKER_MODE=background`
-  - request paths enqueue only
-  - `/api/internal/issue-worker/drain` drains jobs with service-role access
-  - `RUN_ISSUE_WORKER=true` starts the loop in the web container via `docker-entrypoint.sh`
+Sender payloads, if needed:
+- [apps/agent/internal/sender/types.go](./apps/agent/internal/sender/types.go)
+- [apps/agent/internal/sender/sender.go](./apps/agent/internal/sender/sender.go)
 
-Required env for background mode:
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `ISSUE_WORKER_TOKEN`
+Web read path:
+- [apps/web/src/lib/server/issue-agent.ts](./apps/web/src/lib/server/issue-agent.ts)
+- [apps/web/src/lib/server/fact-store.ts](./apps/web/src/lib/server/fact-store.ts)
 
-The system should never treat missing telemetry as proof of health. That principle is now partially enforced in both the web prompt context and the agent collector warning logs.
+Optional UI surfacing later:
+- forensic UI files described in Task 4
 
-### Telemetry interpretation
+### Suggested output contract
 
-Healthy telemetry means:
-- data rows exist for the collector’s target table
-- or the collector explicitly records that the subsystem currently has no items
+Emit one or both of:
+- `nas_logs` source `drive_client_attribution`
+- metrics if useful for counts only
 
-Unhealthy telemetry path means:
-- warnings appear in `smon_logs`
-- the target table remains empty
-- the app should treat that subsystem as degraded or unsupported
+Structured metadata should include:
+- `devices`
+- `users`
+- `task_ids`
+- `share_names`
+- `conflict_device_names`
+- `matched_paths`
+- `confidence`
 
-## What a new developer should read first
+### Done criteria
 
-1. [AGENTS.md](/worksp/monitor/app/AGENTS.md)
-2. [PLAN.md](/worksp/monitor/app/PLAN.md)
-3. [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-4. [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go)
-5. [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+This task is complete only if:
+- a new issue about Drive churn can display likely participating clients without ad hoc NAS shell work
+- the issue agent can attach a derived fact like:
+  - `Likely Drive clients involved: DESKTOP-R78HRI5, ZAR-LAPTOP, Elizabeths-MacBook-Pro.local`
+- output is stable enough that repeated runs do not generate noisy duplicate facts every cycle
+
+## Task 2 — Delete/Create-Vs-Rename Matcher
+
+### Goal
+
+Given a churn event, the system should determine whether observed delete activity is:
+- mostly true destructive deletion
+- mostly move/rename/restructure
+- mixed / indeterminate
+
+### Why this matters
+
+Manual forensic work showed:
+- many `NativeRemove` lines
+- many `NativeUpload` lines
+- many explicit `NativeRename` lines
+
+And in the April 13–14 sample on `edgesynology2`:
+- `88` of `97` deletes had same-name replacements in nearby paths
+
+That logic must become a first-class tool.
+
+### Required behavior
+
+Build a matcher that:
+- consumes a bounded recent window of Drive events
+- normalizes filenames
+- compares delete paths against:
+  - exact re-upload
+  - same-name replacement in same directory
+  - same-name replacement in adjacent directory
+  - explicit rename target
+- produces a summary classification:
+  - `restructure_likely`
+  - `destructive_delete_likely`
+  - `mixed`
+
+### Use these normalization rules
+
+At minimum normalize:
+- case
+- repeated spaces / underscores / dashes
+- conflict suffixes:
+  - `_Conflict`
+  - `_UploadNameConflict`
+  - `_CaseConflict`
+- workstation tags:
+  - `_DESKTOP-*`
+  - `_ZAR-LAPTOP_*`
+  - `_DiskStation_*`
+- obvious “Copy” suffixes
+
+### Exact files to modify
+
+Best place for core logic:
+- new deterministic helper under:
+  - `apps/web/src/lib/server/`
+
+Recommended new file:
+- `apps/web/src/lib/server/forensics-drive.ts`
+
+Then integrate with:
+- [apps/web/src/lib/server/fact-store.ts](./apps/web/src/lib/server/fact-store.ts)
+- [apps/web/src/lib/server/issue-agent.ts](./apps/web/src/lib/server/issue-agent.ts)
+
+If you decide to collect a rolling summary agent-side instead:
+- extend [apps/agent/internal/collector/drive.go](./apps/agent/internal/collector/drive.go)
+
+### Required output
+
+For a bounded recent event window, return:
+- `remove_count`
+- `upload_count`
+- `rename_count`
+- `exact_match_count`
+- `same_base_same_dir_count`
+- `same_base_near_dir_count`
+- `rename_into_subdir_count`
+- `classification`
+- `sample_pairs`
+
+### Required fact
+
+Add a fact like:
+- `Recent delete activity mostly matches file moves and replacements`
+
+or:
+- `Recent delete activity appears destructive and unmatched`
+
+### Done criteria
+
+This task is complete only if:
+- a future issue can explicitly say whether a large delete wave looks like a move/restructure
+- the result is visible in issue evidence or facts without requiring ad hoc Node parsing in the shell
+
+## Task 3 — Hyper Backup Cleanup Timeline Tool
+
+### Goal
+
+Turn the manual backup-status reconstruction into a first-class timeline.
+
+During the incident, we had to manually correlate:
+- backup start
+- backup finish
+- version rotation start
+- skipped next backup
+- keepalive death
+- `version_delete_failed`
+
+That must become a first-class forensic timeline.
+
+### Required behavior
+
+Create a tool/function that returns a normalized timeline for a given NAS / backup task:
+- backup started
+- backup completed
+- version deletion started
+- destination busy / skipped next run
+- cleanup failed
+- current task-state metadata
+
+### Data sources to use
+
+Primary:
+- `/volume1/@appdata/HyperBackup/log/hyperbackup.log`
+- `/volume1/@appdata/HyperBackup/log/synolog/synobackup.log`
+- `/volume1/@appdata/HyperBackup/config/task_state.conf`
+- `/volume1/@appdata/HyperBackup/last_result/backup.last`
+
+Secondary:
+- `backup_tasks` telemetry already stored in Supabase
+- `hyperbackup_fallback` logs already produced
+- `hyperbackup_churn` logs already produced
+
+### Exact files to modify
+
+Recommended new helper:
+- `apps/web/src/lib/server/forensics-hyperbackup.ts`
+
+Integrate with:
+- [apps/web/src/lib/server/nas-api-client.ts](./apps/web/src/lib/server/nas-api-client.ts)
+- [apps/web/src/lib/server/fact-store.ts](./apps/web/src/lib/server/fact-store.ts)
+- [apps/web/src/lib/server/issue-agent.ts](./apps/web/src/lib/server/issue-agent.ts)
+
+Optional relay tool if needed:
+- [apps/relay/src/server.mjs](./apps/relay/src/server.mjs)
+
+### Required timeline schema
+
+Return an ordered array of events like:
+- `backup_started`
+- `backup_finished_success`
+- `version_rotation_started`
+- `backup_skipped_destination_busy`
+- `cleanup_keepalive_died`
+- `cleanup_failed`
+
+Each event should include:
+- `timestamp`
+- `kind`
+- `message`
+- `source`
+- `task_id`
+
+### Required derived fact
+
+Add a fact like:
+- `Latest backup succeeded, but post-backup version cleanup failed`
+
+This distinction is important and must be preserved.
+
+### Done criteria
+
+This task is complete only if:
+- the issue thread can explain the difference between backup success and cleanup failure
+- the operator can see that the task is unhealthy even when `last_backup_success_time` is recent
+
+## Task 4 — Unified Forensic Incident Explainer UI
+
+### Goal
+
+The operator should not have to stitch together:
+- Drive churn
+- backup cleanup state
+- snapshot deletion
+- iowait
+
+The UI should expose one coherent forensic explanation.
+
+### Required behavior
+
+Add a forensic incident panel or issue view section that shows:
+- current incident classification
+- confidence
+- why the system believes it
+- top supporting evidence
+- what likely happened in plain English
+- recommended next actions
+
+### Scope
+
+This should appear in the issue-centric workflow, not as a hidden debug-only view.
+
+Recommended places:
+- issue view / resolution thread
+- optionally dashboard issue detail or copilot issue session view
+
+### Exact files to inspect and likely modify
+
+Issue view state:
+- [apps/web/src/lib/server/issue-view.ts](./apps/web/src/lib/server/issue-view.ts)
+
+Issue-centric routes and UI:
+- [apps/web/src/app/api/resolution/create/route.ts](./apps/web/src/app/api/resolution/create/route.ts)
+- [apps/web/src/app/api/resolution/message/route.ts](./apps/web/src/app/api/resolution/message/route.ts)
+- relevant issue UI under `apps/web/src/app/(dashboard)/...`
+
+Issue session / copilot surfaces:
+- [apps/web/src/lib/server/copilot-issues.ts](./apps/web/src/lib/server/copilot-issues.ts)
+- [apps/web/src/lib/server/copilot.ts](./apps/web/src/lib/server/copilot.ts)
+
+### Required contents
+
+At minimum show:
+- `Incident classification`
+- `Likely cause`
+- `Affected NAS`
+- `Storage pressure`
+- `Drive churn summary`
+- `Backup cleanup state`
+- `Why this is probably restructure, not destruction`
+- `Recommended next step`
+
+### Required plain-English language
+
+The UI explanation must be operator-facing and direct.
+
+For example:
+- `Hyper Backup finished the backup itself, but got stuck deleting old versions after a large Synology Drive reorganization.`
+- `Most of the delete activity matches moves or replacements, so this does not look like a one-way wipe.`
+
+### Done criteria
+
+This task is complete only if:
+- a non-technical operator can understand the incident from the issue page alone
+- the explanation clearly distinguishes cause from symptom
+
+## Implementation Order
+
+Implement in this order:
+
+1. Drive client attribution
+2. delete/create-vs-rename matcher
+3. Hyper Backup cleanup timeline tool
+4. unified forensic incident explainer UI
+
+Reason:
+- tasks 1–3 produce the evidence needed for task 4
+
+## Testing Requirements
+
+### Required automated checks
+
+For agent code:
+- run:
+```sh
+cd /worksp/monitor/app/apps/agent
+docker run --rm -v /worksp/monitor/app/apps/agent:/src -w /src golang:1.23-alpine sh -lc '/usr/local/go/bin/go test ./...'
+```
+
+For web code:
+- run:
+```sh
+cd /worksp/monitor/app
+pnpm --filter @synology-monitor/web type-check
+```
+
+### Required live verification
+
+You are not done with code-only validation.
+
+At minimum verify on real data:
+- a Drive churn issue produces attribution output
+- a Drive churn issue produces a restructure-vs-delete classification
+- a Hyper Backup cleanup issue produces a normalized timeline
+- the issue UI shows the fused explanation
+
+### Use the known incident for validation
+
+Use `edgesynology2` as the real validation case because this incident already produced:
+- backup completion
+- version deletion stall/failure
+- high `iowait`
+- Drive churn
+- snapshot deletion
+
+## What Not To Change
+
+Do not:
+- remove NAS API
+- replace the relay with direct browser-to-NAS access
+- reintroduce web-side SSH execution
+- assume `/usr/syno` binaries are the long-term answer
+- add high-I/O recursive scans to the agent
+- broaden Docker control beyond the monitor stack in the name of convenience
+
+## Operational Notes For The Next Engineer
+
+### Git state
+
+Be careful:
+- the repo worktree contains other modified files unrelated to these four tasks
+- `apps/relay/` is untracked locally even though it exists and is deployed live
+
+Do not blindly commit the whole worktree.
+
+### Deployment caveat
+
+`edgesynology1` was directly confirmed on a newer agent image during the incident pass.
+
+`edgesynology2` was not directly confirmed by shell/Docker inspection because shell access remained inconsistent.
+
+So if you rely on new agent collectors, verify they are actually live on both NASes before claiming success.
+
+### Existing forensic truth to preserve
+
+This is the root incident explanation already established and must not be lost:
+- A large Synology Drive reorganization / conflict-cleanup wave caused massive rename/delete/create churn.
+- Hyper Backup completed the backup itself.
+- Hyper Backup then jammed during version deletion / cleanup.
+- Snapshot deletion and Btrfs cleanup drove high storage pressure and high `cpu_iowait_pct`.
+- The evidence suggests restructure rather than one-way destructive deletion.
+
+Any new implementation that contradicts this without new evidence is probably wrong.
+
+## Minimum Acceptable Final Outcome
+
+After the four tasks are done, the product should be able to do this without manual shell forensics:
+
+1. detect abnormal Drive churn
+2. identify likely clients and users involved
+3. determine whether deletes mostly match moves/replacements
+4. reconstruct the Hyper Backup cleanup timeline
+5. explain the entire incident in one issue thread in plain English
+
+If the app still requires manual ad hoc log parsing to answer those questions, this handoff was not completed.
