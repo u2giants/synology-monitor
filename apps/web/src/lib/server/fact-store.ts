@@ -147,6 +147,8 @@ export function deriveFactsFromTelemetry(
 ) {
   const derived: DerivedFactInput[] = [];
   const issueNas = issue.affected_nas[0] ?? null;
+  const logs = Array.isArray(telemetry.logs) ? telemetry.logs as Array<Record<string, unknown>> : [];
+  const auditLogs = Array.isArray(telemetry.audit_logs) ? telemetry.audit_logs as Array<Record<string, unknown>> : [];
 
   const telemetryErrors = Array.isArray(telemetry.telemetry_errors) ? telemetry.telemetry_errors as string[] : [];
   for (const error of telemetryErrors) {
@@ -227,9 +229,11 @@ export function deriveFactsFromTelemetry(
   }
 
   const ioPressureMetrics = Array.isArray(telemetry.io_pressure_metrics) ? telemetry.io_pressure_metrics as Array<Record<string, unknown>> : [];
+  let maxIoWait = 0;
   for (const metric of ioPressureMetrics) {
     if (String(metric.type) !== "cpu_iowait_pct") continue;
     const value = Number(metric.value ?? 0);
+    if (value > maxIoWait) maxIoWait = value;
     if (value <= 20) continue;
     derived.push({
       nasId: typeof metric.nas_id === "string" ? metric.nas_id : issueNas,
@@ -239,6 +243,55 @@ export function deriveFactsFromTelemetry(
       title: "CPU is blocked on disk I/O",
       detail: `cpu_iowait_pct=${value}`,
       value: metric,
+    });
+  }
+
+  const driveChurnLog = logs.find((row) => String(row.source ?? "") === "drive_churn_signal");
+  const hyperbackupChurnLog = logs.find((row) => String(row.source ?? "") === "hyperbackup_churn");
+  const backupCleanupTask = backupTasks.find((task) => {
+    const lastResult = String(task.last_result ?? "").toLowerCase();
+    return lastResult.includes("version_delete")
+      || lastResult.includes("version_delet")
+      || lastResult.includes("version_rotation")
+      || lastResult.includes("version deleting");
+  });
+
+  const snapshotCleanupLog = [...logs, ...auditLogs].find((row) => {
+    const message = String(row.message ?? "").toLowerCase();
+    return message.includes("drop snapshot")
+      || message.includes("action = 'delete'")
+      || message.includes("sharepresnapshotnotify")
+      || message.includes("sharepostsnapshotnotify");
+  });
+
+  if (backupCleanupTask && maxIoWait >= 20 && (driveChurnLog || hyperbackupChurnLog || snapshotCleanupLog)) {
+    const taskNas = typeof backupCleanupTask.nas_id === "string" ? backupCleanupTask.nas_id : issueNas;
+    const taskName = String(backupCleanupTask.task_name ?? backupCleanupTask.task_id ?? "unknown backup");
+    const lastResult = String(backupCleanupTask.last_result ?? "unknown");
+    const signals = [
+      driveChurnLog ? "Drive churn spike" : null,
+      hyperbackupChurnLog ? "Hyper Backup churn spike" : null,
+      snapshotCleanupLog ? "snapshot cleanup activity" : null,
+      `peak cpu_iowait_pct=${maxIoWait}`,
+    ].filter(Boolean);
+
+    derived.push({
+      nasId: taskNas,
+      factType: "correlated_storage_incident",
+      factKey: `correlated-storage-incident:${taskNas ?? "global"}:${String(backupCleanupTask.task_id ?? taskName)}:${lastResult.toLowerCase()}`,
+      severity: maxIoWait >= 40 ? "critical" : "warning",
+      title: "Drive reorganization is destabilizing Hyper Backup cleanup",
+      detail: `${taskName} is in ${lastResult} while storage pressure is elevated and churn signals are present. This pattern usually means Synology Drive reorganization or conflict cleanup created enough rename/delete churn to jam post-backup version rotation.`,
+      value: {
+        task: backupCleanupTask,
+        peak_cpu_iowait_pct: maxIoWait,
+        drive_churn_log: driveChurnLog ?? null,
+        hyperbackup_churn_log: hyperbackupChurnLog ?? null,
+        snapshot_cleanup_log: snapshotCleanupLog ?? null,
+      },
+      metadata: {
+        related_signals: signals,
+      },
     });
   }
 

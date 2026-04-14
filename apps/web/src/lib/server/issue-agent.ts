@@ -1,4 +1,3 @@
-import { collectNasDiagnostics } from "@/lib/server/nas";
 import {
   appendIssueEvidence,
   appendIssueMessage,
@@ -28,6 +27,7 @@ import {
 } from "@/lib/server/issue-stage-models";
 import {
   buildNasApiApprovalToken,
+  collectNasDiagnostics,
   nasApiExec,
   resolveNasApiConfig,
 } from "@/lib/server/nas-api-client";
@@ -327,6 +327,17 @@ async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, 
       .gte("recorded_at", since30m)
       .in("type", [
         "cpu_iowait_pct",
+        "hyperbackup_last_new_files",
+        "hyperbackup_last_removed_files",
+        "hyperbackup_last_renamed_files",
+        "hyperbackup_last_copy_miss_files",
+        "drive_log_rename_hits",
+        "drive_log_delete_hits",
+        "drive_log_move_hits",
+        "drive_log_conflict_hits",
+        "drive_log_connect_hits",
+        "drive_log_disconnect_hits",
+        "drive_log_mac_hits",
         "nfs_read_bps", "nfs_write_bps", "nfs_calls_ps",
         "vm_pgpgout_ps", "vm_swap_out_ps", "vm_swap_in_ps",
       ])

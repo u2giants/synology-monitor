@@ -38,6 +38,14 @@ type MetricRow = {
   recorded_at: string;
 };
 
+type CorrelatedSignalState = {
+  driveChurn: boolean;
+  hyperbackupChurn: boolean;
+  backupCleanupFailure: boolean;
+  snapshotCleanup: boolean;
+  evidence: Array<{ title: string; detail: string }>;
+};
+
 type SignalGroup = {
   fingerprint: string;
   family: string;
@@ -422,6 +430,118 @@ function buildMetricsGroups(metrics: MetricRow[], nasNameMap: Map<string, string
   return Array.from(groups.values());
 }
 
+function buildCorrelatedIncidentGroups(logs: LogRow[], metrics: MetricRow[], nasNameMap: Map<string, string>) {
+  const byNas = new Map<string, CorrelatedSignalState>();
+
+  const ensureNas = (nasId: string) => {
+    const existing = byNas.get(nasId);
+    if (existing) return existing;
+    const created: CorrelatedSignalState = {
+      driveChurn: false,
+      hyperbackupChurn: false,
+      backupCleanupFailure: false,
+      snapshotCleanup: false,
+      evidence: [],
+    };
+    byNas.set(nasId, created);
+    return created;
+  };
+
+  for (const log of logs) {
+    if (!log.nas_id) continue;
+    const state = ensureNas(log.nas_id);
+    const source = String(log.source ?? "");
+    const message = String(log.message ?? "").toLowerCase();
+
+    if (source === "drive_churn_signal") {
+      state.driveChurn = true;
+      state.evidence.push({
+        title: "Drive churn signal",
+        detail: `${log.message} (${log.ingested_at})`,
+      });
+    }
+    if (source === "hyperbackup_churn") {
+      state.hyperbackupChurn = true;
+      state.evidence.push({
+        title: "Hyper Backup churn signal",
+        detail: `${log.message} (${log.ingested_at})`,
+      });
+    }
+    if (
+      source === "hyperbackup_fallback"
+      && (message.includes("version_delete") || message.includes("version_delet") || message.includes("version rotation"))
+    ) {
+      state.backupCleanupFailure = true;
+      state.evidence.push({
+        title: "Backup cleanup stalled",
+        detail: `${log.message} (${log.ingested_at})`,
+      });
+    }
+    if (
+      message.includes("drop snapshot")
+      || message.includes("sharepresnapshotnotify")
+      || message.includes("sharepostsnapshotnotify")
+      || message.includes("action = 'delete'")
+    ) {
+      state.snapshotCleanup = true;
+      state.evidence.push({
+        title: "Snapshot cleanup activity",
+        detail: `${log.message} (${log.ingested_at})`,
+      });
+    }
+  }
+
+  const ioWaitByNas = new Map<string, { avg: number; peak: number; samples: number }>();
+  for (const metric of metrics) {
+    if (!metric.nas_id || metric.type !== "cpu_iowait_pct") continue;
+    const existing = ioWaitByNas.get(metric.nas_id);
+    if (existing) {
+      existing.samples += 1;
+      existing.avg += metric.value;
+      if (metric.value > existing.peak) existing.peak = metric.value;
+    } else {
+      ioWaitByNas.set(metric.nas_id, { avg: metric.value, peak: metric.value, samples: 1 });
+    }
+  }
+
+  const groups: SignalGroup[] = [];
+  for (const [nasId, state] of byNas) {
+    const io = ioWaitByNas.get(nasId);
+    if (!io || io.samples === 0) continue;
+    const avgIoWait = io.avg / io.samples;
+    if (avgIoWait < 20) continue;
+    if (!state.backupCleanupFailure) continue;
+    if (!(state.driveChurn || state.hyperbackupChurn || state.snapshotCleanup)) continue;
+
+    const nasName = nasNameMap.get(nasId) ?? nasId;
+    const signals = [
+      state.driveChurn ? "Drive churn" : null,
+      state.hyperbackupChurn ? "Hyper Backup churn" : null,
+      state.snapshotCleanup ? "snapshot cleanup" : null,
+    ].filter(Boolean).join(", ");
+
+    groups.push({
+      fingerprint: `detected:drive-backup-cleanup:${nasId}`,
+      family: "drive-backup-cleanup",
+      title: `Drive churn is jamming backup cleanup on ${nasName}`,
+      summary: `${nasName} shows Hyper Backup cleanup failure with ${signals} and sustained cpu_iowait averaging ${avgIoWait.toFixed(1)}% (peak ${io.peak.toFixed(1)}%). This pattern usually means a large Synology Drive reorganization or conflict cleanup created enough delete/rename churn to stall post-backup version rotation.`,
+      severity: io.peak >= 40 ? "critical" : "warning",
+      affected_nas: [nasName],
+      evidence: [
+        ...state.evidence.slice(0, 6),
+        {
+          title: "Sustained disk I/O pressure",
+          detail: `avg cpu_iowait_pct=${avgIoWait.toFixed(1)} peak=${io.peak.toFixed(1)} samples=${io.samples}`,
+        },
+      ],
+      count: state.evidence.length,
+      scope: nasName,
+    });
+  }
+
+  return groups;
+}
+
 function mergeGroupsIntoIssues(groups: SignalGroup[]): DetectedIssue[] {
   return groups
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.count - a.count)
@@ -449,6 +569,7 @@ export async function runIssueDetection(
     ...buildAlertGroups(context.alerts),
     ...buildLogGroups(context.logs),
     ...buildMetricsGroups(context.metrics, nasNameMap),
+    ...buildCorrelatedIncidentGroups(context.logs, context.metrics, nasNameMap),
   ]);
 
   const createdIds: string[] = [];
