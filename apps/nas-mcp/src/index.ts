@@ -1,0 +1,241 @@
+import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { z } from "zod";
+import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
+import { ALL_TOOL_DEFS } from "./tool-definitions.js";
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+const PORT = parseInt(process.env.MCP_PORT ?? "3001", 10);
+const BEARER_TOKEN = process.env.MCP_BEARER_TOKEN ?? "";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const configPath = resolve(__dirname, "../tools-config.json");
+const toolsConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
+  enabled_read_tools: string[];
+  enabled_write_tools: string[];
+};
+
+const enabledRead = new Set<string>(toolsConfig.enabled_read_tools ?? []);
+const enabledWrite = new Set<string>(toolsConfig.enabled_write_tools ?? []);
+
+// ─── MCP server factory ───────────────────────────────────────────────────────
+
+/**
+ * Creates a new McpServer instance and registers all enabled tools on it.
+ * A new instance is created per SSE connection.
+ */
+function createMcpServer(): McpServer {
+  const server = new McpServer({ name: "synology-nas", version: "1.0.0" });
+
+  // Predefined tools from tool-definitions.ts
+  for (const tool of ALL_TOOL_DEFS) {
+    const enabled = tool.write ? enabledWrite.has(tool.name) : enabledRead.has(tool.name);
+    if (!enabled) continue;
+
+    // Write tools get an extra "confirmed" parameter for the two-step approval flow.
+    const params = tool.write
+      ? {
+          ...tool.params,
+          confirmed: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe(
+              "Set to true to execute after reviewing the command preview. Omit or set false to see what will happen first.",
+            ),
+        }
+      : tool.params;
+
+    server.tool(tool.name, tool.description, params, async (input: Record<string, unknown>) => {
+      const target = (input.target as string) ?? "both";
+      const configs = getNasConfigs(target);
+
+      if (configs.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No NAS configured for target "${target}". Valid targets: edgesynology1, edgesynology2, both.` }],
+        };
+      }
+
+      const results = await Promise.all(
+        configs.map(async (config) => {
+          try {
+            let command: string;
+            try {
+              command = tool.buildCommand(input);
+            } catch (err) {
+              return `[${config.name}] Cannot build command: ${err instanceof Error ? err.message : String(err)}`;
+            }
+
+            const preview = await nasPreview(config, command);
+
+            if (preview.blocked) {
+              return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
+            }
+
+            // Write tools: show preview and require explicit confirmation
+            if (preview.tier >= 2 && !input.confirmed) {
+              return [
+                `[${config.name}] This action requires your approval before it runs.`,
+                ``,
+                `Command that will execute:`,
+                `\`\`\``,
+                command,
+                `\`\`\``,
+                ``,
+                `Call this tool again with confirmed: true to approve and execute.`,
+                `If you do not want to proceed, do nothing — no changes have been made.`,
+              ].join("\n");
+            }
+
+            let approvalToken: string | undefined;
+            if (preview.tier >= 2) {
+              approvalToken = buildApprovalToken(config, command, preview.tier);
+            }
+
+            const result = await nasExec(config, command, preview.tier, approvalToken, 90_000);
+            const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+            return `[${config.name}]\n${output || "(no output)"}`;
+          } catch (err) {
+            return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }),
+      );
+
+      return {
+        content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
+      };
+    });
+  }
+
+  // run_command — a free-form tier-1-only tool for deep ad-hoc diagnosis
+  if (enabledRead.has("run_command")) {
+    server.tool(
+      "run_command",
+      "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution.",
+      {
+        target: z
+          .enum(["edgesynology1", "edgesynology2", "both"])
+          .describe("Which NAS to run on"),
+        command: z.string().describe("The shell command to execute"),
+      },
+      async ({ target, command }: { target: string; command: string }) => {
+        const configs = getNasConfigs(target);
+
+        if (configs.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `No NAS configured for target "${target}".` }],
+          };
+        }
+
+        const results = await Promise.all(
+          configs.map(async (config) => {
+            try {
+              const preview = await nasPreview(config, command);
+              if (preview.blocked) {
+                return `[${config.name}] Blocked: ${preview.summary}`;
+              }
+              if (preview.tier >= 2) {
+                return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use a specific write tool.`;
+              }
+              const result = await nasExec(config, command, 1, undefined, 90_000);
+              const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+              return `[${config.name}]\n${output || "(no output)"}`;
+            } catch (err) {
+              return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+            }
+          }),
+        );
+
+        return {
+          content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
+        };
+      },
+    );
+  }
+
+  return server;
+}
+
+// ─── HTTP server with SSE transport ──────────────────────────────────────────
+
+// Track active SSE transports by session ID
+const transports: Record<string, SSEServerTransport> = {};
+
+function isAuthorized(req: { headers: { authorization?: string } }): boolean {
+  if (!BEARER_TOKEN) return true;
+  return req.headers.authorization === `Bearer ${BEARER_TOKEN}`;
+}
+
+const httpServer = createServer(async (req, res) => {
+  // CORS headers
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://localhost`);
+
+  // Health check — no auth required
+  if (url.pathname === "/health" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        service: "nas-mcp",
+        read_tools: [...enabledRead].length,
+        write_tools: [...enabledWrite].length,
+      }),
+    );
+    return;
+  }
+
+  // All other endpoints require auth
+  if (!isAuthorized(req as Parameters<typeof isAuthorized>[0])) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
+
+  // SSE connection — client opens this to start an MCP session
+  if (url.pathname === "/sse" && req.method === "GET") {
+    const transport = new SSEServerTransport("/message", res);
+    transports[transport.sessionId] = transport;
+    res.on("close", () => {
+      delete transports[transport.sessionId];
+    });
+    const mcpServer = createMcpServer();
+    await mcpServer.connect(transport);
+    return;
+  }
+
+  // MCP message endpoint — client POSTs here during an active session
+  if (url.pathname === "/message" && req.method === "POST") {
+    const sessionId = url.searchParams.get("sessionId");
+    if (!sessionId || !transports[sessionId]) {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Session not found" }));
+      return;
+    }
+    await transports[sessionId].handlePostMessage(req, res);
+    return;
+  }
+
+  res.writeHead(404, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ error: "Not found" }));
+});
+
+httpServer.listen(PORT, () => {
+  console.log(`NAS MCP server listening on port ${PORT}`);
+  console.log(`Read tools: ${[...enabledRead].join(", ")}`);
+  console.log(`Write tools: ${[...enabledWrite].join(", ") || "(none — add names to enabled_write_tools in tools-config.json)"}`);
+});
