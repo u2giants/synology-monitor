@@ -55,3 +55,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Trigger Coolify redeploy
+        run: |
+          curl -s -X GET \
+            "http://178.156.180.212:8000/api/v1/deploy?uuid=efl17f5iocnz94840pexre9d&force=false" \
+            -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
