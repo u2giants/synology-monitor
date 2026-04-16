@@ -9,7 +9,7 @@ This document is written for any new developer or Claude coding session working 
 
 All production apps (except popdam) run on a single Coolify-managed VPS at **178.156.180.212**. Coolify wraps everything in Docker containers — you never interact with Docker directly through Coolify's UI. Instead, all live server access goes through SSH.
 
-Five MCP servers give Roo Code modes direct access to the live environment:
+Six MCP servers give Roo Code modes direct access to the live environment:
 
 | MCP Name | What It Does | Use It For |
 |---|---|---|
@@ -18,6 +18,7 @@ Five MCP servers give Roo Code modes direct access to the live environment:
 | `supabase` | Full Supabase API access | Synology Monitor DB, popdam DB |
 | `cloudflare` | Cloudflare account — Workers, D1, R2 | plane-integrations worker, ClickUp events DB, Seafile storage |
 | `github` | GitHub API access | Repo browsing, issues, PRs, commits across all u2giants repos |
+| `nas-mcp` | Direct NAS diagnostic tools over MCP/SSE | Disk, I/O, Drive logs, kernel errors, backup status on edgesynology1 + 2 |
 
 ---
 
@@ -322,6 +323,43 @@ list_pull_requests(owner="u2giants", repo="<repo>", state="open")
 | ⚙️ DevOps | **Yes** | Full access to all MCPs |
 | 📐 Architect | **Yes** | Full access to all MCPs (read/inspect only by convention) |
 | 🔍 Reviewer-Pusher | No | Reviews diffs only |
+
+---
+
+## NAS MCP Server
+
+**URL:** `https://nas-mcp.designflow.app/sse`  
+**Transport:** SSE (Server-Sent Events)  
+**Auth:** Bearer token in `Authorization` header  
+**Bearer token:** `14cde11e584136b15306c03d160ce9536da4f87f82d74c6d728a6c8cb6dd2122`
+
+**MCP client config (for Claude Code / Roo Code):**
+```json
+{
+  "nas-mcp": {
+    "url": "https://nas-mcp.designflow.app/sse",
+    "type": "sse",
+    "headers": {
+      "Authorization": "Bearer 14cde11e584136b15306c03d160ce9536da4f87f82d74c6d728a6c8cb6dd2122"
+    }
+  }
+}
+```
+
+**Available read tools (run automatically, no approval needed):**
+`check_disk_space`, `check_cpu_iowait`, `check_agent_container`, `get_resource_snapshot`, `check_io_stalls`, `tail_drive_server_log`, `search_drive_server_log`, `tail_sharesync_log`, `check_sharesync_status`, `check_kernel_io_errors`, `check_share_database`, `check_drive_package_health`, `check_drive_database`, `search_webapi_log`, `search_all_logs`, `find_problematic_files`, `check_filesystem_health`, `check_scheduled_tasks`, `check_backup_status`, `check_container_io`, `run_command`
+
+**Write tools (approval required before execution):**
+None enabled by default. To enable: add tool names to `enabled_write_tools` in `apps/nas-mcp/tools-config.json` and push to GitHub.
+
+**Available write tools (disabled by default):**
+`restart_monitor_agent`, `stop_monitor_agent`, `start_monitor_agent`, `pull_monitor_agent`, `build_monitor_agent`, `restart_synology_drive_server`, `restart_synology_drive_sharesync`, `rename_file_to_old`, `remove_invalid_chars`, `trigger_sharesync_resync`
+
+**Coolify management:**
+- Image: `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
+- Coolify app UUID: `efl17f5iocnz94840pexre9d`
+- Project: Synology Monitor → production
+- Auto-deploys when `apps/nas-mcp/**` changes are pushed to `master`
 
 ---
 
