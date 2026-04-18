@@ -1015,6 +1015,717 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
+  // ── Phase 1C: Storage deep health ────────────────────────────────────────────
+
+  {
+    name: "check_smart_detail",
+    description: "Shows full SMART attributes, error log, and self-test history for a disk. Specify a device in filter (e.g. /dev/sda) or leave empty to check all disks.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const device = (input.filter as string | undefined)?.trim();
+      if (device) {
+        return [
+          `echo '=== SMART DETAIL: ${device} ==='`,
+          `smartctl -a ${quote(device)} 2>&1`,
+          "echo ''",
+          "echo '=== SMART ERROR LOG ==='",
+          `smartctl -l error ${quote(device)} 2>&1 | head -40`,
+          "echo ''",
+          "echo '=== SELF-TEST LOG ==='",
+          `smartctl -l selftest ${quote(device)} 2>&1 | head -20`,
+        ].join("\n");
+      }
+      return [
+        "echo '=== SMART DETAIL (all disks) ==='",
+        "for d in /dev/sd?; do",
+        "  [ -b \"$d\" ] || continue",
+        "  echo \"=== $d ===\"",
+        "  smartctl -a \"$d\" 2>&1 | head -60",
+        "  echo ''",
+        "  echo '--- Error log ---'",
+        "  smartctl -l error \"$d\" 2>&1 | head -15",
+        "  echo ''",
+        "done 2>/dev/null || echo 'smartctl not available'",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "check_scrub_status",
+    description: "Shows Btrfs scrub status and history for all data volumes, and RAID sync/check progress from /proc/mdstat. Use to see if a scrub is running or when the last one completed.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== BTRFS SCRUB STATUS (all volumes) ==='",
+      "found=0",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  found=1",
+      "  echo \"--- $v ---\"",
+      "  btrfs scrub status \"$v\" 2>&1",
+      "  echo ''",
+      "done 2>/dev/null",
+      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found (btrfs may not be available or volumes use another FS)'",
+      "echo ''",
+      "echo '=== RAID SYNC STATUS (/proc/mdstat) ==='",
+      "cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
+      "echo ''",
+      "echo '=== ACTIVE RAID SYNC PROGRESS ==='",
+      "for f in /sys/block/md*/md/sync_completed /sys/block/md*/md/sync_action; do",
+      "  [ -f \"$f\" ] || continue",
+      "  printf '%s: %s\\n' \"$f\" \"$(cat \"$f\" 2>/dev/null)\"",
+      "done 2>/dev/null || echo 'No MD sync state files found'",
+      "echo ''",
+      "echo '=== SYNOLOGY STORAGE SCRUB LOG ==='",
+      "grep -iE 'scrub|check|sync' /host/log/synolog/synostorage.log 2>/dev/null | tail -20 || echo 'Storage log not found'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_storage_pool_detail",
+    description: "Shows detailed storage pool and RAID array state from DSM (synoarraystatus, synovolumestatus) and mdadm. Reveals degraded arrays, rebuilding disks, and parity errors.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SYNOLOGY ARRAY STATUS ==='",
+      "/host/usr/syno/sbin/synoarraystatus 2>/dev/null || echo 'synoarraystatus not available'",
+      "echo ''",
+      "echo '=== SYNOLOGY VOLUME STATUS ==='",
+      "/host/usr/syno/sbin/synovolumestatus 2>/dev/null || echo 'synovolumestatus not available'",
+      "echo ''",
+      "echo '=== MDADM RAID DETAIL ==='",
+      "for md in /dev/md*; do",
+      "  [ -b \"$md\" ] || continue",
+      "  echo \"--- $md ---\"",
+      "  mdadm --detail \"$md\" 2>&1 | head -40",
+      "  echo ''",
+      "done 2>/dev/null || echo 'No MD devices found or mdadm not available'",
+      "echo ''",
+      "echo '=== /proc/mdstat ==='",
+      "cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
+      "echo ''",
+      "echo '=== DISK PRESENCE CHECK ==='",
+      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo \"--- $d ---\"; smartctl -i \"$d\" 2>/dev/null | grep -E 'Device Model|Model Number|Serial|Capacity' | head -3; done 2>/dev/null || echo 'smartctl not available'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_btrfs_detail",
+    description: "Shows Btrfs filesystem usage, device error counters, balance status, and subvolume list for all Btrfs data volumes. Use to diagnose Btrfs-specific errors or unexpected space allocation.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== BTRFS FILESYSTEM USAGE (all volumes) ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  echo \"--- $v ---\"",
+      "  btrfs filesystem usage \"$v\" 2>&1 | head -30",
+      "  echo ''",
+      "done 2>/dev/null || echo 'btrfs not available or no btrfs volumes'",
+      "echo ''",
+      "echo '=== BTRFS DEVICE STATS (error counters) ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  echo \"--- $v ---\"",
+      "  btrfs device stats \"$v\" 2>&1",
+      "  echo ''",
+      "done 2>/dev/null || true",
+      "echo ''",
+      "echo '=== BTRFS BALANCE STATUS ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  echo \"--- $v ---\"",
+      "  btrfs balance status \"$v\" 2>&1 | head -10",
+      "  echo ''",
+      "done 2>/dev/null || true",
+      "echo ''",
+      "echo '=== BTRFS SUBVOLUMES ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  echo \"--- $v ---\"",
+      "  btrfs subvolume list \"$v\" 2>&1 | head -20",
+      "  echo ''",
+      "done 2>/dev/null || true",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_disk_error_trends",
+    description: "Shows SMART error-relevant attributes (reallocated sectors, pending sectors, uncorrectable errors, temperature, power-on hours) for all disks in a compact table. Use to spot a drive silently accumulating errors.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== DISK ERROR TREND SUMMARY ==='",
+      "printf '%-8s %-8s %-8s %-8s %-7s %-8s %s\\n' 'DISK' 'REALLOC' 'PENDING' 'UNCORR' 'TEMP' 'POWERON' 'MODEL'",
+      "for d in /dev/sd?; do",
+      "  [ -b \"$d\" ] || continue",
+      "  model=$(smartctl -i \"$d\" 2>/dev/null | awk -F: '/Device Model|Model Number/{gsub(/^ +/,\"\",$2); print $2}' | head -1 | cut -c1-20)",
+      "  realloc=$(smartctl -A \"$d\" 2>/dev/null | awk '/Reallocated_Sector/{print $10}')",
+      "  pending=$(smartctl -A \"$d\" 2>/dev/null | awk '/Current_Pending_Sector/{print $10}')",
+      "  uncorr=$(smartctl -A \"$d\" 2>/dev/null | awk '/Offline_Uncorrectable/{print $10}')",
+      "  temp=$(smartctl -A \"$d\" 2>/dev/null | awk '/Temperature_Celsius|Airflow_Temp/{print $10}' | head -1)",
+      "  poweron=$(smartctl -A \"$d\" 2>/dev/null | awk '/Power_On_Hours/{print $10}' | head -1)",
+      "  printf '%-8s %-8s %-8s %-8s %-7s %-8s %s\\n' \"$d\" \"${realloc:-?}\" \"${pending:-?}\" \"${uncorr:-?}\" \"${temp:-?}C\" \"${poweron:-?}h\" \"${model:-?}\"",
+      "done 2>/dev/null || echo 'smartctl not available'",
+      "echo ''",
+      "echo '=== DISK ERRORS FROM KERNEL (dmesg) ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'ata.*error|scsi.*error|i/o error|medium error|sector' | tail -30 || dmesg | grep -iE 'error|sector' | tail -20",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_volume_quota_and_inode_pressure",
+    description: "Shows inode usage pressure and Btrfs qgroup quota state for all data volumes. High inode usage can prevent new files from being created even when disk space is available.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== INODE USAGE (all volumes) ==='",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+      "echo ''",
+      "echo '=== INODE PRESSURE ALERT (>85% used) ==='",
+      "df -i 2>/dev/null | awk '$6 ~ /^\\/volume[0-9]+$/ && $5+0 > 85 {print \"HIGH INODE USAGE:\", $0}' || echo 'No volumes at >85% inode usage'",
+      "echo ''",
+      "echo '=== BTRFS QGROUP QUOTA STATE ==='",
+      "found=0",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+      "  [ \"$fstype\" = 'btrfs' ] || continue",
+      "  found=1",
+      "  echo \"--- $v ---\"",
+      "  btrfs qgroup show --human-readable \"$v\" 2>&1 | head -30 || btrfs quota status \"$v\" 2>&1 | head -10",
+      "  echo ''",
+      "done 2>/dev/null",
+      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found'",
+      "echo ''",
+      "echo '=== SHARE QUOTA (synoshare) ==='",
+      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "  [ -n \"$share\" ] || continue",
+      "  quota=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^quota=/{print $2}')",
+      "  [ -n \"$quota\" ] && [ \"$quota\" != '0' ] && echo \"$share: quota=$quota\"",
+      "done 2>/dev/null || echo 'synoshare not available'",
+    ].join("\n"),
+  },
+
+  // ── Phase 1D: Richer network diagnostics ─────────────────────────────────────
+
+  {
+    name: "check_interface_flaps",
+    description: "Checks network interface carrier change counts, per-interface error counts, and link state. High carrier_changes indicate an unstable physical connection that can cause intermittent DSM API, ShareSync, or remote access failures.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== INTERFACE CARRIER CHANGES ==='",
+      "for iface in /sys/class/net/*/carrier_changes; do",
+      "  [ -f \"$iface\" ] || continue",
+      "  name=$(echo \"$iface\" | awk -F/ '{print $(NF-1)}')",
+      "  changes=$(cat \"$iface\" 2>/dev/null || echo 0)",
+      "  state=$(cat \"/sys/class/net/$name/operstate\" 2>/dev/null || echo unknown)",
+      "  speed=$(cat \"/sys/class/net/$name/speed\" 2>/dev/null || echo ?)",
+      "  printf '%-15s carrier_changes=%-6s state=%-8s speed=%sMbps\\n' \"$name\" \"$changes\" \"$state\" \"$speed\"",
+      "done 2>/dev/null || ip link show 2>/dev/null | grep -E '^[0-9]+:|state'",
+      "echo ''",
+      "echo '=== INTERFACE ERROR COUNTERS ==='",
+      "cat /proc/net/dev | awk 'NR>2{gsub(\":\",\" \",$1); printf \"%-12s RX_errs:%-6s RX_drop:%-6s TX_errs:%-6s TX_drop:%-6s\\n\",$1,$4,$5,$12,$13}' | grep -v '^lo '",
+      "echo ''",
+      "echo '=== RECENT LINK EVENTS (syslog) ==='",
+      "grep -iE 'link up|link down|carrier|autoneg|speed|duplex' /host/log/messages 2>/dev/null | tail -20 || echo 'No interface events in syslog'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_bond_health",
+    description: "Checks bonding/LACP state if bonded network interfaces are configured — bond mode, LACP status, and individual slave interface health. Returns early if no bonding is configured.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== BOND INTERFACES ==='",
+      "ls /proc/net/bonding/ 2>/dev/null || echo 'No bonding interfaces at /proc/net/bonding/ — bonding not configured'",
+      "echo ''",
+      "echo '=== BOND DETAILS ==='",
+      "for f in /proc/net/bonding/bond*; do",
+      "  [ -f \"$f\" ] || continue",
+      "  echo \"=== $f ===\"",
+      "  cat \"$f\" 2>/dev/null",
+      "  echo ''",
+      "done 2>/dev/null",
+      "echo ''",
+      "echo '=== BOND IP AND LINK STATE ==='",
+      "ip link show type bond 2>/dev/null | head -20 || echo 'No bond interfaces via ip link'",
+      "echo ''",
+      "echo '=== LACP / 802.3AD STATE ==='",
+      "for f in /sys/class/net/bond*/bonding/ad_info; do [ -f \"$f\" ] && cat \"$f\" 2>/dev/null; done || echo 'No LACP state available'",
+      "for f in /sys/class/net/bond*/bonding/slaves; do [ -f \"$f\" ] && printf 'Bond slaves: %s\\n' \"$(cat \"$f\" 2>/dev/null)\"; done 2>/dev/null || true",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_dns_and_gateway_health",
+    description: "Tests DNS resolution, checks default gateway reachability with ping, and shows nameserver and route configuration. Use when the NAS has network connectivity but DNS or external service lookups are failing.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== NAMESERVER CONFIG ==='",
+      "cat /host/etc/resolv.conf 2>/dev/null || cat /etc/resolv.conf 2>/dev/null || echo 'resolv.conf not found'",
+      "echo ''",
+      "echo '=== DNS RESOLUTION TESTS ==='",
+      "for h in google.com 8.8.8.8; do",
+      "  echo \"--- $h ---\"",
+      "  nslookup \"$h\" 2>/dev/null | tail -4 || host \"$h\" 2>/dev/null | head -2 || getent hosts \"$h\" 2>/dev/null | head -2 || echo 'DNS lookup failed'",
+      "  echo ''",
+      "done",
+      "echo '=== DEFAULT GATEWAY ==='",
+      "ip route show default 2>/dev/null | head -5",
+      "gw=$(ip route show default 2>/dev/null | awk '/default/{print $3}' | head -1)",
+      "[ -n \"$gw\" ] && echo \"Pinging gateway $gw:\" && ping -c 3 -W 2 \"$gw\" 2>/dev/null | tail -3 || echo 'Cannot determine gateway'",
+      "echo ''",
+      "echo '=== SYNOLOGY DNS CONFIG ==='",
+      "grep -iE 'dns|gateway|nameserver' /host/usr/syno/etc/synoinfo.conf 2>/dev/null | head -10 || echo 'synoinfo.conf not found'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_service_ports",
+    description: "Shows listener state and active connection count for each key Synology service port: SMB (445), NFS (2049), SSH (22), DSM (5000/5001), Drive sync (6690), rsync (873), and LDAP (389/636).",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SERVICE PORT STATUS ==='",
+      "printf '%-8s %-22s %-10s %s\\n' 'PORT' 'SERVICE' 'LISTENING' 'ESTABLISHED'",
+      "for port_label in '22:SSH' '80:DSM-HTTP' '443:DSM-HTTPS' '445:SMB' '2049:NFS' '5000:DSM-web' '5001:DSM-web-SSL' '6690:Drive-sync' '389:LDAP' '636:LDAPS' '873:rsync'; do",
+      "  port=$(echo \"$port_label\" | cut -d: -f1)",
+      "  label=$(echo \"$port_label\" | cut -d: -f2)",
+      "  listening=$(ss -tlnp 2>/dev/null | awk -v p=\":$port\" '$4 ~ p {count++} END{print count+0}')",
+      "  conns=$(ss -tn state established 2>/dev/null | awk -v p=\":$port\" '$4 ~ p || $5 ~ p {count++} END{print count+0}')",
+      "  printf '%-8s %-22s %-10s %s\\n' \"$port\" \"$label\" \"$listening\" \"$conns\"",
+      "done",
+      "echo ''",
+      "echo '=== FULL LISTENER LIST ==='",
+      "ss -tulnp 2>/dev/null | head -40 || echo 'ss not available'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_synology_drive_network",
+    description: "Checks Synology Drive network state — whether port 6690 is listening, active sync connections by client, recent network errors in the Drive log, and whether the Drive config shows a non-default bind address.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== DRIVE SYNC LISTENER (port 6690) ==='",
+      "ss -tlnp 2>/dev/null | grep ':6690' || echo 'Drive sync port 6690 is NOT listening'",
+      "echo ''",
+      "echo '=== ACTIVE DRIVE SYNC CONNECTIONS ==='",
+      "ss -tnp 'sport = :6690 or dport = :6690' 2>/dev/null | head -30 || echo 'No active Drive sync connections'",
+      "echo ''",
+      "echo '=== DRIVE SYNC CONNECTION COUNT BY CLIENT ==='",
+      "ss -tn state established 2>/dev/null | awk '/:6690/{split($5,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -20",
+      "echo ''",
+      "echo '=== RECENT DRIVE NETWORK ERRORS ==='",
+      "grep -iE 'connection|timeout|refused|network|socket|TLS|SSL' /host/log/synologydrive.log 2>/dev/null | tail -30 || echo 'Drive log not found'",
+      "echo ''",
+      "echo '=== DRIVE NETWORK CONFIG ==='",
+      "find /host/var/packages/SynologyDrive/ -maxdepth 4 -name '*.conf' -o -name '*.json' 2>/dev/null | xargs grep -liE 'port|listen|bind' 2>/dev/null | head -5 | while read -r f; do echo \"--- $f ---\"; grep -iE 'port|listen|bind|interface' \"$f\" 2>/dev/null | head -10; done || echo 'Drive config not found'",
+    ].join("\n"),
+  },
+
+  // ── Phase 1E continued: File history and audit ────────────────────────────────
+
+  {
+    name: "find_recent_path_changes",
+    description: "Finds files recently modified under an exact path using mtime. Shows files changed within lookback_hours (default 2h) with timestamps and owner. Requires exact_path.",
+    write: false,
+    params: { target, exact_path: exactPath, lookback_hours: lookbackHours },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const hours = input.lookback_hours as number ?? 2;
+      const minutes = Math.ceil(hours * 60);
+      return [
+        `echo '=== FILES MODIFIED IN LAST ${hours}h UNDER: ${p} ==='`,
+        `find ${quote(p)} -maxdepth 8 -mmin -${minutes} -type f 2>/dev/null | while read -r f; do`,
+        `  stat -c '%y %U:%G %n' "$f" 2>/dev/null`,
+        `done | sort -r | head -50 || echo 'No recently modified files found or path does not exist'`,
+        "echo ''",
+        "echo '=== RECENTLY CHANGED DIRECTORIES ==='",
+        `find ${quote(p)} -maxdepth 5 -mmin -${minutes} -type d 2>/dev/null | head -20 || echo 'No recently changed directories'`,
+        "echo ''",
+        "echo '=== PATH STAT ==='",
+        `stat ${quote(p)} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "find_path_versions_and_snapshots",
+    description: "Looks for recoverable versions of a path: Btrfs snapshots under @Recently-Snapshot, recycle bin entries, and any Drive version hints in logs. Requires exact_path pointing to a file or directory.",
+    write: false,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const filename = `$(basename ${quote(p)})`;
+      return [
+        `echo '=== BTRFS SNAPSHOTS (all volumes) ==='`,
+        "for v in /volume[0-9]*; do",
+        "  [ -d \"$v/@Recently-Snapshot\" ] || continue",
+        "  echo \"--- $v/@Recently-Snapshot ---\"",
+        `  find "$v/@Recently-Snapshot" -maxdepth 6 -name "${filename}" 2>/dev/null | head -10`,
+        "  ls -lt \"$v/@Recently-Snapshot/\" 2>/dev/null | head -10",
+        "  echo ''",
+        "done 2>/dev/null || echo 'No @Recently-Snapshot directories found on any volume'",
+        "echo ''",
+        "echo '=== RECYCLE BIN ==='",
+        "for v in /volume[0-9]*; do",
+        "  for rb in \"$v\"/@Recycle \"$v\"/@recycle; do",
+        "    [ -d \"$rb\" ] || continue",
+        "    echo \"--- $rb ---\"",
+        `    find "$rb" -maxdepth 5 -name "${filename}" 2>/dev/null | head -10`,
+        "    ls -lt \"$rb\" 2>/dev/null | head -10",
+        "    echo ''",
+        "  done",
+        "done 2>/dev/null || echo 'No recycle bin directories found'",
+        "echo ''",
+        "echo '=== SYNOLOGY DRIVE VERSION HINTS (log) ==='",
+        `grep -i ${quote(p)} /host/log/synologydrive.log 2>/dev/null | grep -iE 'version|history|revision|backup|snapshot' | tail -20 || echo 'No version events in Drive log for this path'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "search_file_access_audit",
+    description: "Searches DSM file access audit logs for a path fragment or username. Pass the search term in filter. Use to investigate who accessed or modified a file. Requires DSM file access logging to be enabled.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours, filter },
+    buildCommand: (input) => {
+      const f = (input.filter as string | undefined)?.trim();
+      const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 400);
+      const searchTerm = f || ".";
+      return [
+        `echo '=== FILE ACCESS AUDIT LOG ==='`,
+        `for logf in /host/log/synolog/synofileaccesslog /host/log/synolog/fileaccesslog /host/log/synolog/synologfileaccesslog; do`,
+        `  [ -f "$logf" ] || continue`,
+        `  echo "=== $logf ==="`,
+        `  grep -iE ${quote(searchTerm)} "$logf" 2>/dev/null | tail -${lines}`,
+        `  echo ''`,
+        `done`,
+        `echo ''`,
+        `echo '=== DSM AUDIT LOG (admin actions) ==='`,
+        `grep -iE ${quote(searchTerm)} /host/log/synolog/synoauditd.log 2>/dev/null | tail -${lines} || echo 'Audit log not found or no matching entries'`,
+        `echo ''`,
+        `echo '=== NOTE ==='`,
+        `echo 'File-level access audit requires DSM file access logging enabled in Control Panel > File Services > Advanced.'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "search_smb_path_activity",
+    description: "Searches Samba/SMB logs for activity related to a path fragment, share name, or username. Use to investigate who accessed, created, or deleted files over SMB. Pass the search term in filter.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours, filter },
+    buildCommand: (input) => {
+      const f = (input.filter as string | undefined)?.trim() || "access";
+      const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 300);
+      return [
+        `echo '=== SMB LOG SEARCH: ${f} ==='`,
+        `for logf in /host/log/samba/log.smbd /host/log/smbd.log /host/log/samba/smbd.log; do`,
+        `  [ -f "$logf" ] || continue`,
+        `  matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
+        `  [ "$matches" -gt 0 ] 2>/dev/null || continue`,
+        `  echo "=== $logf ($matches matches) ==="`,
+        `  grep -i ${quote(f)} "$logf" 2>/dev/null | tail -${lines}`,
+        `  echo ''`,
+        `done`,
+        `echo ''`,
+        `echo '=== SMB LOG DIRECTORY ==='`,
+        `ls -lhS /host/log/samba/ 2>/dev/null | head -15 || echo 'No Samba log directory at /host/log/samba/'`,
+        `echo ''`,
+        `echo '=== ACTIVE SMB CONNECTIONS ==='`,
+        `timeout 5 smbstatus -S 2>/dev/null | head -20 || ss -tnp 'sport = :445' 2>/dev/null | head -15 || echo 'smbstatus not available'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "search_drive_path_activity",
+    description: "Searches Synology Drive logs and ShareSync logs for activity related to a path, filename, or username. Use to investigate sync events, file changes, or errors for a specific file. Pass the search term in filter.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours, filter },
+    buildCommand: (input) => {
+      const f = (input.filter as string | undefined)?.trim() || "error";
+      const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 400);
+      return [
+        `echo '=== SYNOLOGY DRIVE LOG SEARCH: ${f} ==='`,
+        `grep -i ${quote(f)} /host/log/synologydrive.log 2>/dev/null | tail -${lines} || echo 'Drive server log not found'`,
+        `echo ''`,
+        `echo '=== SHARESYNC LOG SEARCH ==='`,
+        `for v in /volume[0-9]*; do`,
+        `  for logf in "$v"/*/@synologydrive/log/syncfolder.log "$v"/@SynologyDriveShareSync/*/log/syncfolder.log; do`,
+        `    [ -f "$logf" ] || continue`,
+        `    matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
+        `    [ "$matches" -gt 0 ] 2>/dev/null || continue`,
+        `    echo "=== $logf ($matches matches) ==="`,
+        `    grep -i ${quote(f)} "$logf" 2>/dev/null | tail -${lines}`,
+        `    echo ''`,
+        `  done`,
+        `done 2>/dev/null || echo 'No ShareSync logs found'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "hash_file",
+    description: "Computes SHA-256 and MD5 hashes for an exact file path, along with size and timestamps. Use to verify file integrity, detect silent corruption, or confirm whether two copies are identical. Requires exact_path.",
+    write: false,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      return [
+        `echo '=== FILE IDENTITY ==='`,
+        `stat -c 'size=%s mtime=%y ctime=%z owner=%U:%G mode=%A' ${quote(p)} 2>&1`,
+        `echo ''`,
+        `echo '=== SHA-256 ==='`,
+        `sha256sum ${quote(p)} 2>&1`,
+        `echo ''`,
+        `echo '=== MD5 ==='`,
+        `md5sum ${quote(p)} 2>/dev/null || echo 'md5sum not available'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "compare_file_versions",
+    description: "Compares two file paths: size, mtime, owner, mode, and SHA-256 hashes side by side. Optionally shows a text diff for small text files. Provide first path in exact_path and second path in filter.",
+    write: false,
+    params: { target, exact_path: exactPath, filter },
+    buildCommand: (input) => {
+      const p1 = (input.exact_path as string).trim();
+      const p2 = (input.filter as string | undefined)?.trim();
+      if (!p2) {
+        return `echo 'compare_file_versions requires exact_path (first file) and filter (second file path).'`;
+      }
+      return [
+        `echo '=== FILE 1: ${p1} ==='`,
+        `stat -c 'size=%s mtime=%y owner=%U:%G mode=%A' ${quote(p1)} 2>&1`,
+        `sha256sum ${quote(p1)} 2>&1`,
+        `echo ''`,
+        `echo '=== FILE 2: ${p2} ==='`,
+        `stat -c 'size=%s mtime=%y owner=%U:%G mode=%A' ${quote(p2)} 2>&1`,
+        `sha256sum ${quote(p2)} 2>&1`,
+        `echo ''`,
+        `echo '=== COMPARISON ==='`,
+        `h1=$(sha256sum ${quote(p1)} 2>/dev/null | awk '{print $1}')`,
+        `h2=$(sha256sum ${quote(p2)} 2>/dev/null | awk '{print $1}')`,
+        `if [ "$h1" = "$h2" ] && [ -n "$h1" ]; then echo 'IDENTICAL: SHA-256 hashes match'; else echo 'DIFFERENT: SHA-256 hashes differ'; fi`,
+        `echo ''`,
+        `echo '=== TEXT DIFF (first 50 lines, text files only) ==='`,
+        `diff ${quote(p1)} ${quote(p2)} 2>/dev/null | head -50 || echo 'diff failed (files may be binary or one/both paths missing)'`,
+      ].join("\n");
+    },
+  },
+
+  // ── Phase 1F: Evidence collection ────────────────────────────────────────────
+
+  {
+    name: "collect_incident_bundle",
+    description: "Collects a targeted set of diagnostics for a specific incident type. Pass the type in filter: 'drive' (Drive/ShareSync), 'storage' (RAID/SMART/Btrfs), 'network' (interfaces/DNS), 'permission' (ACL/share), or 'crash' (daemon/OOM/segfault). Omit filter for general system snapshot.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const incidentType = (input.filter as string | undefined)?.trim()?.toLowerCase() || "general";
+      const sections: string[] = [
+        `echo '=== INCIDENT BUNDLE: ${incidentType.toUpperCase()} ==='`,
+        `echo "Collected: $(date)"`,
+        "echo ''",
+        "echo '=== SYSTEM BASELINE ==='",
+        "uptime && free -h && df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+        "echo ''",
+      ];
+      if (incidentType === "drive" || incidentType === "general") {
+        sections.push(
+          "echo '=== DRIVE/SHARESYNC STATUS ==='",
+          "/host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
+          "/host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+          "echo ''",
+          "echo '=== DRIVE LOG TAIL (50 lines) ==='",
+          "tail -50 /host/log/synologydrive.log 2>/dev/null || echo 'Drive log not found'",
+          "echo ''",
+          "echo '=== SHARESYNC STATUS ==='",
+          "for v in /volume[0-9]*; do for f in \"$v\"/*/@synologydrive/log/syncfolder.log \"$v\"/@SynologyDriveShareSync/*/log/syncfolder.log; do [ -f \"$f\" ] || continue; echo \"=== $f ===\"; tail -20 \"$f\"; done; done 2>/dev/null || true",
+          "echo ''",
+        );
+      }
+      if (incidentType === "storage" || incidentType === "general") {
+        sections.push(
+          "echo '=== STORAGE HEALTH ==='",
+          "/host/usr/syno/sbin/synovolumestatus 2>/dev/null || echo 'synovolumestatus not available'",
+          "cat /proc/mdstat 2>/dev/null",
+          "echo ''",
+          "echo '=== SMART SUMMARY ==='",
+          "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo -n \"$d: \"; smartctl -H \"$d\" 2>/dev/null | grep -E 'result|PASSED|FAILED'; done 2>/dev/null || echo 'smartctl not available'",
+          "echo ''",
+          "echo '=== KERNEL DISK ERRORS ==='",
+          "dmesg -T 2>/dev/null | grep -iE 'i/o error|scsi|ata.*error|btrfs.*error' | tail -20 || true",
+          "echo ''",
+        );
+      }
+      if (incidentType === "network") {
+        sections.push(
+          "echo '=== NETWORK INTERFACES ==='",
+          "ip addr 2>/dev/null | grep -E 'inet|^[0-9]+:' | head -20",
+          "cat /proc/net/dev | awk 'NR>2{gsub(\":\",\" \",$1); if ($4+$5+$12+$13 > 0) printf \"%-12s RX_errs:%-6s RX_drop:%-6s TX_errs:%-6s TX_drop:%-6s\\n\",$1,$4,$5,$12,$13}' | grep -v '^lo '",
+          "echo ''",
+          "echo '=== DNS + GATEWAY ==='",
+          "cat /host/etc/resolv.conf 2>/dev/null | head -5",
+          "ip route show default 2>/dev/null",
+          "gw=$(ip route show default 2>/dev/null | awk '/default/{print $3}' | head -1); [ -n \"$gw\" ] && ping -c 2 -W 2 \"$gw\" 2>/dev/null | tail -2",
+          "echo ''",
+          "echo '=== TAILSCALE ==='",
+          "ip addr show tailscale0 2>/dev/null | grep inet || echo 'tailscale0 not found'",
+          "echo ''",
+        );
+      }
+      if (incidentType === "permission") {
+        sections.push(
+          "echo '=== SHARE DATABASE ==='",
+          "/host/usr/syno/sbin/synoshare --enum ALL 2>&1 | head -20",
+          "echo ''",
+          "echo '=== SHARE ACCESS CHECK ==='",
+          "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do [ -n \"$share\" ] || continue; path=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}'); [ -n \"$path\" ] || continue; if [ -d \"$path\" ]; then printf 'OK %s %s\\n' \"$share\" \"$path\"; else printf 'MISSING %s %s\\n' \"$share\" \"$path\"; fi; done",
+          "echo ''",
+          "echo '=== SECURITY LOG TAIL ==='",
+          "tail -30 /host/log/synolog/synosecurity.log 2>/dev/null || echo 'Security log not found'",
+          "echo ''",
+        );
+      }
+      if (incidentType === "crash") {
+        sections.push(
+          "echo '=== CRASH SIGNALS ==='",
+          "dmesg -T 2>/dev/null | grep -iE 'segfault|oom|killed process|kernel panic|BUG:|Oops:' | tail -30 || dmesg | grep -iE 'segfault|oom|killed' | tail -20",
+          "echo ''",
+          "echo '=== KEY DAEMON PROCESSES ==='",
+          "ps aux | awk 'NR==1 || /synologand|invoked|syncd|syno_drive/' | head -20",
+          "echo ''",
+          "echo '=== LOCK FILES ==='",
+          "find /host/var/packages/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -20",
+          "echo ''",
+          "echo '=== DSM ERROR LOG ==='",
+          "tail -30 /host/log/synolog/synoerr.log 2>/dev/null || echo 'synoerr.log not found'",
+          "echo ''",
+        );
+      }
+      sections.push("echo '=== BUNDLE COMPLETE ==='");
+      return sections.join("\n");
+    },
+  },
+
+  {
+    name: "fetch_log_file",
+    description: "Returns the content of a specific log file. Specify the full log path in filter (e.g. /host/log/synolog/synosecurity.log). Use lookback_hours to limit output size. If filter is empty, lists available log files instead.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours, filter },
+    buildCommand: (input) => {
+      const logPath = (input.filter as string | undefined)?.trim();
+      if (!logPath) {
+        return [
+          "echo '=== AVAILABLE LOG FILES ==='",
+          "ls -lhS /host/log/synolog/*.log 2>/dev/null | head -30",
+          "echo ''",
+          "ls -lhS /host/log/*.log 2>/dev/null | head -20",
+          "echo ''",
+          "echo 'Specify the full log path in the filter parameter to fetch its contents.'",
+        ].join("\n");
+      }
+      const lines = clamp((input.lookback_hours as number ?? 2) * 60, 100, 2000);
+      return [
+        `echo '=== LOG FILE: ${logPath} ==='`,
+        `if [ -f ${quote(logPath)} ]; then`,
+        `  wc -l ${quote(logPath)} 2>/dev/null`,
+        `  echo "--- last ${lines} lines ---"`,
+        `  tail -n ${lines} ${quote(logPath)} 2>&1`,
+        `else`,
+        `  echo 'File not found: ${logPath}'`,
+        `  echo ''`,
+        `  echo 'Nearby files:'`,
+        `  ls -lh "$(dirname ${quote(logPath)})" 2>/dev/null | head -20`,
+        `fi`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "fetch_package_db",
+    description: "Queries a named DSM package's SQLite database. Pass the package name and optionally a SQL query in filter. Omit filter to list all tables and row counts. Use for deep investigation of Drive, HyperBackup, or scheduler internal state.",
+    write: false,
+    params: { target, package_name: packageName, filter },
+    buildCommand: (input) => {
+      const pkg = (input.package_name as string).trim();
+      const query = (input.filter as string | undefined)?.trim();
+      const pkgLower = pkg.toLowerCase();
+      const findCmd = `find /volume[0-9]*/@${pkgLower}/ /volume[0-9]*/@syno${pkgLower}/ /host/var/packages/${quote(pkg)}/var/ -maxdepth 5 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null`;
+      const lines: string[] = [
+        `echo '=== PACKAGE DB: ${pkg} ==='`,
+        `echo ''`,
+        `echo '=== DATABASE FILES ==='`,
+        `${findCmd} | head -10`,
+        `echo ''`,
+      ];
+      if (query) {
+        lines.push(
+          `echo '=== QUERY: ${query} ==='`,
+          `dbfile=$(${findCmd} | head -1)`,
+          `[ -n "$dbfile" ] && echo "Using: $dbfile" && timeout 15 sqlite3 "$dbfile" ${quote(query)} 2>&1 | head -100 || echo 'No DB file found'`,
+        );
+      } else {
+        lines.push(
+          `echo '=== TABLE SUMMARY ==='`,
+          `for dbfile in $(${findCmd} | head -3); do`,
+          `  echo "--- $dbfile ---"`,
+          `  timeout 10 sqlite3 "$dbfile" '.tables' 2>&1 | head -10`,
+          `  echo ''`,
+          `done || echo 'No DB files found for ${pkg}'`,
+        );
+      }
+      return lines.join("\n");
+    },
+  },
+
+  {
+    name: "fetch_support_artifacts",
+    description: "Lists DSM support bundle tarballs, large log files sorted by size, package log directories, and any core dumps. Use before a deep investigation session to see what artifact files are available to fetch or analyze.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== DSM SUPPORT BUNDLES ==='",
+      "find /tmp /var/tmp -maxdepth 2 \\( -name 'synology_support*.tgz' -o -name 'support_*.tgz' \\) 2>/dev/null | xargs ls -lh 2>/dev/null | head -10 || echo 'No support bundle tarballs found in /tmp'",
+      "echo ''",
+      "echo '=== LARGE LOG FILES (sorted by size) ==='",
+      "find /host/log/synolog/ /host/log/ -maxdepth 2 -name '*.log' 2>/dev/null | xargs ls -lhS 2>/dev/null | head -20 || echo 'Log dir not found'",
+      "echo ''",
+      "echo '=== PACKAGE LOG DIRS ==='",
+      "for d in /host/var/packages/*/var/log; do",
+      "  [ -d \"$d\" ] || continue",
+      "  pkg=$(echo \"$d\" | awk -F/ '{print $(NF-2)}')",
+      "  size=$(du -sh \"$d\" 2>/dev/null | awk '{print $1}')",
+      "  count=$(find \"$d\" -name '*.log' 2>/dev/null | wc -l)",
+      "  printf '%-30s size=%-8s logfiles=%s\\n' \"$pkg\" \"$size\" \"$count\"",
+      "done 2>/dev/null || echo 'No package log dirs found'",
+      "echo ''",
+      "echo '=== CORE DUMPS ==='",
+      "find /tmp /var/crash -maxdepth 3 2>/dev/null \\( -name 'core*' -o -name '*.core' \\) | xargs ls -lh 2>/dev/null | head -10 || echo 'No core dumps in /tmp or /var/crash'",
+      "for v in /volume[0-9]*; do find \"$v/crash\" -maxdepth 2 2>/dev/null \\( -name 'core*' -o -name '*.core' \\) | xargs ls -lh 2>/dev/null | head -5; done 2>/dev/null || true",
+    ].join("\n"),
+  },
+
   // ── Write tools ───────────────────────────────────────────────────────────────
 
   {

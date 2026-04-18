@@ -75,6 +75,12 @@ To enable a write tool: add its name to `enabled_write_tools` and push.
 | `check_disk_space` | Disk and inode usage for all active data volumes |
 | `check_filesystem_health` | Mount status, inode usage, RAID status, SMART health across all volumes |
 | `check_volume_health` | DSM-layer RAID/volume health (synovolumestatus, synoarraystatus), mdstat, SMART |
+| `check_storage_pool_detail` | Detailed RAID array state from DSM and mdadm — degraded arrays, rebuild progress |
+| `check_btrfs_detail` | Btrfs filesystem usage, device error counters, balance status, subvolume list |
+| `check_scrub_status` | Btrfs scrub status for all volumes and RAID sync progress from mdstat |
+| `check_disk_error_trends` | Compact SMART error table — reallocated sectors, pending, uncorrectable, temperature |
+| `check_smart_detail` | Full SMART attributes, error log, and self-test history per disk |
+| `check_volume_quota_and_inode_pressure` | Inode usage pressure and Btrfs qgroup quota state for all volumes |
 
 ### System health
 
@@ -120,6 +126,13 @@ To enable a write tool: add its name to `enabled_write_tools` and push.
 | `inspect_path_metadata` | POSIX metadata for an exact path: owner, group, mode, size, inode, timestamps |
 | `inspect_path_acl` | POSIX and Synology ACL entries for an exact path (getfacl + synoacltool) |
 | `inspect_effective_permissions` | Effective access on a path with optional per-user group and share-level check |
+| `find_recent_path_changes` | Files modified within lookback_hours under an exact path, sorted by mtime |
+| `find_path_versions_and_snapshots` | Btrfs snapshots, recycle bin entries, and Drive version hints for an exact path |
+| `search_file_access_audit` | Searches DSM file access audit logs for a path fragment or username |
+| `search_smb_path_activity` | Searches Samba/SMB logs for activity related to a path, share, or username |
+| `search_drive_path_activity` | Searches Drive and ShareSync logs for activity related to a path or username |
+| `hash_file` | SHA-256 and MD5 hashes with timestamps — verify integrity or detect corruption |
+| `compare_file_versions` | Compare two file paths by metadata, hashes, and optional text diff |
 
 ### Network
 
@@ -129,6 +142,11 @@ To enable a write tool: add its name to `enabled_write_tools` and push.
 | `check_network_connections` | Active TCP connections per process, state counts, top peers |
 | `check_tailscale` | Tailscale VPN status — interface state, IP, daemon reachability |
 | `check_active_sessions` | Currently active SMB, NFS, SSH, DSM web, and Drive sessions |
+| `check_interface_flaps` | Carrier change counts and error counters — detects unstable physical connections |
+| `check_bond_health` | Bonding/LACP state, slave health, and bond mode |
+| `check_dns_and_gateway_health` | DNS resolution tests, gateway ping, nameserver config |
+| `check_service_ports` | Listener state and connection count for all key Synology service ports |
+| `check_synology_drive_network` | Drive sync port 6690 listener, connections by client, recent network errors |
 
 ### Logs and search
 
@@ -148,6 +166,15 @@ To enable a write tool: add its name to `enabled_write_tools` and push.
 | `check_container_io` | Docker containers doing the most disk I/O |
 | `check_agent_container` | Whether the monitor agent container is running |
 | `run_command` | Any read-only shell command (write commands are blocked by the NAS API) |
+
+### Evidence collection
+
+| Tool | What it does |
+|---|---|
+| `collect_incident_bundle` | Targeted diagnostic snapshot: drive, storage, network, permission, or crash |
+| `fetch_log_file` | Returns content of a specific log file; lists available logs if no path given |
+| `fetch_package_db` | Queries a package's SQLite database — list tables or run a SQL query |
+| `fetch_support_artifacts` | Lists DSM support bundles, large log files, package log dirs, and core dumps |
 
 Recommended starting sequence for path-sensitive incidents:
 
