@@ -63,8 +63,10 @@ services:
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
       - /usr/syno:/host/usr/syno:ro
       - /etc/passwd:/host/etc/passwd:ro
+      - /etc/VERSION:/host/etc/VERSION:ro
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
+      - /var/packages/Tailscale:/var/packages/Tailscale:ro
       - ${SHARE_FILES_PATH:-/volume1/files}:/volume1/files:ro
       - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/volume1/styleguides:ro
       - ${SHARE_USERS_PATH:-/volume1/users}:/volume1/users:ro

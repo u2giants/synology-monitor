@@ -16,6 +16,7 @@ FROM alpine:3.20
 
 RUN apk add --no-cache \
   bash \
+  bind-tools \
   btrfs-progs \
   ca-certificates \
   coreutils \
@@ -24,8 +25,10 @@ RUN apk add --no-cache \
   e2fsprogs \
   findutils \
   grep \
+  iproute2 \
   lsof \
   procps \
+  smartmontools \
   sqlite \
   tzdata \
   util-linux

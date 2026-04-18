@@ -41,11 +41,99 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   // ── Read tools ───────────────────────────────────────────────────────────────
 
   {
+    name: "check_system_info",
+    description: "Returns DSM version, NAS model, uptime, system load, kernel version, CPU info, and memory overview. Run this first in any new conversation to establish baseline context about the system.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== DSM VERSION ==='",
+      "cat /host/etc/VERSION 2>/dev/null || echo 'VERSION file not available (mount /etc/VERSION:/host/etc/VERSION:ro)'",
+      "echo ''",
+      "echo '=== NAS MODEL ==='",
+      "grep -E 'syno_hw_version|upnpmodelname|modelname' /host/usr/syno/etc/synoinfo.conf 2>/dev/null | head -5 || echo 'Model info not available'",
+      "echo ''",
+      "echo '=== UPTIME & LOAD ==='",
+      "uptime",
+      "echo ''",
+      "echo '=== KERNEL ==='",
+      "uname -r",
+      "echo ''",
+      "echo '=== CPU ==='",
+      "nproc && grep 'model name' /proc/cpuinfo | head -1",
+      "echo ''",
+      "echo '=== MEMORY ==='",
+      "free -h",
+    ].join("\n"),
+  },
+
+  {
     name: "check_disk_space",
     description: "Shows disk usage on /volume1 — how full the NAS storage is and how much free space remains.",
     write: false,
     params: { target },
     buildCommand: () => "df -h /volume1",
+  },
+
+  {
+    name: "check_hardware_temps",
+    description: "Reads CPU and chassis temperature sensors, fan speeds, and SMART disk temperatures. Run when the NAS is throttling, unexpectedly shutting down, or you suspect thermal problems.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== THERMAL ZONES ==='",
+      "for f in /host/sys/class/thermal/thermal_zone*/temp; do",
+      "  [ -f \"$f\" ] || continue",
+      "  zone=$(dirname \"$f\" | xargs basename)",
+      "  type=$(cat \"$(dirname \"$f\")/type\" 2>/dev/null || echo unknown)",
+      "  val=$(cat \"$f\" 2>/dev/null || echo 0)",
+      "  awk -v v=\"$val\" -v z=\"$zone\" -v t=\"$type\" 'BEGIN{printf \"%s (%s): %.1fC\\n\",z,t,v/1000}'",
+      "done 2>/dev/null || echo 'No thermal zones at /host/sys/class/thermal'",
+      "echo ''",
+      "echo '=== HWMON SENSORS ==='",
+      "for f in /host/sys/class/hwmon/hwmon*/temp*_input; do",
+      "  [ -f \"$f\" ] || continue",
+      "  lf=\"${f%_input}_label\"; label=$(cat \"$lf\" 2>/dev/null || basename \"$f\")",
+      "  val=$(cat \"$f\" 2>/dev/null || echo 0)",
+      "  awk -v v=\"$val\" -v l=\"$label\" 'BEGIN{printf \"%s: %.1fC\\n\",l,v/1000}'",
+      "done 2>/dev/null || echo 'No hwmon sensors at /host/sys/class/hwmon'",
+      "echo ''",
+      "echo '=== FAN SPEEDS ==='",
+      "for f in /host/sys/class/hwmon/hwmon*/fan*_input; do",
+      "  [ -f \"$f\" ] || continue",
+      "  lf=\"${f%_input}_label\"; label=$(cat \"$lf\" 2>/dev/null || basename \"$f\")",
+      "  val=$(cat \"$f\" 2>/dev/null || echo ?)",
+      "  echo \"$label: $val RPM\"",
+      "done 2>/dev/null || echo 'No fan sensors found'",
+      "echo ''",
+      "echo '=== DISK TEMPS (SMART) ==='",
+      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo -n \"$d: \"; smartctl -A \"$d\" 2>/dev/null | grep -iE 'Temperature_Celsius|Airflow_Temp' | awk '{printf \"%sC\\n\",$10}' || echo 'N/A'; done 2>/dev/null || echo 'smartctl not available'",
+      "echo ''",
+      "echo '=== SYNOLOGY THERMAL ==='",
+      "/host/usr/syno/bin/synothermalinfo 2>/dev/null || echo 'synothermalinfo not available on this model'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_volume_health",
+    description: "Checks storage pool and volume health at the DSM layer (synovolumestatus, synoarraystatus), /proc/mdstat for RAID state, per-volume disk usage, and SMART overall health for all drives.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SYNOLOGY VOLUME STATUS ==='",
+      "/host/usr/syno/sbin/synovolumestatus 2>/dev/null || echo 'synovolumestatus not available'",
+      "echo ''",
+      "echo '=== SYNOLOGY ARRAY STATUS ==='",
+      "/host/usr/syno/sbin/synoarraystatus 2>/dev/null || echo 'synoarraystatus not available'",
+      "echo ''",
+      "echo '=== /proc/mdstat ==='",
+      "cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
+      "echo ''",
+      "echo '=== DISK USAGE (all volumes) ==='",
+      "df -h 2>/dev/null | grep -E 'volume|Filesystem' | head -20",
+      "echo ''",
+      "echo '=== SMART HEALTH (all disks) ==='",
+      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo -n \"$d: \"; smartctl -H \"$d\" 2>/dev/null | grep -iE 'result|Status|PASSED|FAILED' || echo 'N/A'; done 2>/dev/null || echo 'smartctl not available'",
+    ].join("\n"),
   },
 
   {
@@ -135,12 +223,192 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "check_memory_detail",
+    description: "Detailed memory view: full /proc/meminfo, swap activity rates from vmstat, dirty/writeback pages, and OOM kill history from dmesg. Use when you suspect memory pressure or swap thrashing.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== MEMORY OVERVIEW ==='",
+      "free -h",
+      "echo ''",
+      "echo '=== SWAP ACTIVITY (3 samples) ==='",
+      "vmstat 1 3",
+      "echo ''",
+      "echo '=== KEY MEMINFO FIELDS ==='",
+      "grep -E 'MemTotal|MemAvailable|MemFree|Buffers|Cached|SwapTotal|SwapFree|SwapCached|Dirty|Writeback|AnonPages|Mapped|Shmem|PageTables|VmallocUsed|HugePages' /proc/meminfo",
+      "echo ''",
+      "echo '=== TOP MEMORY CONSUMERS ==='",
+      "ps aux --sort=-%mem | head -20",
+      "echo ''",
+      "echo '=== OOM KILL HISTORY ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'oom|killed process|out of memory' | tail -20 || dmesg | grep -i 'oom\\|killed' | tail -20 || echo 'No OOM events found'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_network_health",
+    description: "Checks network interface stats (errors, dropped packets, carrier changes), routing table, active listening ports, NFS connections, and whether DNS resolution is working.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== INTERFACE ERRORS & DROPS ==='",
+      "cat /proc/net/dev | awk 'NR>2{gsub(\":\",\" \",$1); printf \"%-12s RX_errs:%-6s RX_drop:%-6s TX_errs:%-6s TX_drop:%-6s\\n\",$1,$4,$5,$12,$13}' | grep -v '^lo '",
+      "echo ''",
+      "echo '=== INTERFACE IP ADDRESSES ==='",
+      "ip addr 2>/dev/null | grep -E 'inet|^[0-9]+:' | head -30 || cat /proc/net/if_inet6 | head -10 || echo 'ip command not available'",
+      "echo ''",
+      "echo '=== ROUTING TABLE ==='",
+      "ip route 2>/dev/null || route -n 2>/dev/null || cat /proc/net/route | head -10",
+      "echo ''",
+      "echo '=== DNS RESOLUTION TEST ==='",
+      "nslookup google.com 2>/dev/null | head -6 || host google.com 2>/dev/null | head -3 || getent hosts google.com 2>/dev/null | head -3 || echo 'DNS lookup tools not available'",
+      "echo ''",
+      "echo '=== LISTENING PORTS ==='",
+      "ss -tulnp 2>/dev/null | head -40 || cat /proc/net/tcp /proc/net/udp 2>/dev/null | awk 'NR>1{printf \"%s\\n\",$2}' | head -30 || echo 'Port listing not available'",
+      "echo ''",
+      "echo '=== ACTIVE NFS CONNECTIONS ==='",
+      "ss -tnp 'sport = :2049 or dport = :2049' 2>/dev/null | head -20 || echo 'No active NFS connections (or ss not available)'",
+      "echo ''",
+      "echo '=== SMB CONNECTIONS ==='",
+      "ss -tnp 'sport = :445' 2>/dev/null | head -20 || echo 'No active SMB connections visible'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_tailscale",
+    description: "Checks Tailscale VPN status — whether the tailscale0 interface is up, what IP it has, and whether the Tailscale daemon is reachable. Critical because the entire cloud-to-NAS diagnostic path runs over Tailscale.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== TAILSCALE INTERFACE ==='",
+      "ip addr show tailscale0 2>/dev/null || echo 'tailscale0 interface not found — VPN is down or not installed'",
+      "echo ''",
+      "echo '=== TAILSCALE LINK ==='",
+      "ip link show tailscale0 2>/dev/null || echo 'No tailscale0 link'",
+      "echo ''",
+      "echo '=== TAILSCALE ROUTING ==='",
+      "ip route show dev tailscale0 2>/dev/null || echo 'No routes via tailscale0'",
+      "echo ''",
+      "echo '=== TAILSCALE DAEMON REACHABLE ==='",
+      "ls /var/packages/Tailscale/ 2>/dev/null && echo 'Tailscale package installed' || echo 'Tailscale package not found at /var/packages/Tailscale'",
+      "/var/packages/Tailscale/target/bin/tailscale status 2>/dev/null || echo 'Cannot reach tailscale daemon from container (socket not mounted)'",
+      "echo ''",
+      "echo '=== CONNECTIVITY CHECK ==='",
+      "ping -c 2 -W 3 100.100.100.100 2>/dev/null && echo 'Tailscale magic DNS reachable' || echo 'Tailscale magic DNS (100.100.100.100) unreachable'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_network_connections",
+    description: "Shows all active TCP connections per process, connection counts by state, and top connected peers. Use when you suspect a process is flooding the network or holding many idle connections.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== CONNECTION SUMMARY BY STATE ==='",
+      "ss -s 2>/dev/null || cat /proc/net/sockstat 2>/dev/null | head -10",
+      "echo ''",
+      "echo '=== ESTABLISHED CONNECTIONS WITH PROCESS ==='",
+      "ss -tnp state established 2>/dev/null | head -50",
+      "echo ''",
+      "echo '=== TOP CONNECTED PEERS ==='",
+      "ss -tn state established 2>/dev/null | awk 'NR>1{split($5,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -20",
+      "echo ''",
+      "echo '=== SYNOLOGY DRIVE SYNC CONNECTIONS (port 6690) ==='",
+      "ss -tnp 'sport = :6690 or dport = :6690' 2>/dev/null | head -20 || echo 'No Drive sync connections on 6690'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_security_log",
+    description: "Shows failed login attempts, security events, admin audit entries, and recent SSH connection attempts. Use when you suspect unauthorized access or to investigate blocked access issues.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours },
+    buildCommand: (input) => {
+      const lines = clamp((input.lookback_hours as number ?? 2) * 30, 40, 200);
+      return [
+        "echo '=== DSM SECURITY LOG ==='",
+        `tail -n ${lines} /host/log/synolog/synosecurity.log 2>/dev/null || echo 'Security log not found at /host/log/synolog/synosecurity.log'`,
+        "echo ''",
+        "echo '=== FAILED LOGINS / AUTH FAILURES ==='",
+        `grep -iE 'fail|invalid|wrong|denied|blocked|unauthorized' /host/log/synolog/synosecurity.log 2>/dev/null | tail -${lines} || grep -iE 'fail|invalid|authentication' /host/log/auth.log 2>/dev/null | tail -${lines} || echo 'Auth log not found'`,
+        "echo ''",
+        "echo '=== ADMIN AUDIT LOG ==='",
+        `tail -n ${lines} /host/log/synolog/synoauditd.log 2>/dev/null || echo 'Audit log not found'`,
+        "echo ''",
+        "echo '=== SSH CONNECTIONS ==='",
+        `grep -iE 'sshd|ssh.*accept|ssh.*fail' /host/log/auth.log 2>/dev/null | tail -20 || grep -i 'sshd' /host/log/messages 2>/dev/null | tail -20 || echo 'SSH log not found'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "check_active_sessions",
+    description: "Lists currently active SMB, NFS, SFTP/SSH, and DSM web sessions. Tells you exactly who is connected to the NAS right now.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== ACTIVE SMB SESSIONS ==='",
+      "timeout 10 smbstatus 2>/dev/null | head -60 || echo 'smbstatus not available — checking port 445'",
+      "ss -tnp 'sport = :445' 2>/dev/null | head -20 || true",
+      "echo ''",
+      "echo '=== ACTIVE NFS CLIENTS ==='",
+      "showmount --no-headers -a 2>/dev/null | head -20 || ss -tnp 'dport = :2049 or sport = :2049' 2>/dev/null | head -20 || echo 'No NFS session info available'",
+      "echo ''",
+      "echo '=== SSH/SFTP SESSIONS ==='",
+      "ss -tnp 'sport = :22' 2>/dev/null | grep -v '127.0.0.1' | head -20 || echo 'No external SSH sessions'",
+      "echo ''",
+      "echo '=== DSM WEB SESSIONS (port 5000/5001) ==='",
+      "ss -tnp 'sport = :5000 or sport = :5001' 2>/dev/null | head -20 || echo 'No DSM web sessions visible'",
+      "echo ''",
+      "echo '=== SYNOLOGY DRIVE SESSIONS (port 6690) ==='",
+      "ss -tnp 'sport = :6690' 2>/dev/null | head -20 || echo 'No Drive sync connections visible'",
+      "echo ''",
+      "echo '=== ALL ESTABLISHED CONNECTIONS (top peers) ==='",
+      "ss -tn state established 2>/dev/null | awk 'NR>1{split($5,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -15",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_packages",
+    description: "Lists all installed DSM packages, their running status, and version. Also checks recent package install/update events. Use to understand what software is on the NAS and whether packages are healthy.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== ALL INSTALLED PACKAGES ==='",
+      "/host/usr/syno/bin/synopkg list 2>/dev/null | head -60 || ls /host/packages/ 2>/dev/null | head -40 || echo 'Package list not available'",
+      "echo ''",
+      "echo '=== KEY PACKAGE STATUS ==='",
+      "for pkg in SynologyDrive SynologyDriveShareSync HyperBackup HyperBackupVault CloudSync ActiveBackupForBusiness Moments VideoStation AudioStation ContainerManager; do",
+      "  status=$(/host/usr/syno/bin/synopkg status \"$pkg\" 2>/dev/null | head -1)",
+      "  [ -n \"$status\" ] && echo \"$pkg: $status\"",
+      "done",
+      "echo ''",
+      "echo '=== RECENT PACKAGE EVENTS ==='",
+      "grep -iE 'install|update|upgrade|uninstall|start|stop' /host/log/synolog/synopkg.log 2>/dev/null | tail -30 || echo 'Package log not found'",
+    ].join("\n"),
+  },
+
+  {
+    name: "tail_system_log",
+    description: "Shows the most recent entries from /var/log/messages — the general system log capturing kernel events, service starts/stops, USB events, and anything not going to a specific app log.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours },
+    buildCommand: (input) => {
+      const lines = clamp((input.lookback_hours as number ?? 2) * 40, 60, 400);
+      return [
+        "echo '=== SYSTEM LOG (/var/log/messages) ==='",
+        `tail -n ${lines} /host/log/messages 2>/dev/null || tail -n ${lines} /host/log/syslog 2>/dev/null || echo 'System log not found at /host/log/messages or /host/log/syslog'`,
+      ].join("\n");
+    },
+  },
+
+  {
     name: "tail_drive_server_log",
     description: "Shows the most recent entries from the Synology Drive server log.",
     write: false,
     params: { target, lookback_hours: lookbackHours },
     buildCommand: (input) =>
-      `tail -n ${clamp((input.lookback_hours as number ?? 2) * 40, 40, 300)} /var/log/synologydrive.log`,
+      `tail -n ${clamp((input.lookback_hours as number ?? 2) * 40, 40, 300)} /host/log/synologydrive.log 2>/dev/null || echo 'Drive server log not found at /host/log/synologydrive.log'`,
   },
 
   {
@@ -151,7 +419,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const f = (input.filter as string | undefined)?.trim() || "error";
       const lines = clamp((input.lookback_hours as number ?? 2) * 40, 40, 300);
-      return `grep -i ${quote(f)} /var/log/synologydrive.log | tail -n ${lines}`;
+      return `grep -i ${quote(f)} /host/log/synologydrive.log 2>/dev/null | tail -n ${lines} || echo 'Drive log not found'`;
     },
   },
 
@@ -226,7 +494,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "ls -lh /volume1/@synologydrive/db/ 2>/dev/null || echo 'No Drive DB directory'",
       "echo ''",
       "echo '=== RECENT DRIVE PACKAGE LOG ==='",
-      "grep -i 'synologydrive\\|SynologyDrive' /var/log/synolog/synopkg.log 2>/dev/null | tail -20 || true",
+      "grep -i 'synologydrive\\|SynologyDrive' /host/log/synolog/synopkg.log 2>/dev/null | tail -20 || echo 'Package log not found'",
     ].join("\n"),
   },
 
@@ -257,13 +525,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 300);
       return [
         "echo '=== WEBAPI LOG ==='",
-        `grep -iE ${quote(f)} /var/log/synolog/synowebapi.log 2>/dev/null | tail -n ${lines} || echo 'No matches or file not found'`,
+        `grep -iE ${quote(f)} /host/log/synolog/synowebapi.log 2>/dev/null | tail -n ${lines} || echo 'WebAPI log not found at /host/log/synolog/synowebapi.log'`,
         "echo ''",
         "echo '=== STORAGE LOG ==='",
-        `grep -iE 'share|volume|storage|mount' /var/log/synolog/synostorage.log 2>/dev/null | tail -40 || echo 'No matches or file not found'`,
+        `grep -iE 'share|volume|storage|mount' /host/log/synolog/synostorage.log 2>/dev/null | tail -40 || echo 'Storage log not found'`,
         "echo ''",
         "echo '=== SHARE LOG ==='",
-        `grep -iE 'error|fail|warn' /var/log/synolog/synoshare.log 2>/dev/null | tail -40 || echo 'No matches or file not found'`,
+        `grep -iE 'error|fail|warn' /host/log/synolog/synoshare.log 2>/dev/null | tail -40 || echo 'Share log not found'`,
       ].join("\n");
     },
   },
@@ -277,10 +545,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const f = (input.filter as string | undefined)?.trim() || "error";
       return [
         `echo '=== SEARCHING ALL LOGS FOR: ${f} ==='`,
-        `for f in /var/log/synolog/*.log /var/log/messages /var/log/kern.log /var/log/synologydrive.log /var/log/samba/*.log; do`,
-        `  [ -f "$f" ] || continue`,
-        `  matches=$(grep -ciE ${quote(f)} "$f" 2>/dev/null || true)`,
-        `  [ "$matches" -gt 0 ] 2>/dev/null && echo "$f: $matches matches" && grep -iE ${quote(f)} "$f" 2>/dev/null | tail -5 && echo ""`,
+        `for logf in /host/log/synolog/*.log /host/log/messages /host/log/kern.log /host/log/synologydrive.log /host/log/samba/*.log; do`,
+        `  [ -f "$logf" ] || continue`,
+        `  matches=$(grep -ciE ${quote(f)} "$logf" 2>/dev/null || true)`,
+        `  [ "$matches" -gt 0 ] 2>/dev/null && echo "$logf: $matches matches" && grep -iE ${quote(f)} "$logf" 2>/dev/null | tail -5 && echo ""`,
         `done`,
       ].join("\n");
     },
@@ -322,7 +590,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "tune2fs -l $(mount | grep '/volume1 ' | awk '{print $1}') 2>/dev/null | grep -iE 'filesystem|mount count|error|state|journal' || btrfs filesystem show /volume1 2>/dev/null || echo 'Could not determine filesystem details'",
       "echo ''",
       "echo '=== SMART STATUS ==='",
-      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo \"--- $d ---\"; smartctl -H \"$d\" 2>/dev/null | grep -E 'result|Status'; smartctl -A \"$d\" 2>/dev/null | grep -E 'Reallocated|Current_Pending|Offline_Uncorrectable|Temperature'; done",
+      "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo \"--- $d ---\"; smartctl -H \"$d\" 2>/dev/null | grep -E 'result|Status'; smartctl -A \"$d\" 2>/dev/null | grep -E 'Reallocated|Current_Pending|Offline_Uncorrectable|Temperature'; done 2>/dev/null || echo 'smartctl not available'",
       "echo ''",
       "echo '=== RAID STATUS ==='",
       "cat /proc/mdstat 2>/dev/null || echo 'No mdstat available'",
@@ -341,11 +609,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "if [ -f /host/usr/syno/etc/schedule/synoscheduler.db ]; then",
         "  sqlite3 /host/usr/syno/etc/schedule/synoscheduler.db \"SELECT id, name, type, enable, status, last_work_time, next_trigger_time FROM task\" 2>/dev/null | head -40",
         "else",
-        "  echo 'Scheduler DB not found at expected path'",
+        "  echo 'Scheduler DB not found at /host/usr/syno/etc/schedule/synoscheduler.db'",
         "fi",
         "echo ''",
         "echo '=== RECENT SCHEDULER ERRORS ==='",
-        `grep -iE 'error|fail|exit [^0]' /var/log/synolog/synoscheduler.log 2>/dev/null | tail -${lines} || echo 'No scheduler log found'`,
+        `grep -iE 'error|fail|exit [^0]' /host/log/synolog/synoscheduler.log 2>/dev/null | tail -${lines} || echo 'Scheduler log not found'`,
       ].join("\n");
     },
   },
@@ -365,7 +633,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "/host/usr/syno/bin/synobackup --list 2>/dev/null || echo 'No backup CLI available'",
         "echo ''",
         "echo '=== RECENT BACKUP LOG ==='",
-        `grep -iE 'error|fail|warn|complete|success|abort|destination' /var/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /var/log/synolog/synobackup.log 2>/dev/null || echo 'Backup log not found'`,
+        `grep -iE 'error|fail|warn|complete|success|abort|destination' /host/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /host/log/synolog/synobackup.log 2>/dev/null || echo 'Backup log not found'`,
         "echo ''",
         "echo '=== BACKUP DESTINATION ==='",
         "ls /volume1/@SynologyHyperBackup* 2>/dev/null || echo 'No HyperBackup vault found on volume1'",
@@ -437,6 +705,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "restart_nas_api",
+    description: "WRITE — Restarts the NAS API container (the service that runs commands on the NAS). Use if the API becomes unresponsive. Shows a preview and asks for your approval.",
+    write: true,
+    params: { target },
+    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose restart nas-api",
+  },
+
+  {
     name: "restart_synology_drive_server",
     description: "WRITE — Restarts the Synology Drive package. Use when Drive is unresponsive or in an error state. Shows a preview and asks for your approval before doing anything.",
     write: true,
@@ -450,6 +726,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     write: true,
     params: { target },
     buildCommand: () => "/host/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+  },
+
+  {
+    name: "restart_hyper_backup",
+    description: "WRITE — Restarts the Hyper Backup package. Use when backup jobs are stuck or failing to start. Shows a preview and asks for your approval before doing anything.",
+    write: true,
+    params: { target },
+    buildCommand: () => "/host/usr/syno/bin/synopkg restart HyperBackup",
   },
 
   {

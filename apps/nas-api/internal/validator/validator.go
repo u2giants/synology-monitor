@@ -115,8 +115,10 @@ var (
 	allowedServiceCommands = []*regexp.Regexp{
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart SynologyDrive$`),
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart SynologyDriveShareSync$`),
+		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart HyperBackup$`),
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg status [A-Za-z0-9._-]+(?: 2>&1)?(?: \|\| .+)?$`),
 		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose restart$`),
+		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose restart nas-api$`),
 		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose stop$`),
 		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose up -d$`),
 		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose pull$`),
