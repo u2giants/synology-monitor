@@ -64,29 +64,97 @@ To enable a write tool: add its name to `enabled_write_tools` and push.
 
 ## Available read tools
 
+### Storage and volume discovery
+
 | Tool | What it does |
 |---|---|
-| `check_disk_space` | Disk usage on /volume1 |
+| `list_volumes` | Discover active data volumes and their filesystem usage |
+| `list_shared_folders` | Map DSM share names to real filesystem paths |
+| `inspect_mounts` | Show the live mount graph for data, package, and bind mounts |
+| `inspect_encryption_state` | Check whether volumes and share paths appear mounted and visible |
+| `check_disk_space` | Disk and inode usage for all active data volumes |
+| `check_filesystem_health` | Mount status, inode usage, RAID status, SMART health across all volumes |
+| `check_volume_health` | DSM-layer RAID/volume health (synovolumestatus, synoarraystatus), mdstat, SMART |
+
+### System health
+
+| Tool | What it does |
+|---|---|
+| `check_system_info` | DSM version, NAS model, uptime, CPU, memory — baseline context |
 | `check_cpu_iowait` | CPU I/O wait percentage |
-| `check_agent_container` | Whether the monitor agent container is running |
-| `get_resource_snapshot` | Full live picture: top processes, disk I/O, connections, memory, recent errors |
 | `check_io_stalls` | Processes stuck on disk, queue depth, hung task warnings |
+| `check_memory_detail` | Full meminfo, swap activity, dirty/writeback pages, OOM kills |
+| `check_hardware_temps` | CPU/chassis temperatures, fan speeds, SMART disk temperatures |
+| `get_resource_snapshot` | Full live picture: top processes, disk I/O, connections, memory, recent errors |
+| `check_kernel_io_errors` | Kernel log for disk errors, SCSI faults, filesystem corruption |
+
+### Package and daemon internals
+
+| Tool | What it does |
+|---|---|
+| `check_packages` | All installed DSM packages, running status, recent package events |
+| `check_package_runtime` | Named package runtime state: status, PID files, lock files, matching processes |
+| `check_daemon_processes` | Key daemon state: synologand, invoked, syncd, cloud-control, syno_drive_server |
+| `inspect_package_lockfiles` | Stale lock files across all packages and runtime dirs |
+| `inspect_crash_signals` | Crash evidence: segfaults, OOM kills, core dumps, DSM error log |
+| `tail_package_logs` | Recent logs for a named package from all known log locations |
+| `search_package_logs` | Search all log files for a named package and a filter term |
+| `check_scheduled_tasks` | All DSM scheduled tasks and last run result |
+
+### Synology Drive and ShareSync
+
+| Tool | What it does |
+|---|---|
+| `check_drive_package_health` | Synology Drive package installation integrity across all volumes |
+| `check_drive_database` | Synology Drive internal database corruption check across all volumes |
 | `tail_drive_server_log` | Recent Synology Drive server log entries |
 | `search_drive_server_log` | Search Drive logs for a keyword or share name |
-| `tail_sharesync_log` | Recent ShareSync log entries |
+| `tail_sharesync_log` | Recent ShareSync log entries across all volumes |
 | `check_sharesync_status` | Stuck, conflicted, or erroring ShareSync tasks |
-| `check_kernel_io_errors` | Kernel log for disk errors, SCSI faults, filesystem corruption |
-| `check_share_database` | Shared folder list from DSM database |
-| `check_drive_package_health` | Synology Drive package installation integrity |
-| `check_drive_database` | Synology Drive internal database corruption check |
+| `find_problematic_files` | Files with names that break ShareSync (special chars, conflicts, long names) |
+
+### File and permission forensics
+
+| Tool | What it does |
+|---|---|
+| `inspect_path_metadata` | POSIX metadata for an exact path: owner, group, mode, size, inode, timestamps |
+| `inspect_path_acl` | POSIX and Synology ACL entries for an exact path (getfacl + synoacltool) |
+| `inspect_effective_permissions` | Effective access on a path with optional per-user group and share-level check |
+
+### Network
+
+| Tool | What it does |
+|---|---|
+| `check_network_health` | Interface errors/drops, routing table, DNS resolution, listening ports |
+| `check_network_connections` | Active TCP connections per process, state counts, top peers |
+| `check_tailscale` | Tailscale VPN status — interface state, IP, daemon reachability |
+| `check_active_sessions` | Currently active SMB, NFS, SSH, DSM web, and Drive sessions |
+
+### Logs and search
+
+| Tool | What it does |
+|---|---|
+| `tail_system_log` | Recent /var/log/messages — general kernel and service events |
+| `check_security_log` | Failed logins, security events, admin audit entries, SSH connections |
 | `search_webapi_log` | DSM WebAPI logs for share access and auth errors |
 | `search_all_logs` | Search every log file on the NAS for a phrase |
-| `find_problematic_files` | Files with names that break ShareSync (special chars, conflicts, long names) |
-| `check_filesystem_health` | Mount status, inode usage, RAID status, SMART health |
-| `check_scheduled_tasks` | All DSM scheduled tasks and last run result |
-| `check_backup_status` | Hyper Backup status and recent log entries |
+| `check_share_database` | Shared folder list from DSM database — failures indicate corruption |
+
+### Backup and containers
+
+| Tool | What it does |
+|---|---|
+| `check_backup_status` | Hyper Backup status and recent log entries across all volumes |
 | `check_container_io` | Docker containers doing the most disk I/O |
+| `check_agent_container` | Whether the monitor agent container is running |
 | `run_command` | Any read-only shell command (write commands are blocked by the NAS API) |
+
+Recommended starting sequence for path-sensitive incidents:
+
+1. `list_volumes`
+2. `list_shared_folders`
+3. `inspect_mounts`
+4. the specific package, log, or file diagnostic tool you actually need
 
 ## Available write tools (disabled by default)
 

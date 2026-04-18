@@ -26,6 +26,16 @@ const filter = z
   .optional()
   .describe("Search term, file path, or folder name depending on the tool.");
 
+const packageName = z
+  .string()
+  .describe(
+    "Synology package name exactly as shown by synopkg (e.g. SynologyDrive, HyperBackup, ContainerManager)."
+  );
+
+const exactPath = z
+  .string()
+  .describe("Exact absolute filesystem path to inspect (e.g. /volume1/data/folder/file.txt).");
+
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
@@ -67,11 +77,91 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
-    name: "check_disk_space",
-    description: "Shows disk usage on /volume1 — how full the NAS storage is and how much free space remains.",
+    name: "list_volumes",
+    description: "Discovers active NAS data volumes and their filesystem usage. Run this before path-sensitive diagnostics so later tools do not assume everything lives on /volume1.",
     write: false,
     params: { target },
-    buildCommand: () => "df -h /volume1",
+    buildCommand: () => [
+      "echo '=== DATA VOLUMES ==='",
+      "mount | awk '$3 ~ /^\\/volume[0-9]+$/ {printf \"%s %s %s\\n\", $3, $1, $5}' | sort -u || true",
+      "echo ''",
+      "echo '=== FILESYSTEM USAGE ==='",
+      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+      "echo ''",
+      "echo '=== BTRFS / EXT STATUS ==='",
+      "for v in /volume[0-9]*; do [ -d \"$v\" ] || continue; printf '%s\\n' \"$v\"; findmnt -no FSTYPE,SOURCE,TARGET \"$v\" 2>/dev/null || mount | awk -v vol=\"$v\" '$3==vol{print $5, $1, $3}'; done",
+    ].join("\n"),
+  },
+
+  {
+    name: "list_shared_folders",
+    description: "Lists DSM shared folders with paths, volume placement, and selected metadata. Use this to map human share names to real paths before file, permission, or sync forensics.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SYNOLOGY SHARE ENUMERATION ==='",
+      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null || echo 'synoshare --enum failed'",
+      "echo ''",
+      "echo '=== SHARE DETAILS ==='",
+      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "  [ -n \"$share\" ] || continue",
+      "  echo \"--- $share ---\"",
+      "  /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=|^vol_path=|^support_acls=|^browseable=|^readonly=|^comment=/{print}'",
+      "done",
+    ].join("\n"),
+  },
+
+  {
+    name: "inspect_mounts",
+    description: "Shows the live mount graph for data volumes, package storage, tmpfs, and bind mounts. Use when a package sees the wrong path, a share is missing, or an encrypted volume is not mounted where expected.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== FINDMNT TREE ==='",
+      "findmnt -R 2>/dev/null | head -200 || mount | head -200",
+      "echo ''",
+      "echo '=== DATA / PACKAGE MOUNTS ==='",
+      "mount | awk '$3 ~ /^\\/volume[0-9]+/ || $3 ~ /^\\/var\\/packages/ || $3 ~ /^\\/run/ || $3 ~ /^\\/tmp/ {print}' | head -200",
+      "echo ''",
+      "echo '=== BLOCK DEVICES ==='",
+      "lsblk -o NAME,FSTYPE,SIZE,MOUNTPOINT,LABEL 2>/dev/null || echo 'lsblk not available'",
+    ].join("\n"),
+  },
+
+  {
+    name: "inspect_encryption_state",
+    description: "Checks whether Synology volumes and shares appear mounted, unlocked, and writable from the host. Use this when a share disappears after reboot or a package cannot see expected data.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== VOLUME DIRECTORIES ==='",
+      "for v in /volume[0-9]*; do [ -e \"$v\" ] || continue; stat -c '%A %U:%G %n' \"$v\" 2>/dev/null || ls -ld \"$v\"; done",
+      "echo ''",
+      "echo '=== MOUNTED DATA PATHS ==='",
+      "mount | awk '$3 ~ /^\\/volume[0-9]+/ {print}' | sort -u",
+      "echo ''",
+      "echo '=== SHARE ACCESS CHECK ==='",
+      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "  [ -n \"$share\" ] || continue",
+      "  path=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}')",
+      "  [ -n \"$path\" ] || continue",
+      "  if [ -d \"$path\" ]; then printf 'OK %s %s\\n' \"$share\" \"$path\"; else printf 'MISSING %s %s\\n' \"$share\" \"$path\"; fi",
+      "done",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_disk_space",
+    description: "Shows disk usage for all active NAS data volumes and how much free space remains on each.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== DATA VOLUME USAGE ==='",
+      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/' || df -h /volume1",
+      "echo ''",
+      "echo '=== INODE USAGE ==='",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/' || df -i /volume1",
+    ].join("\n"),
   },
 
   {
@@ -181,14 +271,18 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "ps aux --sort=-%cpu | head -20",
       "echo '=== DISK IO (diskstats) ==='",
       "awk '{if (($4+$8)>0) print $3, \"reads:\", $4, \"writes:\", $8, \"inprog:\", $12}' /proc/diskstats | grep -E 'sd|md'",
-      "echo '=== OPEN FILES ON VOLUME ==='",
-      "timeout 15 lsof -n +D /volume1 2>/dev/null | awk 'NR>1{print $1,$3,$9}' | sort | uniq -c | sort -rn | head -25 || true",
+      "echo '=== OPEN FILES ON VOLUMES ==='",
+      "for v in /volume[0-9]*; do [ -d \"$v\" ] || continue; timeout 10 lsof -n +D \"$v\" 2>/dev/null | awk 'NR>1{print $1,$3,$9}' | sort | uniq -c | sort -rn | head -15 && break; done || true",
       "echo '=== SMB SESSIONS ==='",
       "timeout 8 smbstatus -S 2>/dev/null | head -30 || ss -tnp 'sport = :445' 2>/dev/null | head -20 || echo 'SMB status unavailable'",
       "echo '=== NETWORK TOP PEERS ==='",
       "ss -tn state established 2>/dev/null | awk 'NR>1{split($5,a,\":\"); print a[1]}' | sort | uniq -c | sort -rn | head -20",
       "echo '=== SHARESYNC TASKS ==='",
-      "for f in /volume1/*/@synologydrive/log/syncfolder.log /volume1/@SynologyDriveShareSync/*/log/syncfolder.log; do [ -f \"$f\" ] || continue; echo \"=== $f ===\"; tail -40 \"$f\"; done 2>/dev/null || true",
+      "for v in /volume[0-9]*; do",
+      "  for f in \"$v\"/*/@synologydrive/log/syncfolder.log \"$v\"/@SynologyDriveShareSync/*/log/syncfolder.log; do",
+      "    [ -f \"$f\" ] || continue; echo \"=== $f ===\"; tail -20 \"$f\"",
+      "  done",
+      "done 2>/dev/null || true",
       "echo '=== MEMORY PRESSURE ==='",
       "free -h",
       "grep -E 'MemAvail|Dirty|Writeback|SwapTotal|SwapFree' /proc/meminfo",
@@ -425,23 +519,44 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "tail_sharesync_log",
-    description: "Shows the most recent ShareSync log entries — what files are being synced and any sync errors.",
+    description: "Shows the most recent ShareSync log entries — what files are being synced and any sync errors. Searches across all data volumes.",
     write: false,
     params: { target, lookback_hours: lookbackHours },
     buildCommand: (input) => {
       const lines = clamp((input.lookback_hours as number ?? 2) * 30, 40, 240);
-      return `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "$f"; tail -n ${lines} "$f"; done`;
+      return [
+        "echo '=== SHARESYNC LOGS (all volumes) ==='",
+        "for v in /volume[0-9]*; do",
+        `  for f in "$v"/*/@synologydrive/log/syncfolder.log "$v"/@SynologyDriveShareSync/*/log/syncfolder.log; do`,
+        `    [ -f "$f" ] || continue`,
+        `    echo "=== $f ==="`,
+        `    tail -n ${lines} "$f"`,
+        "  done",
+        "done 2>/dev/null || echo 'No ShareSync logs found on any volume'",
+      ].join("\n");
     },
   },
 
   {
     name: "check_sharesync_status",
-    description: "Looks specifically for stuck, conflicted, or erroring ShareSync tasks in the recent logs.",
+    description: "Looks specifically for stuck, conflicted, or erroring ShareSync tasks in the recent logs. Searches across all data volumes.",
     write: false,
     params: { target, lookback_hours: lookbackHours },
     buildCommand: (input) => {
       const lines = clamp((input.lookback_hours as number ?? 2) * 40, 60, 200);
-      return `for f in /volume1/*/@synologydrive/log/syncfolder.log; do [ -f "$f" ] || continue; echo "=== $f ==="; tail -n ${lines} "$f"; done | grep -A2 -B2 -i "syncing\\|stuck\\|error\\|conflict" || echo "No issues found in recent logs"`;
+      return [
+        "echo '=== SHARESYNC STATUS (all volumes) ==='",
+        "found=0",
+        "for v in /volume[0-9]*; do",
+        `  for f in "$v"/*/@synologydrive/log/syncfolder.log "$v"/@SynologyDriveShareSync/*/log/syncfolder.log; do`,
+        `    [ -f "$f" ] || continue`,
+        "    found=1",
+        `    echo "=== $f ==="`,
+        `    tail -n ${lines} "$f" | grep -A2 -B2 -i 'syncing\\|stuck\\|error\\|conflict' || echo 'No issues in recent entries'`,
+        "  done",
+        "done 2>/dev/null",
+        `[ "$found" -eq 0 ] && echo 'No ShareSync logs found on any volume'`,
+      ].join("\n");
     },
   },
 
@@ -478,7 +593,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_drive_package_health",
-    description: "Checks whether the Synology Drive package is properly installed — its status, version, internal database files, and log locations. Detects broken installations.",
+    description: "Checks whether the Synology Drive package is properly installed — its status, version, internal database files, and log locations. Detects broken installations. Searches across all data volumes.",
     write: false,
     params: { target },
     buildCommand: () => [
@@ -489,9 +604,15 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo '=== DRIVE VERSION ==='",
       "/host/usr/syno/bin/synopkg version SynologyDrive 2>&1",
       "echo ''",
-      "echo '=== DRIVE DATABASE FILES ==='",
-      "find /volume1/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -20",
-      "ls -lh /volume1/@synologydrive/db/ 2>/dev/null || echo 'No Drive DB directory'",
+      "echo '=== DRIVE DATA DIR (all volumes) ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v/@synologydrive\" ] || continue",
+      "  echo \"Found: $v/@synologydrive\"",
+      "  ls -lh \"$v/@synologydrive/\" 2>/dev/null | head -10",
+      "done 2>/dev/null || echo 'No @synologydrive dir found on any volume'",
+      "echo ''",
+      "echo '=== DRIVE DATABASE FILES (all volumes) ==='",
+      "find /volume[0-9]*/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -20",
       "echo ''",
       "echo '=== RECENT DRIVE PACKAGE LOG ==='",
       "grep -i 'synologydrive\\|SynologyDrive' /host/log/synolog/synopkg.log 2>/dev/null | tail -20 || echo 'Package log not found'",
@@ -500,18 +621,18 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_drive_database",
-    description: "Checks Synology Drive's internal SQLite databases for corruption. Database corruption causes persistent sync failures that won't resolve on their own.",
+    description: "Checks Synology Drive's internal SQLite databases for corruption. Database corruption causes persistent sync failures that won't resolve on their own. Searches across all data volumes.",
     write: false,
     params: { target },
     buildCommand: () => [
-      "echo '=== DRIVE DATABASE FILES ==='",
-      `find /volume1/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -10`,
+      "echo '=== DRIVE DATABASE FILES (all volumes) ==='",
+      "find /volume[0-9]*/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -10",
       "echo ''",
       "echo '=== INTEGRITY CHECK (first 3 DBs) ==='",
-      `find /volume1/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -3 | while read db; do echo "--- $db ---"; timeout 10 sqlite3 "$db" 'PRAGMA integrity_check;' 2>&1 | head -5 || echo 'timeout or error'; done`,
+      "find /volume[0-9]*/@synologydrive/ -maxdepth 3 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -3 | while read db; do echo \"--- $db ---\"; timeout 10 sqlite3 \"$db\" 'PRAGMA integrity_check;' 2>&1 | head -5 || echo 'timeout or error'; done",
       "echo ''",
       "echo '=== MAIN DRIVE DB TABLES ==='",
-      `maindb=$(find /volume1/@synologydrive/ -maxdepth 3 \\( -name 'synodrive.db' -o -name 'sync.db' \\) 2>/dev/null | head -1); [ -n "$maindb" ] && echo "DB: $maindb" && timeout 10 sqlite3 "$maindb" '.tables' 2>&1 | head -20 || echo 'Main Drive DB not found'`,
+      "maindb=$(find /volume[0-9]*/@synologydrive/ -maxdepth 3 \\( -name 'synodrive.db' -o -name 'sync.db' \\) 2>/dev/null | head -1); [ -n \"$maindb\" ] && echo \"DB: $maindb\" && timeout 10 sqlite3 \"$maindb\" '.tables' 2>&1 | head -20 || echo 'Main Drive DB not found'",
     ].join("\n"),
   },
 
@@ -576,18 +697,23 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_filesystem_health",
-    description: "Checks filesystem mount status, inode usage, RAID status, and SMART disk health. Run when you suspect hardware problems or filesystem corruption.",
+    description: "Checks filesystem mount status, inode usage, RAID status, and SMART disk health across all active volumes.",
     write: false,
     params: { target },
     buildCommand: () => [
       "echo '=== MOUNT STATUS ==='",
-      "mount | grep volume",
+      "mount | grep -E '/volume[0-9]+'",
       "echo ''",
-      "echo '=== INODE USAGE ==='",
-      "df -i /volume1",
+      "echo '=== INODE USAGE (all volumes) ==='",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
       "echo ''",
-      "echo '=== FILESYSTEM TYPE ==='",
-      "tune2fs -l $(mount | grep '/volume1 ' | awk '{print $1}') 2>/dev/null | grep -iE 'filesystem|mount count|error|state|journal' || btrfs filesystem show /volume1 2>/dev/null || echo 'Could not determine filesystem details'",
+      "echo '=== FILESYSTEM DETAIL (all volumes) ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v\" ] || continue",
+      "  echo \"--- $v ---\"",
+      "  src=$(mount | awk -v vol=\"$v\" '$3==vol{print $1}' | head -1)",
+      "  [ -n \"$src\" ] && (tune2fs -l \"$src\" 2>/dev/null | grep -iE 'filesystem|mount count|error|state|journal' || btrfs filesystem show \"$v\" 2>/dev/null | head -5) || echo 'Could not determine filesystem details'",
+      "done",
       "echo ''",
       "echo '=== SMART STATUS ==='",
       "for d in /dev/sd?; do [ -b \"$d\" ] || continue; echo \"--- $d ---\"; smartctl -H \"$d\" 2>/dev/null | grep -E 'result|Status'; smartctl -A \"$d\" 2>/dev/null | grep -E 'Reallocated|Current_Pending|Offline_Uncorrectable|Temperature'; done 2>/dev/null || echo 'smartctl not available'",
@@ -620,7 +746,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_backup_status",
-    description: "Checks Hyper Backup package status, lists backup tasks, and shows recent backup log entries — especially errors, failures, and destination connectivity issues.",
+    description: "Checks Hyper Backup package status, lists backup tasks, and shows recent backup log entries — especially errors, failures, and destination connectivity issues. Searches across all volumes.",
     write: false,
     params: { target, lookback_hours: lookbackHours },
     buildCommand: (input) => {
@@ -635,8 +761,8 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "echo '=== RECENT BACKUP LOG ==='",
         `grep -iE 'error|fail|warn|complete|success|abort|destination' /host/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /host/log/synolog/synobackup.log 2>/dev/null || echo 'Backup log not found'`,
         "echo ''",
-        "echo '=== BACKUP DESTINATION ==='",
-        "ls /volume1/@SynologyHyperBackup* 2>/dev/null || echo 'No HyperBackup vault found on volume1'",
+        "echo '=== BACKUP VAULT LOCATIONS (all volumes) ==='",
+        "for v in /volume[0-9]*; do ls -d \"$v\"/@SynologyHyperBackup* 2>/dev/null && printf '  (on %s)\\n' \"$v\"; done || echo 'No HyperBackup vault found on any volume'",
       ].join("\n");
     },
   },
@@ -660,6 +786,233 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo '=== DOCKER STATS SNAPSHOT ==='",
       "docker stats --no-stream --format 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.BlockIO}}\\t{{.NetIO}}' 2>/dev/null | head -25 || echo 'docker stats unavailable'",
     ].join("\n"),
+  },
+
+  // ── Phase 1B: Package and daemon internals ────────────────────────────────────
+
+  {
+    name: "check_package_runtime",
+    description: "Checks a DSM package's runtime state: synopkg status, enabled flag, var directory contents, PID files, lock files, and matching processes. Pass the package name exactly as shown by synopkg (e.g. SynologyDrive, HyperBackup).",
+    write: false,
+    params: { target, package_name: packageName },
+    buildCommand: (input) => {
+      const pkg = (input.package_name as string).trim();
+      return [
+        `echo '=== PACKAGE STATUS: ${pkg} ==='`,
+        `/host/usr/syno/bin/synopkg status ${quote(pkg)} 2>&1`,
+        "echo ''",
+        "echo '=== ENABLED STATE ==='",
+        `cat /host/var/packages/${quote(pkg)}/enabled 2>/dev/null || echo 'enabled file not found'`,
+        "echo ''",
+        "echo '=== VAR DIRECTORY ==='",
+        `ls -lh /host/var/packages/${quote(pkg)}/var/ 2>/dev/null | head -20 || echo 'var dir not found'`,
+        "echo ''",
+        "echo '=== PID FILES ==='",
+        `find /host/var/packages/${quote(pkg)}/ -name '*.pid' -o -name 'pid' 2>/dev/null | while read -r pidfile; do echo "$pidfile:"; cat "$pidfile" 2>/dev/null; done || echo 'No PID files found'`,
+        "echo ''",
+        "echo '=== LOCK FILES ==='",
+        `find /host/var/packages/${quote(pkg)}/ \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -10 || echo 'No lock files'`,
+        "echo ''",
+        "echo '=== MATCHING PROCESSES ==='",
+        `ps aux | grep -i ${quote(pkg.toLowerCase())} | grep -v grep | head -20 || echo 'No matching processes'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "check_daemon_processes",
+    description: "Shows process state and resource usage for key Synology daemons: synologand, invoked, syncd, cloud-control, syno_drive_server, synoindex, and crond. Use to identify a crashed or resource-heavy daemon.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== KEY SYNOLOGY DAEMON PROCESSES ==='",
+      "ps aux | awk 'NR==1 || /synologand|invoked|syncd|cloud.control|syno_drive|synobackupd|synoindex|crond|syno_pkg_daemon|synoscheduler/' | head -40",
+      "echo ''",
+      "echo '=== DAEMON PROCESS COUNTS ==='",
+      "for daemon in synologand invoked syncd syno_drive_server synoindex crond synobackupd; do",
+      "  count=$(pgrep -c \"$daemon\" 2>/dev/null || echo 0)",
+      "  printf '%-30s count=%s\\n' \"$daemon\" \"$count\"",
+      "done",
+      "echo ''",
+      "echo '=== RECENT DAEMON EVENTS (syslog) ==='",
+      "grep -iE 'synologand|invoked|syncd|syno_drive' /host/log/messages 2>/dev/null | tail -30 || grep -iE 'synologand|invoked' /host/log/syslog 2>/dev/null | tail -30 || echo 'No daemon events in syslog'",
+      "echo ''",
+      "echo '=== D-STATE PROCESSES (blocked on I/O) ==='",
+      "ps aux | awk '$8 ~ /D/ {print}' | head -20 || echo 'No D-state processes'",
+    ].join("\n"),
+  },
+
+  {
+    name: "inspect_package_lockfiles",
+    description: "Finds and shows lock files across all installed packages and common Synology runtime dirs. Stale lock files prevent packages from starting or block maintenance tasks from running.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== LOCK FILES UNDER /var/packages ==='",
+      "find /host/var/packages/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | while read -r lf; do",
+      "  printf '%s (mtime: %s)\\n' \"$lf\" \"$(stat -c '%y' \"$lf\" 2>/dev/null)\"",
+      "done | head -40 || echo 'No lock files found under /var/packages'",
+      "echo ''",
+      "echo '=== LOCK FILES UNDER /tmp ==='",
+      "find /tmp -maxdepth 3 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -20 || echo 'No lock files in /tmp'",
+      "echo ''",
+      "echo '=== RUNTIME LOCK AND PID FILES ==='",
+      "find /run /var/run -maxdepth 4 \\( -name '*.lock' -o -name '*.pid' \\) 2>/dev/null | head -30 || echo 'No lock/pid files in /run'",
+    ].join("\n"),
+  },
+
+  {
+    name: "inspect_crash_signals",
+    description: "Looks for crash evidence in dmesg, syslog, and package log dirs: segfaults, killed signals, OOM kills, and DSM error service events. Use after a package disappears or becomes unresponsive without obvious cause.",
+    write: false,
+    params: { target, lookback_hours: lookbackHours },
+    buildCommand: (input) => {
+      const lines = clamp((input.lookback_hours as number ?? 4) * 20, 40, 200);
+      return [
+        "echo '=== KERNEL CRASH SIGNALS (dmesg) ==='",
+        `dmesg -T 2>/dev/null | grep -iE 'segfault|general protection|killed process|oom|soft lockup|rcu stall|kernel panic|BUG:|Oops:' | tail -${lines} || dmesg | grep -iE 'segfault|killed|oom|panic' | tail -${lines}`,
+        "echo ''",
+        "echo '=== PROCESS KILLS / SIGNALS (syslog) ==='",
+        `grep -iE 'killed|segfault|core dumped|out of memory' /host/log/messages 2>/dev/null | tail -${lines} || grep -iE 'killed|segfault|oom' /host/log/syslog 2>/dev/null | tail -${lines} || echo 'No crash signals in syslog'`,
+        "echo ''",
+        "echo '=== DSM ERROR SERVICE LOG ==='",
+        `tail -${lines} /host/log/synolog/synoerr.log 2>/dev/null || echo 'synoerr.log not found'`,
+        "echo ''",
+        "echo '=== CORE DUMPS ==='",
+        "find /tmp /var/crash 2>/dev/null -maxdepth 3 \\( -name 'core*' -o -name '*.core' \\) 2>/dev/null | head -10",
+        "for v in /volume[0-9]*; do find \"$v/crash\" -maxdepth 2 2>/dev/null \\( -name 'core*' -o -name '*.core' \\) | head -5; done 2>/dev/null || echo 'No core dumps found'",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "tail_package_logs",
+    description: "Shows recent log entries for a specific DSM package. Checks the standard log locations under /var/packages and /var/log/synolog. Pass the package name exactly as shown by synopkg (e.g. SynologyDrive, HyperBackup).",
+    write: false,
+    params: { target, package_name: packageName, lookback_hours: lookbackHours },
+    buildCommand: (input) => {
+      const pkg = (input.package_name as string).trim();
+      const lines = clamp((input.lookback_hours as number ?? 2) * 40, 40, 400);
+      const pkgLower = pkg.toLowerCase();
+      return [
+        `echo '=== PACKAGE LOGS: ${pkg} ==='`,
+        "echo ''",
+        "echo '--- /var/packages log dir ---'",
+        `for f in /host/var/packages/${quote(pkg)}/var/log/*.log; do`,
+        `  [ -f "$f" ] || continue`,
+        `  echo "=== $f ==="`,
+        `  tail -n ${lines} "$f"`,
+        `done 2>/dev/null || echo 'No logs in /host/var/packages/${pkg}/var/log/'`,
+        "echo ''",
+        "echo '--- /var/log/synolog ---'",
+        `for f in /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log; do`,
+        `  [ -f "$f" ] || continue`,
+        `  echo "=== $f ==="`,
+        `  tail -n ${lines} "$f"`,
+        `done 2>/dev/null || true`,
+        "echo ''",
+        "echo '--- synopkg.log (package install/start/stop events) ---'",
+        `grep -i ${quote(pkg)} /host/log/synolog/synopkg.log 2>/dev/null | tail -${lines} || echo 'No entries in synopkg.log for ${pkg}'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "search_package_logs",
+    description: "Searches all known log locations for a specific DSM package and filter term. Checks /var/packages log dirs and /var/log/synolog for the package. Pass the package name and a search term in filter.",
+    write: false,
+    params: { target, package_name: packageName, lookback_hours: lookbackHours, filter },
+    buildCommand: (input) => {
+      const pkg = (input.package_name as string).trim();
+      const f = (input.filter as string | undefined)?.trim() || "error";
+      const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 400);
+      const pkgLower = pkg.toLowerCase();
+      return [
+        `echo '=== SEARCHING ${pkg} LOGS FOR: ${f} ==='`,
+        `for logf in /host/var/packages/${quote(pkg)}/var/log/*.log /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log /host/log/synolog/synopkg.log; do`,
+        `  [ -f "$logf" ] || continue`,
+        `  matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
+        `  [ "$matches" -gt 0 ] 2>/dev/null || continue`,
+        `  echo "=== $logf ($matches matches) ==="`,
+        `  grep -i ${quote(f)} "$logf" 2>/dev/null | tail -${lines}`,
+        `  echo ''`,
+        `done || echo 'No matching log files found for ${pkg}'`,
+      ].join("\n");
+    },
+  },
+
+  // ── Phase 1E: File and permission forensics (read) ────────────────────────────
+
+  {
+    name: "inspect_path_metadata",
+    description: "Shows POSIX metadata for an exact filesystem path: owner, group, permissions, size, inode, link count, and timestamps. Required first step before any permission or ACL forensics. Requires exact_path.",
+    write: false,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      return [
+        "echo '=== PATH METADATA ==='",
+        `stat ${quote(p)} 2>&1`,
+        "echo ''",
+        "echo '=== LONG LISTING ==='",
+        `ls -la ${quote(p)} 2>&1`,
+        "echo ''",
+        "echo '=== PARENT DIRECTORY ==='",
+        `ls -la "$(dirname ${quote(p)})" 2>&1 | head -30`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "inspect_path_acl",
+    description: "Shows the POSIX and Synology ACL entries for an exact filesystem path. Reveals which users and groups have explicit ACL permissions beyond standard POSIX mode. Requires exact_path.",
+    write: false,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      return [
+        "echo '=== POSIX MODE ==='",
+        `stat -c 'mode=%A owner=%U:%G size=%s inode=%i' ${quote(p)} 2>&1`,
+        "echo ''",
+        "echo '=== POSIX ACL (getfacl) ==='",
+        `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available or path not found'`,
+        "echo ''",
+        "echo '=== SYNOLOGY ACL (synoacltool) ==='",
+        `/host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "inspect_effective_permissions",
+    description: "Shows the effective access on a path: POSIX mode, ACL entries, and optionally the group memberships and share-level access for a specific user. Requires exact_path. Pass a username in filter to check user-specific access.",
+    write: false,
+    params: { target, exact_path: exactPath, filter },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const username = (input.filter as string | undefined)?.trim() || "";
+      const lines = [
+        "echo '=== PATH PERMISSIONS ==='",
+        `stat -c 'mode=%A owner=%U:%G inode=%i' ${quote(p)} 2>&1`,
+        "echo ''",
+        "echo '=== ACL ==='",
+        `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available'`,
+        "echo ''",
+        "echo '=== SYNOLOGY ACL (synoacltool) ==='",
+        `/host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+      ];
+      if (username) {
+        lines.push(
+          "echo ''",
+          `echo '=== USER ${username} GROUP MEMBERSHIPS ==='`,
+          `id ${quote(username)} 2>&1 || echo 'User not found'`,
+          "echo ''",
+          `echo '=== SHARE-LEVEL ACCESS FOR ${username} ==='`,
+          `/host/usr/syno/sbin/synoshare --list-user-access ${quote(username)} 2>/dev/null || echo 'synoshare --list-user-access not available on this DSM version'`,
+        );
+      }
+      return lines.join("\n");
+    },
   },
 
   // ── Write tools ───────────────────────────────────────────────────────────────
