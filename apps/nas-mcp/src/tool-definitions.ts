@@ -1726,6 +1726,162 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     ].join("\n"),
   },
 
+  // ── Phase 3: Recovery and restoration (read) ─────────────────────────────────
+
+  {
+    name: "list_snapshot_candidates",
+    description: "Lists available Btrfs snapshots on all volumes that could be used for path recovery. Shows snapshot names, creation times. Optionally pass a name fragment in filter to narrow results.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const nameFilter = (input.filter as string | undefined)?.trim();
+      return [
+        "echo '=== BTRFS SUBVOLUME SNAPSHOTS (all volumes) ==='",
+        "for v in /volume[0-9]*; do",
+        "  [ -d \"$v\" ] || continue",
+        "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+        "  [ \"$fstype\" = 'btrfs' ] || continue",
+        "  echo \"--- $v ---\"",
+        "  btrfs subvolume list -s \"$v\" 2>&1 | head -30",
+        "  echo ''",
+        "done 2>/dev/null || echo 'btrfs not available or no btrfs volumes'",
+        "echo ''",
+        "echo '=== @Recently-Snapshot DIRS ==='",
+        "for v in /volume[0-9]*; do",
+        "  [ -d \"$v/@Recently-Snapshot\" ] || continue",
+        "  echo \"--- $v/@Recently-Snapshot ---\"",
+        "  ls -lt \"$v/@Recently-Snapshot/\" 2>/dev/null | head -20",
+        "  echo ''",
+        "done 2>/dev/null || echo 'No @Recently-Snapshot directories found'",
+        "echo ''",
+        "echo '=== @prechange SNAPSHOTS ==='",
+        "for v in /volume[0-9]*; do",
+        nameFilter
+          ? `  ls -dt "$v"/@prechange_* "$v"/@*${nameFilter}* 2>/dev/null | head -10`
+          : `  ls -dt "$v"/@prechange_* 2>/dev/null | head -10`,
+        "done 2>/dev/null || echo 'No @prechange snapshots found'",
+        "echo ''",
+        "echo '=== BTRFS SNAPSHOT SIZES ==='",
+        "for v in /volume[0-9]*; do",
+        "  [ -d \"$v\" ] || continue",
+        "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+        "  [ \"$fstype\" = 'btrfs' ] || continue",
+        "  btrfs subvolume list -s \"$v\" 2>/dev/null | awk '{print $NF}' | while read -r rel; do",
+        "    path=\"$v/$rel\"",
+        "    [ -d \"$path\" ] && printf '%s\\t%s\\n' \"$(du -sh \"$path\" 2>/dev/null | awk '{print $1}')\" \"$path\"",
+        "  done | head -20",
+        "done 2>/dev/null || true",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "list_drive_version_history",
+    description: "Queries the Synology Drive SQLite database for version history of a specific file. Requires exact_path. Shows available version tables and attempts to list versions by filename.",
+    write: false,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      // Escape single quotes for SQL LIKE — double them
+      const sqlSafeName = p.replace(/'/g, "''");
+      return [
+        `echo '=== DRIVE VERSION HISTORY FOR: ${p} ==='`,
+        `maindb=$(find /volume[0-9]*/@synologydrive/ -maxdepth 5 \\( -name 'synodrive.db' -o -name 'sync.db' -o -name 'metadata.db' \\) 2>/dev/null | head -1)`,
+        `if [ -z "$maindb" ]; then echo 'Drive database not found on any volume'; exit 0; fi`,
+        `echo "DB: $maindb"`,
+        `echo ''`,
+        `echo '=== DB TABLES ==='`,
+        `timeout 5 sqlite3 "$maindb" '.tables' 2>&1`,
+        `echo ''`,
+        `echo '=== VERSION/HISTORY SEARCH ==='`,
+        `for tbl in file_version version file_history; do`,
+        `  count=$(timeout 3 sqlite3 "$maindb" "SELECT count(*) FROM $tbl;" 2>/dev/null)`,
+        `  [ -n "$count" ] && [ "$count" -gt 0 ] 2>/dev/null || continue`,
+        `  echo "--- table: $tbl (\${count} rows) ---"`,
+        `  timeout 10 sqlite3 "$maindb" "SELECT * FROM $tbl WHERE path LIKE '%${sqlSafeName}%' OR name LIKE '%$(basename "${sqlSafeName}")%' ORDER BY rowid DESC LIMIT 20;" 2>/dev/null`,
+        `  echo ''`,
+        `done`,
+        `echo ''`,
+        `echo '=== SCHEMA FOR DETECTED TABLES ==='`,
+        `for tbl in file_version version file_history; do`,
+        `  schema=$(timeout 3 sqlite3 "$maindb" ".schema $tbl" 2>/dev/null)`,
+        `  [ -n "$schema" ] && echo "--- $tbl ---" && echo "$schema" && echo ''`,
+        `done`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "inspect_recycle_bin",
+    description: "Lists contents of the Synology recycle bin across all volumes and shares. Pass a filename or path fragment in filter to search for a specific file. Shows timestamps, sizes, and full paths.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const searchTerm = (input.filter as string | undefined)?.trim();
+      const findFilter = searchTerm
+        ? `-name ${quote("*" + searchTerm + "*")}`
+        : "-maxdepth 3";
+      return [
+        "echo '=== VOLUME-LEVEL RECYCLE BIN ==='",
+        "for v in /volume[0-9]*; do",
+        "  for rb in \"$v\"/@Recycle \"$v\"/@recycle; do",
+        "    [ -d \"$rb\" ] || continue",
+        "    echo \"--- $rb ---\"",
+        `    find "$rb" ${findFilter} -type f 2>/dev/null | while read -r f; do stat -c '%y %s %n' "$f" 2>/dev/null; done | sort -r | head -20`,
+        "    echo ''",
+        "  done",
+        "done 2>/dev/null || echo 'No volume-level recycle bins found'",
+        "echo ''",
+        "echo '=== PER-SHARE RECYCLE BIN (#recycle) ==='",
+        "for v in /volume[0-9]*; do",
+        "  for share in \"$v\"/*/; do",
+        "    [ -d \"${share}#recycle\" ] || continue",
+        "    echo \"--- ${share}#recycle ---\"",
+        `    find "\${share}#recycle" ${findFilter} -type f 2>/dev/null | while read -r f; do stat -c '%y %s %n' "$f" 2>/dev/null; done | sort -r | head -10`,
+        "    echo ''",
+        "  done",
+        "done 2>/dev/null || echo 'No per-share recycle bins found'",
+      ].join("\n");
+    },
+  },
+
+  // ── Phase 4: Long-running task progress (read) ────────────────────────────────
+
+  {
+    name: "check_smart_test_progress",
+    description: "Shows the current progress, remaining time, and recent log of active SMART self-tests. Pass a device in filter (e.g. /dev/sda) to check a specific disk, or leave empty to check all disks.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const device = (input.filter as string | undefined)?.trim();
+      if (device) {
+        return [
+          `echo '=== SMART TEST PROGRESS: ${device} ==='`,
+          `smartctl -a ${quote(device)} 2>&1 | grep -E 'Self-test execution|remaining|progress|completed|# 1|LBA'`,
+          `echo ''`,
+          `echo '=== SELF-TEST LOG ==='`,
+          `smartctl -l selftest ${quote(device)} 2>&1 | head -15`,
+        ].join("\n");
+      }
+      return [
+        "echo '=== SMART TEST PROGRESS (all disks) ==='",
+        "for d in /dev/sd?; do",
+        "  [ -b \"$d\" ] || continue",
+        "  status=$(smartctl -a \"$d\" 2>/dev/null | grep -E 'Self-test execution status|remaining' | head -2)",
+        "  [ -n \"$status\" ] && echo \"$d:\" && echo \"  $status\"",
+        "done 2>/dev/null || echo 'smartctl not available'",
+        "echo ''",
+        "echo '=== RECENT SELF-TEST LOG (all disks) ==='",
+        "for d in /dev/sd?; do",
+        "  [ -b \"$d\" ] || continue",
+        "  echo \"--- $d ---\"",
+        "  smartctl -l selftest \"$d\" 2>/dev/null | head -8",
+        "  echo ''",
+        "done 2>/dev/null || true",
+      ].join("\n");
+    },
+  },
+
   // ── Write tools ───────────────────────────────────────────────────────────────
 
   {
@@ -2037,136 +2193,253 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (!/^[012]$/.test(value)) throw new Error("persist_vm_overcommit_memory: value must be 0, 1, or 2.");
       return [
         `echo '=== CURRENT vm.overcommit_memory ENTRIES IN sysctl.conf ==='`,
-        `grep -n 'vm.overcommit' /host/etc/sysctl.conf 2>/dev/null || echo '(no existing vm.overcommit entries)'`,
-        `echo ''`,
-        `echo '=== WRITING PERSISTENT ENTRY ==='`,
-        `grep -v 'vm.overcommit_memory' /host/etc/sysctl.conf 2>/dev/null > /tmp/sysctl_tmp && echo 'vm.overcommit_memory = ${value}' >> /tmp/sysctl_tmp && cp /tmp/sysctl_tmp /host/etc/sysctl.conf && echo 'Written successfully' || echo 'Failed to update /host/etc/sysctl.conf'`,
-        `echo ''`,
-        `echo '=== VERIFY ==='`,
-        `grep 'vm.overcommit_memory' /host/etc/sysctl.conf 2>&1`,
+        `grep -n 'vm.overcommit_memory' /host/etc/sysctl.conf 2>/dev/null || echo '(none found)'`,
+        `echo '=== WRITING SETTING ==='`,
+        `sed -i '/vm\\.overcommit_memory/d' /host/etc/sysctl.conf 2>&1`,
+        `echo "vm.overcommit_memory=${value}" >> /host/etc/sysctl.conf`,
+        `echo '=== VERIFY (sysctl.conf) ==='`,
+        `grep 'vm.overcommit_memory' /host/etc/sysctl.conf`,
+        `echo '=== VERIFY (live kernel) ==='`,
+        `sysctl vm.overcommit_memory 2>&1`,
       ].join("\n");
     },
   },
 
   {
     name: "clear_package_lockfiles",
-    description: "WRITE — Removes stale lock files for a specific named package that are preventing it from starting. Always run inspect_package_lockfiles first to confirm the files are stale. Requires package_name.",
+    description: "WRITE — Removes stale lock files for a named DSM package that are preventing it from starting or updating. Pass the package name in filter (e.g. 'SynologyDrive'). Lists all lock files found before removing them.",
     write: true,
-    params: { target, package_name: packageName },
+    params: { target, filter },
     buildCommand: (input) => {
-      const pkg = (input.package_name as string).trim();
+      const pkg = (input.filter as string | undefined)?.trim();
+      if (!pkg) throw new Error("clear_package_lockfiles: filter must be a package name (e.g. 'SynologyDrive').");
+      if (!/^[A-Za-z0-9_\-]+$/.test(pkg)) throw new Error("clear_package_lockfiles: invalid package name.");
+      const q = quote(pkg);
       return [
-        `echo '=== LOCK FILES FOR: ${pkg} ==='`,
-        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | while read -r lf; do`,
-        `  printf '%s (mtime: %s)\\n' "$lf" "$(stat -c '%y' "$lf" 2>/dev/null)"`,
-        `done | head -20 || echo 'No lock files found for ${pkg}'`,
-        `echo ''`,
+        `echo '=== LOCK FILES FOUND ==='`,
+        `find /host/var/packages/${q} /host/tmp /host/run -name '*.lock' -o -name '*.pid' 2>/dev/null | head -40`,
         `echo '=== REMOVING LOCK FILES ==='`,
-        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | while read -r lf; do`,
-        `  echo "Removing: $lf"`,
-        `  rm -f "$lf" && echo '  OK' || echo '  FAILED'`,
-        `done`,
-        `echo ''`,
-        `echo '=== VERIFY (should be empty) ==='`,
-        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -10 || echo 'No lock files remaining for ${pkg}'`,
+        `find /host/var/packages/${q} /host/tmp /host/run -name '*.lock' 2>/dev/null -exec rm -v {} \\;`,
+        `echo '=== DONE ==='`,
       ].join("\n");
     },
   },
 
   {
     name: "repair_drive_db_permissions",
-    description: "WRITE — Fixes ownership and permissions on Synology Drive data and database directories. Use when Drive fails to start due to permission errors on its @synologydrive directories.",
+    description: "WRITE — Fixes ownership and permissions on @synologydrive database directories across all volumes. Useful when Synology Drive fails to start due to permission errors on its database files.",
     write: true,
     params: { target },
-    buildCommand: () => [
-      "echo '=== CURRENT PERMISSIONS ON @synologydrive DIRS ==='",
-      "for v in /volume[0-9]*; do",
-      "  [ -d \"$v/@synologydrive\" ] || continue",
-      "  echo \"--- $v/@synologydrive ---\"",
-      "  stat -c '%A %U:%G %n' \"$v/@synologydrive\" 2>/dev/null",
-      "  ls -la \"$v/@synologydrive/\" 2>/dev/null | head -10",
-      "done 2>/dev/null || echo 'No @synologydrive dirs found'",
-      "echo ''",
-      "echo '=== REPAIRING PERMISSIONS ==='",
-      "for v in /volume[0-9]*; do",
-      "  [ -d \"$v/@synologydrive\" ] || continue",
-      "  echo \"Fixing $v/@synologydrive\"",
-      "  chown -R SynologyDrive:SynologyDrive \"$v/@synologydrive\" 2>/dev/null && echo '  chown SynologyDrive:SynologyDrive OK' || (chown -R root:root \"$v/@synologydrive\" 2>/dev/null && echo '  chown root:root OK (SynologyDrive user not found)')",
-      "  chmod 700 \"$v/@synologydrive\" 2>/dev/null && echo '  chmod 700 OK'",
-      "done 2>/dev/null",
-      "echo ''",
-      "echo '=== VERIFY ==='",
-      "for v in /volume[0-9]*; do [ -d \"$v/@synologydrive\" ] && stat -c '%A %U:%G %n' \"$v/@synologydrive\" 2>/dev/null; done 2>/dev/null || echo 'No @synologydrive dirs found'",
-    ].join("\n"),
+    buildCommand: (_input) => {
+      return [
+        `echo '=== SYNOLOGYDRIVE DIRS ==='`,
+        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null`,
+        `echo '=== REPAIRING OWNERSHIP ==='`,
+        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null | while read d; do`,
+        `  echo "chown -R SynologyDrive:SynologyDrive $d"`,
+        `  chown -R SynologyDrive:SynologyDrive "$d" 2>&1 && echo "OK: $d" || echo "FAILED: $d"`,
+        `done`,
+        `echo '=== VERIFY ==='`,
+        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null | xargs -I{} stat --format='%U:%G %a %n' {} 2>/dev/null`,
+      ].join("\n");
+    },
   },
 
   {
     name: "quarantine_path",
-    description: "WRITE — Renames an exact path to {path}.quarantine.{timestamp}, isolating it from active use without deleting it. Use to remove a problematic file from sync or service access before further investigation. Requires exact_path.",
+    description: "WRITE — Renames an exact path by appending .quarantine.{timestamp} to isolate a problematic file or directory without deleting it. Pass the exact absolute path in filter.",
     write: true,
-    params: { target, exact_path: exactPath },
+    params: { target, filter },
     buildCommand: (input) => {
-      const p = (input.exact_path as string).trim();
-      if (!p) throw new Error("quarantine_path requires exact_path.");
+      const p = (input.filter as string | undefined)?.trim();
+      if (!p) throw new Error("quarantine_path: filter must be an absolute path.");
+      if (!p.startsWith("/")) throw new Error("quarantine_path: path must be absolute.");
+      const q = quote(p);
       return [
-        `echo '=== QUARANTINE TARGET ==='`,
-        `stat ${quote(p)} 2>&1 || { echo 'Path not found: ${p}'; exit 1; }`,
-        `echo ''`,
-        `echo '=== RENAMING TO .quarantine.{timestamp} ==='`,
+        `echo '=== PATH TO QUARANTINE ==='`,
+        `ls -la ${q} 2>&1`,
+        `echo '=== QUARANTINING ==='`,
         `ts=$(date +%Y%m%d_%H%M%S)`,
-        `dest="${p}.quarantine.$ts"`,
-        `mv ${quote(p)} "$dest" && echo "Quarantined: $dest" || echo 'FAILED to rename — check permissions'`,
-        `echo ''`,
-        `echo '=== VERIFY ==='`,
-        `ls -la "$dest" 2>/dev/null && echo 'Quarantine confirmed' || echo 'Verify failed'`,
+        `dest="${p}.quarantine.\${ts}"`,
+        `mv ${q} "$dest" && echo "Renamed to: $dest" || echo "FAILED"`,
       ].join("\n");
     },
   },
 
   {
     name: "repair_path_ownership",
-    description: "WRITE — Changes owner and group on an exact path using chown. Pass 'owner:group' in filter (e.g. admin:users). Prefix with 'recursive:' to recurse into directories (e.g. 'recursive:admin:users'). Requires exact_path.",
+    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute.",
     write: true,
-    params: { target, exact_path: exactPath, filter },
+    params: { target, filter, exactPath },
     buildCommand: (input) => {
-      const p = (input.exact_path as string).trim();
-      const spec = (input.filter as string | undefined)?.trim();
-      if (!spec) throw new Error("repair_path_ownership requires 'owner:group' in filter (e.g. admin:users or recursive:admin:users).");
-      const recursive = spec.startsWith("recursive:");
-      const ownerGroup = recursive ? spec.replace(/^recursive:/, "") : spec;
-      const chownFlag = recursive ? "-R " : "";
+      const p = (input.exactPath as string | undefined)?.trim();
+      if (!p || !p.startsWith("/")) throw new Error("repair_path_ownership: exactPath must be an absolute path.");
+      const f = (input.filter as string | undefined)?.trim() || "";
+      let recursive = false;
+      let ownerGroup = f;
+      if (f.startsWith("recursive:")) { recursive = true; ownerGroup = f.slice("recursive:".length); }
+      if (!/^[A-Za-z0-9_\-]+:[A-Za-z0-9_\-]+$/.test(ownerGroup)) throw new Error("repair_path_ownership: filter must be 'owner:group' or 'recursive:owner:group'.");
+      const qp = quote(p);
+      const qo = quote(ownerGroup);
+      const flag = recursive ? "-R " : "";
       return [
         `echo '=== CURRENT OWNERSHIP ==='`,
-        `stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
-        `echo ''`,
-        `echo '=== APPLYING chown ${chownFlag}${ownerGroup} ==='`,
-        `chown ${chownFlag}${quote(ownerGroup)} ${quote(p)} 2>&1 && echo 'chown succeeded' || echo 'chown FAILED'`,
-        `echo ''`,
+        `ls -la ${qp} 2>&1`,
+        `echo '=== APPLYING chown ${flag}${ownerGroup} ==='`,
+        `chown ${flag}${qo} ${qp} 2>&1 && echo OK || echo FAILED`,
         `echo '=== VERIFY ==='`,
-        `stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+        `ls -la ${qp} 2>&1`,
       ].join("\n");
     },
   },
 
   {
     name: "repair_path_acl",
-    description: "WRITE — Modifies ACL entries on an exact path using setfacl. Pass the ACL modification in filter: 'u:username:rwx' to grant, 'm:u:username:rwx' to modify, '-x u:username' to remove one entry, or '-b' to remove all ACL entries. Requires exact_path.",
+    description: "WRITE — Runs setfacl on an exact path to repair or set POSIX ACL entries. Pass the ACL spec in filter (e.g. 'u:username:rwx' or 'd:u:username:rwx'). Path must be absolute.",
     write: true,
-    params: { target, exact_path: exactPath, filter },
+    params: { target, filter, exactPath },
     buildCommand: (input) => {
-      const p = (input.exact_path as string).trim();
+      const p = (input.exactPath as string | undefined)?.trim();
+      if (!p || !p.startsWith("/")) throw new Error("repair_path_acl: exactPath must be an absolute path.");
       const aclSpec = (input.filter as string | undefined)?.trim();
-      if (!aclSpec) throw new Error("repair_path_acl requires ACL spec in filter (e.g. 'u:username:rwx' or '-b' to remove all).");
-      if (/[;&|`$(){}]/.test(aclSpec)) throw new Error("repair_path_acl: ACL spec contains unsafe characters.");
+      if (!aclSpec) throw new Error("repair_path_acl: filter must be an ACL spec (e.g. 'u:username:rwx').");
+      if (!/^[A-Za-z0-9_:,\-\.]+$/.test(aclSpec)) throw new Error("repair_path_acl: invalid ACL spec characters.");
+      const qp = quote(p);
+      const qs = quote(aclSpec);
       return [
         `echo '=== CURRENT ACL ==='`,
-        `getfacl ${quote(p)} 2>&1 || stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
-        `echo ''`,
-        `echo '=== APPLYING setfacl: ${aclSpec} ==='`,
-        `setfacl ${aclSpec} ${quote(p)} 2>&1 && echo 'setfacl succeeded' || echo 'setfacl FAILED — check if setfacl is available and ACL support is enabled on this volume'`,
-        `echo ''`,
+        `getfacl ${qp} 2>&1`,
+        `echo '=== APPLYING setfacl -m ${aclSpec} ==='`,
+        `setfacl -m ${qs} ${qp} 2>&1 && echo OK || echo FAILED`,
         `echo '=== VERIFY ==='`,
-        `getfacl ${quote(p)} 2>&1 || stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+        `getfacl ${qp} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  // ── Phase 3: Recovery / Restoration write tools ─────────────────────────
+
+  {
+    name: "restore_path_from_snapshot",
+    description: "WRITE — Restores a file or directory from a Btrfs snapshot. Pass the snapshot path (from list_snapshot_candidates) and the destination path in filter as 'snapshot_path|dest_path'. Both must be absolute. Does NOT overwrite — destination must not exist.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const f = (input.filter as string | undefined)?.trim() || "";
+      const parts = f.split("|");
+      if (parts.length !== 2) throw new Error("restore_path_from_snapshot: filter must be 'snapshot_path|dest_path'.");
+      const [src, dst] = parts.map(s => s.trim());
+      if (!src.startsWith("/") || !dst.startsWith("/")) throw new Error("restore_path_from_snapshot: both paths must be absolute.");
+      const qs = quote(src);
+      const qd = quote(dst);
+      return [
+        `echo '=== SOURCE (snapshot) ==='`,
+        `ls -la ${qs} 2>&1`,
+        `echo '=== DESTINATION ==='`,
+        `ls -la ${qd} 2>/dev/null && echo "EXISTS — refusing to overwrite" && exit 1 || echo "(does not exist — safe to restore)"`,
+        `echo '=== RESTORING ==='`,
+        `cp -a ${qs} ${qd} 2>&1 && echo "OK: restored to ${dst}" || echo "FAILED"`,
+        `echo '=== VERIFY ==='`,
+        `ls -la ${qd} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "restore_from_recycle_bin",
+    description: "WRITE — Restores a file from a share's recycle bin (#recycle) to its original or specified destination. Pass 'recycle_bin_path|dest_path' in filter — both absolute. Destination must not exist.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const f = (input.filter as string | undefined)?.trim() || "";
+      const parts = f.split("|");
+      if (parts.length !== 2) throw new Error("restore_from_recycle_bin: filter must be 'recycle_path|dest_path'.");
+      const [src, dst] = parts.map(s => s.trim());
+      if (!src.startsWith("/") || !dst.startsWith("/")) throw new Error("restore_from_recycle_bin: both paths must be absolute.");
+      if (!src.includes("#recycle")) throw new Error("restore_from_recycle_bin: source path must include #recycle.");
+      const qs = quote(src);
+      const qd = quote(dst);
+      return [
+        `echo '=== SOURCE (recycle bin) ==='`,
+        `ls -la ${qs} 2>&1`,
+        `echo '=== DESTINATION CHECK ==='`,
+        `ls -la ${qd} 2>/dev/null && echo "EXISTS — refusing to overwrite" && exit 1 || echo "(does not exist — safe to restore)"`,
+        `echo '=== RESTORING ==='`,
+        `mv ${qs} ${qd} 2>&1 && echo "OK: restored to ${dst}" || echo "FAILED"`,
+        `echo '=== VERIFY ==='`,
+        `ls -la ${qd} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "generate_support_bundle",
+    description: "WRITE — Generates a DSM support bundle (synosupportd or synologand support-collect) and saves it to /tmp. Returns the path so it can be retrieved with fetch_support_artifacts or fetch_log_file.",
+    write: true,
+    params: { target },
+    buildCommand: (_input) => {
+      return [
+        `echo '=== GENERATING DSM SUPPORT BUNDLE ==='`,
+        `out=/tmp/support_bundle_$(date +%Y%m%d_%H%M%S)`,
+        `mkdir -p "$out"`,
+        `if command -v synosupportd >/dev/null 2>&1; then`,
+        `  synosupportd collect --output "$out" 2>&1 && echo "synosupportd: OK" || echo "synosupportd: FAILED"`,
+        `elif command -v synologand >/dev/null 2>&1; then`,
+        `  synologand --support-collect --output "$out" 2>&1 && echo "synologand: OK" || echo "synologand: FAILED"`,
+        `else`,
+        `  echo "No support bundle tool found; collecting manually..."`,
+        `  dmesg > "$out/dmesg.txt" 2>&1`,
+        `  cat /proc/mdstat > "$out/mdstat.txt" 2>/dev/null`,
+        `  journalctl -n 2000 --no-pager > "$out/journal.txt" 2>/dev/null`,
+        `  cp /var/log/messages "$out/" 2>/dev/null`,
+        `fi`,
+        `echo '=== BUNDLE LOCATION ==='`,
+        `ls -lh "$out"`,
+        `echo "Path: $out"`,
+      ].join("\n");
+    },
+  },
+
+  // ── Phase 4: Task cancellation tools ────────────────────────────────────
+
+  {
+    name: "cancel_smart_test",
+    description: "WRITE — Cancels an in-progress SMART self-test on a specific disk. Pass the device name (e.g. 'sda') in filter. Use check_smart_test_progress first to confirm a test is running.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const dev = (input.filter as string | undefined)?.trim();
+      if (!dev) throw new Error("cancel_smart_test: filter must be a device name (e.g. 'sda').");
+      if (!/^[a-z]{1,10}$/.test(dev)) throw new Error("cancel_smart_test: invalid device name.");
+      const q = quote(dev);
+      return [
+        `echo '=== CURRENT SMART TEST STATUS ==='`,
+        `smartctl -a /dev/${q} 2>&1 | grep -A5 'Self-test execution status'`,
+        `echo '=== CANCELLING ==='`,
+        `smartctl -X /dev/${q} 2>&1 && echo "OK: test cancelled" || echo "FAILED or no test running"`,
+        `echo '=== VERIFY ==='`,
+        `smartctl -a /dev/${q} 2>&1 | grep -A5 'Self-test execution status'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "cancel_btrfs_scrub",
+    description: "WRITE — Cancels an in-progress Btrfs scrub on a volume. Pass the mount point (e.g. '/volume1') in filter. Use check_scrub_status first to confirm a scrub is running.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const mp = (input.filter as string | undefined)?.trim();
+      if (!mp) throw new Error("cancel_btrfs_scrub: filter must be a mount point (e.g. '/volume1').");
+      if (!/^\/volume[0-9]+$/.test(mp)) throw new Error("cancel_btrfs_scrub: mount point must match /volumeN.");
+      const q = quote(mp);
+      return [
+        `echo '=== CURRENT SCRUB STATUS ==='`,
+        `btrfs scrub status ${q} 2>&1`,
+        `echo '=== CANCELLING ==='`,
+        `btrfs scrub cancel ${q} 2>&1 && echo "OK: scrub cancelled" || echo "FAILED or no scrub running"`,
+        `echo '=== VERIFY ==='`,
+        `btrfs scrub status ${q} 2>&1`,
       ].join("\n");
     },
   },

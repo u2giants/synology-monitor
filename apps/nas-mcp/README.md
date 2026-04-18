@@ -183,6 +183,20 @@ Recommended starting sequence for path-sensitive incidents:
 3. `inspect_mounts`
 4. the specific package, log, or file diagnostic tool you actually need
 
+### Recovery and restoration
+
+| Tool | What it does |
+|---|---|
+| `list_snapshot_candidates` | List Btrfs snapshots across all volumes with path, creation time, and size |
+| `list_drive_version_history` | Show Drive-managed version history for a file path |
+| `inspect_recycle_bin` | List recent files in share recycle bins across all volumes |
+
+### Task progress
+
+| Tool | What it does |
+|---|---|
+| `check_smart_test_progress` | In-progress SMART self-test completion percentage and ETA |
+
 ## Available write tools
 
 Write tools always require `confirmed: true` — the MCP server shows a preview of the exact command before executing anything.
@@ -210,6 +224,9 @@ Write tools always require `confirmed: true` — the MCP server shows a preview 
 | `start_btrfs_scrub` | Start a Btrfs integrity scrub on one or all volumes |
 | `start_smart_test` | Start a SMART short or long self-test on a specific disk |
 | `create_prechange_snapshot` | Create a read-only Btrfs snapshot as a recovery point |
+| `generate_support_bundle` | Generate a DSM support bundle and save it to /tmp |
+| `cancel_smart_test` | Cancel an in-progress SMART self-test on a specific disk |
+| `cancel_btrfs_scrub` | Cancel an in-progress Btrfs scrub on a volume |
 
 ### Available but disabled write tools
 
@@ -224,6 +241,8 @@ To enable: copy the name into `enabled_write_tools` in `tools-config.json` and p
 | `quarantine_path` | Rename an exact path to .quarantine.{timestamp} |
 | `repair_path_ownership` | chown on an exact path (pass owner:group or recursive:owner:group in filter) |
 | `repair_path_acl` | setfacl ACL modification on an exact path (pass ACL spec in filter) |
+| `restore_path_from_snapshot` | Restore a file/dir from a Btrfs snapshot to a new destination (snapshot_path\|dest_path in filter) |
+| `restore_from_recycle_bin` | Restore a file from a share recycle bin to a new destination (recycle_path\|dest_path in filter) |
 
 ## Deployment
 

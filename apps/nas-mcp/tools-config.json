@@ -68,7 +68,11 @@
     "fetch_log_file",
     "fetch_package_db",
     "fetch_support_artifacts",
-    "run_command"
+    "run_command",
+    "list_snapshot_candidates",
+    "list_drive_version_history",
+    "inspect_recycle_bin",
+    "check_smart_test_progress"
   ],
 
   "enabled_write_tools": [
@@ -90,7 +94,10 @@
     "restart_network_service_safe",
     "start_btrfs_scrub",
     "start_smart_test",
-    "create_prechange_snapshot"
+    "create_prechange_snapshot",
+    "generate_support_bundle",
+    "cancel_smart_test",
+    "cancel_btrfs_scrub"
   ],
 
   "_write_tools_available_disabled": [
@@ -100,7 +107,9 @@
     "repair_drive_db_permissions",
     "quarantine_path",
     "repair_path_ownership",
-    "repair_path_acl"
+    "repair_path_acl",
+    "restore_path_from_snapshot",
+    "restore_from_recycle_bin"
   ],
 
   "_write_tools_available": [
@@ -123,13 +132,18 @@
     "start_btrfs_scrub",
     "start_smart_test",
     "create_prechange_snapshot",
+    "generate_support_bundle",
+    "cancel_smart_test",
+    "cancel_btrfs_scrub",
     "set_vm_overcommit_memory",
     "persist_vm_overcommit_memory",
     "clear_package_lockfiles",
     "repair_drive_db_permissions",
     "quarantine_path",
     "repair_path_ownership",
-    "repair_path_acl"
+    "repair_path_acl",
+    "restore_path_from_snapshot",
+    "restore_from_recycle_bin"
   ],
 
   "_tool_descriptions": {
@@ -219,12 +233,21 @@
     "start_btrfs_scrub": "WRITE: Starts a Btrfs scrub on one or all data volumes — always asks your approval first",
     "start_smart_test": "WRITE: Starts a SMART short or long self-test on a specific disk — always asks your approval first",
     "create_prechange_snapshot": "WRITE: Creates a read-only Btrfs snapshot as a recovery point before changes — always asks your approval first",
+    "list_snapshot_candidates": "PHASE-3: Lists Btrfs snapshots under all volumes with their path, creation time, and size — find restore candidates",
+    "list_drive_version_history": "PHASE-3: Shows Drive-managed version history for a file path — lists available versions and their timestamps",
+    "inspect_recycle_bin": "PHASE-3: Lists recent files in share recycle bins (#recycle) across all volumes — find deleted files for recovery",
+    "check_smart_test_progress": "PHASE-4: Shows in-progress SMART self-test completion percentage and ETA for all or a specific disk",
+    "generate_support_bundle": "WRITE: Generates a DSM support bundle and saves it to /tmp — always asks your approval first",
+    "cancel_smart_test": "WRITE: Cancels an in-progress SMART self-test on a specific disk — always asks your approval first",
+    "cancel_btrfs_scrub": "WRITE: Cancels an in-progress Btrfs scrub on a volume — always asks your approval first",
     "set_vm_overcommit_memory": "WRITE (disabled): Sets vm.overcommit_memory live via sysctl — enable in enabled_write_tools to use",
     "persist_vm_overcommit_memory": "WRITE (disabled): Persists vm.overcommit_memory to sysctl.conf for reboot survival — enable to use",
     "clear_package_lockfiles": "WRITE (disabled): Removes stale lock files for a named package — enable in enabled_write_tools to use",
     "repair_drive_db_permissions": "WRITE (disabled): Fixes ownership and permissions on @synologydrive directories — enable to use",
     "quarantine_path": "WRITE (disabled): Renames an exact path to .quarantine.{timestamp} — enable in enabled_write_tools to use",
     "repair_path_ownership": "WRITE (disabled): chown on an exact path with optional recursion — enable in enabled_write_tools to use",
-    "repair_path_acl": "WRITE (disabled): setfacl ACL modification on an exact path — enable in enabled_write_tools to use"
+    "repair_path_acl": "WRITE (disabled): setfacl ACL modification on an exact path — enable in enabled_write_tools to use",
+    "restore_path_from_snapshot": "WRITE (disabled): Restores a file/dir from a Btrfs snapshot to a new destination — enable in enabled_write_tools to use",
+    "restore_from_recycle_bin": "WRITE (disabled): Restores a file from a share recycle bin to a new destination — enable in enabled_write_tools to use"
   }
 }
