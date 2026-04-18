@@ -21,11 +21,11 @@ Live directory:
 ```
 
 `compose.yaml` should be kept in sync with:
-- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+- [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
 
 `.env` is generated from the per-NAS example file:
-- NAS 1: [nas-1.env.example](/worksp/monitor/app/deploy/synology/nas-1.env.example)
-- NAS 2: [nas-2.env.example](/worksp/monitor/app/deploy/synology/nas-2.env.example)
+- NAS 1: [nas-1.env.example](deploy/synology/nas-1.env.example)
+- NAS 2: [nas-2.env.example](deploy/synology/nas-2.env.example)
 
 ## Running containers
 
@@ -93,7 +93,7 @@ NAS_EDGE2_API_SECRET=<must match NAS_API_SECRET in NAS 2 .env>
 NAS_EDGE2_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 2 .env>
 ```
 
-The exact values are in [apps/web/.env.example](/worksp/monitor/app/apps/web/.env.example).
+The exact values are in [apps/web/.env.example](apps/web/.env.example).
 
 ## AGENT_IMAGE_TAG rule
 
