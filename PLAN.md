@@ -36,9 +36,9 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 ### Web app
 
 - Issue-centric architecture implemented in:
-  - [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-  - [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
-  - [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
+  - [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+  - [issue-store.ts](apps/web/src/lib/server/issue-store.ts)
+  - [issue-detector.ts](apps/web/src/lib/server/issue-detector.ts)
 - The agent reads persistent issue state, recent messages, actions, evidence, and telemetry context on each cycle.
 - Telemetry query failures are now preserved in `telemetry_errors` so the agent can treat missing data as degraded visibility instead of “no problems found”.
 - Telemetry is normalized into facts and capability-state rows before issue reasoning.
@@ -46,8 +46,8 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 - `/api/copilot/*` now routes through the issue backend instead of a separate reasoning/persistence stack.
 - `/metrics` now surfaces `cpu_iowait_pct` directly.
 - `/docker` now exposes monitor-stack-only actions through:
-  - [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
-  - [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
+  - [route.ts](apps/web/src/app/api/docker/actions/route.ts)
+  - [page.tsx](apps/web/src/app/(dashboard)/docker/page.tsx)
 - The tool catalog now includes:
   - `check_cpu_iowait`
   - `stop_monitor_agent`
@@ -58,22 +58,22 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 
 ### Agent
 
-- 17 collectors are wired in [main.go](/worksp/monitor/app/apps/agent/cmd/agent/main.go).
+- 17 collectors are wired in [main.go](apps/agent/cmd/agent/main.go).
 - Extended telemetry schema is defined in:
-  - [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
+  - [00025_create_extended_telemetry_tables_and_log_sources.sql](supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
 - Container I/O collector now supports:
   - host-mounted `/host/sys`
   - Synology cgroup layouts that lack throttle files
   - fallback to `/proc/<pid>/io`
-  - implementation in [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go)
-- DSM system log levels now parse as either integers or strings in [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go).
-- Scheduled-task / backup / snapshot DSM API failures no longer collapse into silent nil results in [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go).
+  - implementation in [container_io.go](apps/agent/internal/collector/container_io.go)
+- DSM system log levels now parse as either integers or strings in [client.go](apps/agent/internal/dsm/client.go).
+- Scheduled-task / backup / snapshot DSM API failures no longer collapse into silent nil results in [client.go](apps/agent/internal/dsm/client.go).
 - Unsupported telemetry APIs are now surfaced into `smon_logs` from:
-  - [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go)
-  - [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
-  - [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
-  - [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
-- `cpu_iowait_pct` continues to be emitted by [sysextras.go](/worksp/monitor/app/apps/agent/internal/collector/sysextras.go) and is now directly exposed to operators.
+  - [schedtasks.go](apps/agent/internal/collector/schedtasks.go)
+  - [hyperbackup.go](apps/agent/internal/collector/hyperbackup.go)
+  - [storagepool.go](apps/agent/internal/collector/storagepool.go)
+  - [sharehealth.go](apps/agent/internal/collector/sharehealth.go)
+- `cpu_iowait_pct` continues to be emitted by [sysextras.go](apps/agent/internal/collector/sysextras.go) and is now directly exposed to operators.
 
 ## Deployed live
 
@@ -85,12 +85,12 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
   2. GitHub Actions builds `ghcr.io/u2giants/synology-monitor-web:latest`
   3. workflow triggers Coolify redeploy
 - This is defined in:
-  - [.github/workflows/web-image.yml](/worksp/monitor/app/.github/workflows/web-image.yml)
+  - [.github/workflows/web-image.yml](.github/workflows/web-image.yml)
 
 ### Agent
 
 - Both NAS units are deployed from:
-  - [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+  - [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
 - Canonical live directory on each NAS:
   - `/volume1/docker/synology-monitor-agent`
 - `/sys` is now part of the canonical compose spec and must be mounted as `/host/sys:ro`.
