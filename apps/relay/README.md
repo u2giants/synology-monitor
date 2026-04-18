@@ -84,6 +84,6 @@ This does **not** remove the risk of the Docker socket on the NAS API side. It o
 
 ## Files
 
-- [src/server.mjs](/worksp/monitor/app/apps/relay/src/server.mjs:1)
-- [Dockerfile](/worksp/monitor/app/apps/relay/Dockerfile:1)
-- [.env.example](/worksp/monitor/app/apps/relay/.env.example:1)
+- [src/server.mjs](apps/relay/src/server.mjs:1)
+- [Dockerfile](apps/relay/Dockerfile:1)
+- [.env.example](apps/relay/.env.example:1)
