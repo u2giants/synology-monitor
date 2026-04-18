@@ -7,14 +7,14 @@ Scope:
 - It is non-authoritative for new engineering sessions unless explicitly requested.
 - It is not a statement of current live behavior.
 - For current live architecture and verified behavior, use:
-  - [AGENTS.md](/worksp/monitor/app/AGENTS.md)
-  - [PLAN.md](/worksp/monitor/app/PLAN.md)
-  - [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
-  - [deploy/synology/README.md](/worksp/monitor/app/deploy/synology/README.md)
+  - [AGENTS.md](AGENTS.md)
+  - [PLAN.md](PLAN.md)
+  - [HANDOFF.md](HANDOFF.md)
+  - [deploy/synology/README.md](deploy/synology/README.md)
 - For the target model-stage split and model allocation, use:
-  - [MODEL_MATRIX.md](/worksp/monitor/app/MODEL_MATRIX.md)
+  - [MODEL_MATRIX.md](MODEL_MATRIX.md)
 - For stage-by-stage model research and evaluation criteria, use:
-  - [MODEL_SELECTION_GUIDE.md](/worksp/monitor/app/MODEL_SELECTION_GUIDE.md)
+  - [MODEL_SELECTION_GUIDE.md](MODEL_SELECTION_GUIDE.md)
 
 ## Purpose
 
