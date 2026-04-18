@@ -58,36 +58,36 @@ Supabase is the shared source of truth for:
 
 The web app deploys through GitHub Actions and Coolify:
 1. push to `master`
-2. [web-image.yml](/worksp/monitor/app/.github/workflows/web-image.yml) builds and pushes the web image
+2. [web-image.yml](.github/workflows/web-image.yml) builds and pushes the web image
 3. workflow triggers Coolify redeploy
 
 ### Agent
 
 The agent deploys through GitHub Actions plus NAS-side container recreation:
 1. push to `master`
-2. [agent-image.yml](/worksp/monitor/app/.github/workflows/agent-image.yml) builds and pushes the agent image
+2. [agent-image.yml](.github/workflows/agent-image.yml) builds and pushes the agent image
 3. each NAS pulls and recreates `synology-monitor-agent`
 
 Canonical compose file:
-- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+- [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
 
 ## Web architecture
 
 ### Primary issue flow
 
 Core files:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [issue-store.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-store.ts)
-- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
-- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
-- [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
-- [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
-- [issue-view.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-view.ts)
-- [copilot-issues.ts](/worksp/monitor/app/apps/web/src/lib/server/copilot-issues.ts)
-- [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
-- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [nas-api-client.ts](/worksp/monitor/app/apps/web/src/lib/server/nas-api-client.ts)
-- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+- [issue-store.ts](apps/web/src/lib/server/issue-store.ts)
+- [issue-workflow.ts](apps/web/src/lib/server/issue-workflow.ts)
+- [workflow-store.ts](apps/web/src/lib/server/workflow-store.ts)
+- [fact-store.ts](apps/web/src/lib/server/fact-store.ts)
+- [capability-store.ts](apps/web/src/lib/server/capability-store.ts)
+- [issue-view.ts](apps/web/src/lib/server/issue-view.ts)
+- [copilot-issues.ts](apps/web/src/lib/server/copilot-issues.ts)
+- [issue-detector.ts](apps/web/src/lib/server/issue-detector.ts)
+- [tools.ts](apps/web/src/lib/server/tools.ts)
+- [nas-api-client.ts](apps/web/src/lib/server/nas-api-client.ts)
+- [route.ts](apps/web/src/app/api/docker/actions/route.ts)
 
 The current system is issue-centric:
 - one issue record per problem
@@ -112,12 +112,12 @@ Worker runtime:
 - `background` mode: the dedicated worker endpoint drains jobs using service-role Supabase access
 
 Relevant files:
-- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
-- [workflow-store.ts](/worksp/monitor/app/apps/web/src/lib/server/workflow-store.ts)
-- [admin.ts](/worksp/monitor/app/apps/web/src/lib/supabase/admin.ts)
-- [drain/route.ts](/worksp/monitor/app/apps/web/src/app/api/internal/issue-worker/drain/route.ts)
-- [issue-worker.mjs](/worksp/monitor/app/apps/web/scripts/issue-worker.mjs)
-- [docker-entrypoint.sh](/worksp/monitor/app/apps/web/docker-entrypoint.sh)
+- [issue-workflow.ts](apps/web/src/lib/server/issue-workflow.ts)
+- [workflow-store.ts](apps/web/src/lib/server/workflow-store.ts)
+- [admin.ts](apps/web/src/lib/supabase/admin.ts)
+- [drain/route.ts](apps/web/src/app/api/internal/issue-worker/drain/route.ts)
+- [issue-worker.mjs](apps/web/scripts/issue-worker.mjs)
+- [docker-entrypoint.sh](apps/web/docker-entrypoint.sh)
 
 ### Tooling and operator control
 
@@ -126,10 +126,10 @@ The web app now exposes two important operational surfaces:
 - restricted monitor-stack Docker actions in `/docker`
 
 Files:
-- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/metrics/page.tsx)
-- [page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/docker/page.tsx)
-- [tools.ts](/worksp/monitor/app/apps/web/src/lib/server/tools.ts)
-- [route.ts](/worksp/monitor/app/apps/web/src/app/api/docker/actions/route.ts)
+- [page.tsx](apps/web/src/app/(dashboard)/metrics/page.tsx)
+- [page.tsx](apps/web/src/app/(dashboard)/docker/page.tsx)
+- [tools.ts](apps/web/src/lib/server/tools.ts)
+- [route.ts](apps/web/src/app/api/docker/actions/route.ts)
 
 Important tool additions:
 - `check_cpu_iowait`
@@ -161,16 +161,16 @@ Important design rule:
 - query failures and missing telemetry must be represented as degraded visibility, not mistaken for subsystem health
 
 That is now enforced through:
-- `telemetry_errors` in [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- persisted normalized facts in [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
-- persisted capability registry rows in [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
+- `telemetry_errors` in [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+- persisted normalized facts in [fact-store.ts](apps/web/src/lib/server/fact-store.ts)
+- persisted capability registry rows in [capability-store.ts](apps/web/src/lib/server/capability-store.ts)
 
 ## Agent architecture
 
 ### Entry point
 
 All collectors are started from:
-- [main.go](/worksp/monitor/app/apps/agent/cmd/agent/main.go)
+- [main.go](apps/agent/cmd/agent/main.go)
 
 ### WAL and sender
 
@@ -180,13 +180,13 @@ The sender:
 - writes per-table payload batches
 
 Files:
-- [sender.go](/worksp/monitor/app/apps/agent/internal/sender/sender.go)
-- [types.go](/worksp/monitor/app/apps/agent/internal/sender/types.go)
+- [sender.go](apps/agent/internal/sender/sender.go)
+- [types.go](apps/agent/internal/sender/types.go)
 
 ### DSM client
 
 All DSM API access goes through:
-- [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go)
+- [client.go](apps/agent/internal/dsm/client.go)
 
 Recent important fixes here:
 - system log levels can be parsed from int or string
@@ -198,29 +198,29 @@ Recent important fixes here:
 
 | Collector | File | Primary outputs | Interval |
 |---|---|---|---|
-| system | [system.go](/worksp/monitor/app/apps/agent/internal/collector/system.go) | `smon_metrics`, `smon_container_status` | 30s |
-| storage | [system.go](/worksp/monitor/app/apps/agent/internal/collector/system.go) | `smon_storage_snapshots` | 60s |
-| drive | [drive.go](/worksp/monitor/app/apps/agent/internal/collector/drive.go) | Drive tables, sync task data, log entries | 30s |
-| process | [process.go](/worksp/monitor/app/apps/agent/internal/collector/process.go) | `smon_process_snapshots` | 15s |
-| diskstats | [diskstats.go](/worksp/monitor/app/apps/agent/internal/collector/diskstats.go) | `smon_disk_io_stats` | 15s |
-| connections | [connections.go](/worksp/monitor/app/apps/agent/internal/collector/connections.go) | `smon_net_connections` | 30s |
-| logwatcher | [watcher.go](/worksp/monitor/app/apps/agent/internal/logwatcher/watcher.go) | `smon_logs` | 10s |
-| sharehealth | [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go) | `smon_logs`, `smon_metrics` | 2m |
-| services | [services.go](/worksp/monitor/app/apps/agent/internal/collector/services.go) | `smon_service_health`, logs, metrics | 60s |
-| sysextras | [sysextras.go](/worksp/monitor/app/apps/agent/internal/collector/sysextras.go) | `smon_metrics`, `smon_logs` | 30s |
-| custom | [custom.go](/worksp/monitor/app/apps/agent/internal/collector/custom.go) | `smon_custom_metric_data` | 60s poll |
-| security | [watcher.go](/worksp/monitor/app/apps/agent/internal/security/watcher.go) | `smon_security_events` | event-driven |
-| schedtasks | [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go) | `smon_scheduled_tasks`, warning logs | 5m |
-| hyperbackup | [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go) | `smon_backup_tasks`, warning logs | 5m |
-| storagepool | [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go) | `smon_snapshot_replicas`, storage logs, metrics | 60s / 5m |
-| container_io | [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go) | `smon_container_io` | 30s |
+| system | [system.go](apps/agent/internal/collector/system.go) | `smon_metrics`, `smon_container_status` | 30s |
+| storage | [system.go](apps/agent/internal/collector/system.go) | `smon_storage_snapshots` | 60s |
+| drive | [drive.go](apps/agent/internal/collector/drive.go) | Drive tables, sync task data, log entries | 30s |
+| process | [process.go](apps/agent/internal/collector/process.go) | `smon_process_snapshots` | 15s |
+| diskstats | [diskstats.go](apps/agent/internal/collector/diskstats.go) | `smon_disk_io_stats` | 15s |
+| connections | [connections.go](apps/agent/internal/collector/connections.go) | `smon_net_connections` | 30s |
+| logwatcher | [watcher.go](apps/agent/internal/logwatcher/watcher.go) | `smon_logs` | 10s |
+| sharehealth | [sharehealth.go](apps/agent/internal/collector/sharehealth.go) | `smon_logs`, `smon_metrics` | 2m |
+| services | [services.go](apps/agent/internal/collector/services.go) | `smon_service_health`, logs, metrics | 60s |
+| sysextras | [sysextras.go](apps/agent/internal/collector/sysextras.go) | `smon_metrics`, `smon_logs` | 30s |
+| custom | [custom.go](apps/agent/internal/collector/custom.go) | `smon_custom_metric_data` | 60s poll |
+| security | [watcher.go](apps/agent/internal/security/watcher.go) | `smon_security_events` | event-driven |
+| schedtasks | [schedtasks.go](apps/agent/internal/collector/schedtasks.go) | `smon_scheduled_tasks`, warning logs | 5m |
+| hyperbackup | [hyperbackup.go](apps/agent/internal/collector/hyperbackup.go) | `smon_backup_tasks`, warning logs | 5m |
+| storagepool | [storagepool.go](apps/agent/internal/collector/storagepool.go) | `smon_snapshot_replicas`, storage logs, metrics | 60s / 5m |
+| container_io | [container_io.go](apps/agent/internal/collector/container_io.go) | `smon_container_io` | 30s |
 
 ### Important collector behavior notes
 
 #### `container_io`
 
 Implemented in:
-- [container_io.go](/worksp/monitor/app/apps/agent/internal/collector/container_io.go)
+- [container_io.go](apps/agent/internal/collector/container_io.go)
 
 Behavior:
 - tries cgroup files under `/host/sys`
@@ -234,7 +234,7 @@ Status:
 #### `sysextras`
 
 Implemented in:
-- [sysextras.go](/worksp/monitor/app/apps/agent/internal/collector/sysextras.go)
+- [sysextras.go](apps/agent/internal/collector/sysextras.go)
 
 Behavior:
 - emits `cpu_iowait_pct` into `smon_metrics`
@@ -247,7 +247,7 @@ Status:
 #### `schedtasks`
 
 Implemented in:
-- [schedtasks.go](/worksp/monitor/app/apps/agent/internal/collector/schedtasks.go)
+- [schedtasks.go](apps/agent/internal/collector/schedtasks.go)
 
 Behavior:
 - attempts DSM scheduled-task API
@@ -263,7 +263,7 @@ Live reality:
 #### `hyperbackup`
 
 Implemented in:
-- [hyperbackup.go](/worksp/monitor/app/apps/agent/internal/collector/hyperbackup.go)
+- [hyperbackup.go](apps/agent/internal/collector/hyperbackup.go)
 
 Behavior:
 - tries multiple DSM APIs
@@ -278,7 +278,7 @@ Live reality:
 #### `storagepool`
 
 Implemented in:
-- [storagepool.go](/worksp/monitor/app/apps/agent/internal/collector/storagepool.go)
+- [storagepool.go](apps/agent/internal/collector/storagepool.go)
 
 Behavior:
 - reads `/host/proc/mdstat` for RAID activity and degraded arrays
@@ -293,7 +293,7 @@ Live reality:
 #### `sharehealth`
 
 Implemented in:
-- [sharehealth.go](/worksp/monitor/app/apps/agent/internal/collector/sharehealth.go)
+- [sharehealth.go](apps/agent/internal/collector/sharehealth.go)
 
 Behavior:
 - enumerates shares
@@ -330,7 +330,7 @@ Added and now tracked in repo:
 - `smon_container_io`
 
 Migration:
-- [00025_create_extended_telemetry_tables_and_log_sources.sql](/worksp/monitor/app/supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
+- [00025_create_extended_telemetry_tables_and_log_sources.sql](supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
 
 ### Issue memory
 
@@ -375,8 +375,8 @@ These are now visible in runtime logs instead of being silently hidden.
 
 ## Files to read first
 
-1. [PLAN.md](/worksp/monitor/app/PLAN.md)
-2. [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
-3. [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-4. [client.go](/worksp/monitor/app/apps/agent/internal/dsm/client.go)
-5. [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+1. [PLAN.md](PLAN.md)
+2. [HANDOFF.md](HANDOFF.md)
+3. [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+4. [client.go](apps/agent/internal/dsm/client.go)
+5. [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
