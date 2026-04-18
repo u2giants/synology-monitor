@@ -4,11 +4,11 @@
 
 Implemented in the repo:
 
-- public relay app exists under [apps/relay](/worksp/monitor/app/apps/relay:1)
+- public relay app exists under [apps/relay](apps/relay:1)
 - NAS API repo hardening is implemented in:
-  - [apps/nas-api/cmd/server/main.go](/worksp/monitor/app/apps/nas-api/cmd/server/main.go:1)
-  - [apps/nas-api/internal/validator/validator.go](/worksp/monitor/app/apps/nas-api/internal/validator/validator.go:1)
-  - [apps/nas-api/Dockerfile](/worksp/monitor/app/apps/nas-api/Dockerfile:1)
+  - [apps/nas-api/cmd/server/main.go](apps/nas-api/cmd/server/main.go:1)
+  - [apps/nas-api/internal/validator/validator.go](apps/nas-api/internal/validator/validator.go:1)
+  - [apps/nas-api/Dockerfile](apps/nas-api/Dockerfile:1)
 - Synology `nas-api` live mounts were expanded on both NASes
 
 Important:
@@ -37,7 +37,7 @@ Important:
 From repo root:
 
 ```bash
-cd /worksp/monitor/app/apps/relay
+cd apps/relay
 cp .env.example .env
 node src/server.mjs
 ```
@@ -45,7 +45,7 @@ node src/server.mjs
 ## Docker run example
 
 ```bash
-docker build -t synology-monitor-relay /worksp/monitor/app/apps/relay
+docker build -t synology-monitor-relay apps/relay
 docker run -d \
   --name synology-monitor-relay \
   --restart unless-stopped \
