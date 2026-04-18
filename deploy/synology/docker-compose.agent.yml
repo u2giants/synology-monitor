@@ -64,6 +64,10 @@ services:
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
       - /usr/syno:/host/usr/syno:ro
+      # Host system libraries — required for glibc Synology binaries (synopkg, synoacltool, etc.)
+      # Tools call them with LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib
+      - /lib:/host/lib:ro
+      - /usr/lib:/host/usr/lib:ro
       - /etc/passwd:/host/etc/passwd:ro
       - /etc/VERSION:/host/etc/VERSION:ro
       - /var/log:/host/log:ro

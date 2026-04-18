@@ -100,13 +100,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== SYNOLOGY SHARE ENUMERATION ==='",
-      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null || echo 'synoshare --enum failed'",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null || echo 'synoshare --enum failed'",
       "echo ''",
       "echo '=== SHARE DETAILS ==='",
-      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
       "  [ -n \"$share\" ] || continue",
       "  echo \"--- $share ---\"",
-      "  /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=|^vol_path=|^support_acls=|^browseable=|^readonly=|^comment=/{print}'",
+      "  LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=|^vol_path=|^support_acls=|^browseable=|^readonly=|^comment=/{print}'",
       "done",
     ].join("\n"),
   },
@@ -141,9 +141,9 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "mount | awk '$3 ~ /^\\/volume[0-9]+/ {print}' | sort -u",
       "echo ''",
       "echo '=== SHARE ACCESS CHECK ==='",
-      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
       "  [ -n \"$share\" ] || continue",
-      "  path=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}')",
+      "  path=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}')",
       "  [ -n \"$path\" ] || continue",
       "  if [ -d \"$path\" ]; then printf 'OK %s %s\\n' \"$share\" \"$path\"; else printf 'MISSING %s %s\\n' \"$share\" \"$path\"; fi",
       "done",
@@ -469,11 +469,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== ALL INSTALLED PACKAGES ==='",
-      "/host/usr/syno/bin/synopkg list 2>/dev/null | head -60 || ls /host/packages/ 2>/dev/null | head -40 || echo 'Package list not available'",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg list 2>/dev/null | head -60 || ls /host/packages/ 2>/dev/null | head -40 || echo 'Package list not available'",
       "echo ''",
       "echo '=== KEY PACKAGE STATUS ==='",
       "for pkg in SynologyDrive SynologyDriveShareSync HyperBackup HyperBackupVault CloudSync ActiveBackupForBusiness Moments VideoStation AudioStation ContainerManager; do",
-      "  status=$(/host/usr/syno/bin/synopkg status \"$pkg\" 2>/dev/null | head -1)",
+      "  status=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status \"$pkg\" 2>/dev/null | head -1)",
       "  [ -n \"$status\" ] && echo \"$pkg: $status\"",
       "done",
       "echo ''",
@@ -584,10 +584,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== SHARE DATABASE ENUMERATION ==='",
-      "/host/usr/syno/sbin/synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>&1 || echo 'synoshare --enum failed (share database may be corrupted)'",
       "echo ''",
       "echo '=== SHARE DETAILS (first 10) ==='",
-      `/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; /host/usr/syno/sbin/synoshare --get "$name" 2>&1 | head -15; done`,
+      `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | head -10 | while read -r name; do echo "--- $name ---"; LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --get "$name" 2>&1 | head -15; done`,
     ].join("\n"),
   },
 
@@ -598,11 +598,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== DRIVE PACKAGE STATUS ==='",
-      "/host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
-      "/host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
       "echo ''",
       "echo '=== DRIVE VERSION ==='",
-      "/host/usr/syno/bin/synopkg version SynologyDrive 2>&1",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg version SynologyDrive 2>&1",
       "echo ''",
       "echo '=== DRIVE DATA DIR (all volumes) ==='",
       "for v in /volume[0-9]*; do",
@@ -753,7 +753,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 6) * 20, 40, 200);
       return [
         "echo '=== HYPER BACKUP STATUS ==='",
-        "/host/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
+        "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
         "echo ''",
         "echo '=== BACKUP TASK LIST ==='",
         "/host/usr/syno/bin/synobackup --list 2>/dev/null || echo 'No backup CLI available'",
@@ -799,7 +799,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const pkg = (input.package_name as string).trim();
       return [
         `echo '=== PACKAGE STATUS: ${pkg} ==='`,
-        `/host/usr/syno/bin/synopkg status ${quote(pkg)} 2>&1`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status ${quote(pkg)} 2>&1`,
         "echo ''",
         "echo '=== ENABLED STATE ==='",
         `cat /host/var/packages/${quote(pkg)}/enabled 2>/dev/null || echo 'enabled file not found'`,
@@ -985,7 +985,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available or path not found'`,
         "echo ''",
         "echo '=== SYNOLOGY ACL (synoacltool) ==='",
-        `/host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
       ].join("\n");
     },
   },
@@ -1006,7 +1006,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available'`,
         "echo ''",
         "echo '=== SYNOLOGY ACL (synoacltool) ==='",
-        `/host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
       ];
       if (username) {
         lines.push(
@@ -1015,7 +1015,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
           `id ${quote(username)} 2>&1 || echo 'User not found'`,
           "echo ''",
           `echo '=== SHARE-LEVEL ACCESS FOR ${username} ==='`,
-          `/host/usr/syno/sbin/synoshare --list-user-access ${quote(username)} 2>/dev/null || echo 'synoshare --list-user-access not available on this DSM version'`,
+          `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --list-user-access ${quote(username)} 2>/dev/null || echo 'synoshare --list-user-access not available on this DSM version'`,
         );
       }
       return lines.join("\n");
@@ -1219,9 +1219,9 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found'",
       "echo ''",
       "echo '=== SHARE QUOTA (synoshare) ==='",
-      "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
+      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do",
       "  [ -n \"$share\" ] || continue",
-      "  quota=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^quota=/{print $2}')",
+      "  quota=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^quota=/{print $2}')",
       "  [ -n \"$quota\" ] && [ \"$quota\" != '0' ] && echo \"$share: quota=$quota\"",
       "done 2>/dev/null || echo 'synoshare not available'",
     ].join("\n"),
@@ -1562,8 +1562,8 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (incidentType === "drive" || incidentType === "general") {
         sections.push(
           "echo '=== DRIVE/SHARESYNC STATUS ==='",
-          "/host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
-          "/host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
+          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
           "echo ''",
           "echo '=== DRIVE LOG TAIL (50 lines) ==='",
           "tail -50 /host/log/synologydrive.log 2>/dev/null || echo 'Drive log not found'",
@@ -1606,10 +1606,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (incidentType === "permission") {
         sections.push(
           "echo '=== SHARE DATABASE ==='",
-          "/host/usr/syno/sbin/synoshare --enum ALL 2>&1 | head -20",
+          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>&1 | head -20",
           "echo ''",
           "echo '=== SHARE ACCESS CHECK ==='",
-          "/host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do [ -n \"$share\" ] || continue; path=$(/host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}'); [ -n \"$path\" ] || continue; if [ -d \"$path\" ]; then printf 'OK %s %s\\n' \"$share\" \"$path\"; else printf 'MISSING %s %s\\n' \"$share\" \"$path\"; fi; done",
+          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --enum ALL 2>/dev/null | while read -r share; do [ -n \"$share\" ] || continue; path=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --get \"$share\" 2>/dev/null | awk -F= '/^path=/{print $2; exit}'); [ -n \"$path\" ] || continue; if [ -d \"$path\" ]; then printf 'OK %s %s\\n' \"$share\" \"$path\"; else printf 'MISSING %s %s\\n' \"$share\" \"$path\"; fi; done",
           "echo ''",
           "echo '=== SECURITY LOG TAIL ==='",
           "tail -30 /host/log/synolog/synosecurity.log 2>/dev/null || echo 'Security log not found'",
@@ -1946,7 +1946,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Synology Drive package. Use when Drive is unresponsive or in an error state. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "/host/usr/syno/bin/synopkg restart SynologyDrive",
+    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDrive",
   },
 
   {
@@ -1954,7 +1954,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the ShareSync package. Use when ShareSync is stuck or not syncing. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "/host/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDriveShareSync",
   },
 
   {
@@ -1962,7 +1962,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Hyper Backup package. Use when backup jobs are stuck or failing to start. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "/host/usr/syno/bin/synopkg restart HyperBackup",
+    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart HyperBackup",
   },
 
   {
@@ -1997,7 +1997,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const folder = (input.filter as string | undefined)?.trim();
       if (!folder) throw new Error("trigger_sharesync_resync requires the ShareSync folder name in the 'filter' parameter.");
-      return `/host/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
+      return `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
     },
   },
 
@@ -2076,7 +2076,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo '=== RESTARTING NETWORK SERVICE: ${svc} ==='`,
         `echo ''`,
         `echo '--- trying synopkg restart ---'`,
-        `/host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'`,
         `echo ''`,
         `echo '--- trying pkill/respawn for service processes ---'`,
         `pkill -SIGTERM -x ${quote(mappedSvc)} 2>&1 && echo "SIGTERM sent to ${mappedSvc} (DSM will respawn)" || echo "${mappedSvc}: process not found"`,
