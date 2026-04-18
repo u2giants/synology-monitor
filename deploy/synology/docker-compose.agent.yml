@@ -70,6 +70,7 @@ services:
       - /usr/lib:/host/usr/lib:ro
       - /etc/passwd:/host/etc/passwd:ro
       - /etc/VERSION:/host/etc/VERSION:ro
+      - /etc/synoinfo.conf:/host/etc/synoinfo.conf:ro
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
       - /var/packages/Tailscale:/var/packages/Tailscale:ro

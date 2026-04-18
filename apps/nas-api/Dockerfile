@@ -45,5 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /nas-api /usr/local/bin/nas-api
+COPY entrypoint.sh /entrypoint.sh
 
-ENTRYPOINT ["/usr/local/bin/nas-api"]
+ENTRYPOINT ["/entrypoint.sh"]
