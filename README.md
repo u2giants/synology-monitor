@@ -2,9 +2,15 @@
 
 Read this first:
 - [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
+- [AI_START_HERE.md](/worksp/monitor/app/AI_START_HERE.md)
+- [AI_LIVE_DATA_NOTE.md](/worksp/monitor/app/AI_LIVE_DATA_NOTE.md)
 
 Authoritative markdown in this repo:
+- [AI_START_HERE.md](/worksp/monitor/app/AI_START_HERE.md)
+- [AI_LIVE_DATA_NOTE.md](/worksp/monitor/app/AI_LIVE_DATA_NOTE.md)
 - [AGENTS.md](/worksp/monitor/app/AGENTS.md)
+- [AI_CONTEXT.md](/worksp/monitor/app/AI_CONTEXT.md)
+- [AI_CONTEXT_QUERIES.md](/worksp/monitor/app/AI_CONTEXT_QUERIES.md)
 - [PLAN.md](/worksp/monitor/app/PLAN.md)
 - [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
 - [deploy/synology/README.md](/worksp/monitor/app/deploy/synology/README.md)

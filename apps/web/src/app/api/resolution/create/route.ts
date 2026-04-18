@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { buildBackendFindingsSnapshot } from "@/lib/server/backend-findings";
 import { createIssue, loadIssue } from "@/lib/server/issue-store";
 import { seedIssueFromOrigin } from "@/lib/server/issue-agent";
 import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
@@ -20,12 +21,23 @@ export async function POST(request: Request) {
       originId?: string;
       title?: string;
       description?: string;
+      importCurrentFindings?: boolean;
     };
 
     let title = body.title?.trim() ?? "";
     let seed = body.description?.trim() ?? "";
     let severity: "critical" | "warning" | "info" = "warning";
     let affectedNas: string[] = [];
+    let metadata: Record<string, unknown> = {};
+
+    if (body.importCurrentFindings) {
+      const snapshot = await buildBackendFindingsSnapshot(supabase);
+      title = snapshot.title;
+      seed = snapshot.seed;
+      severity = snapshot.severity;
+      affectedNas = snapshot.affectedNas;
+      metadata = snapshot.metadata;
+    }
 
     if (body.originType === "problem" && body.originId) {
       const { data: problem } = await supabase
@@ -66,6 +78,7 @@ export async function POST(request: Request) {
       summary: seed,
       severity,
       affectedNas,
+      metadata,
     });
 
     const existing = await loadIssue(supabase, user.id, issueId);

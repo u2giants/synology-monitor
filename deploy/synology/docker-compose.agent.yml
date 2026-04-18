@@ -51,6 +51,7 @@ services:
     image: ghcr.io/u2giants/synology-monitor-nas-api:${AGENT_IMAGE_TAG:-latest}
     container_name: synology-monitor-nas-api
     network_mode: host         # must see the same network interfaces as the NAS
+    pid: host                  # share host PID namespace so pkill/ps can reach DSM processes
     restart: unless-stopped
     security_opt:
       - "apparmor=unconfined"  # Synology DSM rejects default apparmor profile on container init

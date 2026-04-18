@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Play,
   Plus,
+  Radar,
   Send,
   Trash2,
   Wrench,
@@ -194,6 +195,16 @@ export default function AssistantPage() {
     router.replace(`/assistant?resolutionId=${id}`);
   }
 
+  async function handleImportCurrentFindings() {
+    const id = await createResolution({
+      originType: "manual",
+      importCurrentFindings: true,
+    });
+    if (!id) return;
+    await fetchList();
+    router.replace(`/assistant?resolutionId=${id}`);
+  }
+
   async function handleSend() {
     const trimmed = draft.trim();
     if (!trimmed) return;
@@ -231,6 +242,16 @@ export default function AssistantPage() {
         <p className="mt-1 text-sm text-muted-foreground">
           The AI agent diagnoses NAS problems, gathers evidence, and asks for your approval before making any changes.
         </p>
+        <div className="mt-3">
+          <button
+            onClick={handleImportCurrentFindings}
+            disabled={loading}
+            className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radar className="h-4 w-4" />}
+            Import current backend findings
+          </button>
+        </div>
       </div>
 
       {error && (

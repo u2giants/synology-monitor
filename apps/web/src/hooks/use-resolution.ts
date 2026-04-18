@@ -182,6 +182,7 @@ export function useResolution() {
     originId?: string;
     title?: string;
     description?: string;
+    importCurrentFindings?: boolean;
   }) => {
     setLoading(true);
     setError(null);

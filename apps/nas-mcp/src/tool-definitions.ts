@@ -44,6 +44,37 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+/**
+ * Builds a shell command that restarts a DSM package via the local WebAPI.
+ * Requires DSM_USERNAME and DSM_PASSWORD in the container environment (.env).
+ * Validator classifies this as Tier 2 because it matches the SYNO.Core.Package
+ * write-method pattern.
+ */
+function buildDsmPackageRestart(packageId: string): string {
+  return [
+    `if [ -z "\${DSM_USERNAME:-}" ] || [ -z "\${DSM_PASSWORD:-}" ]; then echo "ERROR: DSM_USERNAME/DSM_PASSWORD not set in .env — required for WebAPI package restarts"; exit 1; fi`,
+    `DSM_BASE="http://localhost:\${DSM_PORT:-5000}/webapi/entry.cgi"`,
+    `echo "=== Authenticating to DSM WebAPI ==="`,
+    `SID=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=login" --data-urlencode "account=\${DSM_USERNAME}" --data-urlencode "passwd=\${DSM_PASSWORD}" --data-urlencode "format=sid" 2>/dev/null | grep -o '"sid":"[^"]*"' | cut -d'"' -f4)`,
+    `if [ -z "$SID" ]; then echo "ERROR: DSM login failed — check DSM_USERNAME/DSM_PASSWORD and that DSM is reachable on port \${DSM_PORT:-5000}"; exit 1; fi`,
+    `echo "Authenticated to DSM"`,
+    `echo ""`,
+    `echo "=== Stopping ${packageId} via SYNO.Core.Package method=stop ==="`,
+    `STOP=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.Core.Package" --data-urlencode "version=1" --data-urlencode "method=stop" --data-urlencode "id=${packageId}" --data-urlencode "_sid=$SID" 2>/dev/null)`,
+    `echo "$STOP"`,
+    `echo "$STOP" | grep -q '"success":true' && echo "Stop: OK" || echo "Stop: non-success (package may already be stopped)"`,
+    `echo ""`,
+    `sleep 4`,
+    `echo "=== Starting ${packageId} via SYNO.Core.Package method=start ==="`,
+    `START=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.Core.Package" --data-urlencode "version=1" --data-urlencode "method=start" --data-urlencode "id=${packageId}" --data-urlencode "_sid=$SID" 2>/dev/null)`,
+    `echo "$START"`,
+    `echo "$START" | grep -q '"success":true' && echo "Start: OK" || echo "Start: non-success — check DSM Package Center for errors"`,
+    `echo ""`,
+    `curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=logout" --data-urlencode "_sid=$SID" >/dev/null 2>&1 || true`,
+    `echo "Session closed"`,
+  ].join("\n");
+}
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
 export const ALL_TOOL_DEFS: McpToolDef[] = [
@@ -1943,26 +1974,26 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "restart_synology_drive_server",
-    description: "WRITE — Restarts the Synology Drive package. Use when Drive is unresponsive or in an error state. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE — Restarts the Synology Drive package via DSM WebAPI. Use when Drive is unresponsive or in an error state. Requires DSM_USERNAME/DSM_PASSWORD in the container .env. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart SynologyDrive via DSM Package Center > SynologyDrive > Actions > Restart.'",
+    buildCommand: () => buildDsmPackageRestart("SynologyDrive"),
   },
 
   {
     name: "restart_synology_drive_sharesync",
-    description: "WRITE — Restarts the ShareSync package. Use when ShareSync is stuck or not syncing. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE — Restarts the SynologyDriveShareSync package via DSM WebAPI. Use when ShareSync is stuck or not syncing. Requires DSM_USERNAME/DSM_PASSWORD in the container .env. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart SynologyDriveShareSync via DSM Package Center > SynologyDriveShareSync > Actions > Restart.'",
+    buildCommand: () => buildDsmPackageRestart("SynologyDriveShareSync"),
   },
 
   {
     name: "restart_hyper_backup",
-    description: "WRITE — Restarts the Hyper Backup package. Use when backup jobs are stuck or failing to start. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE — Restarts the HyperBackup package via DSM WebAPI. Use when backup jobs are stuck or failing to start. Requires DSM_USERNAME/DSM_PASSWORD in the container .env. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart HyperBackup via DSM Package Center > HyperBackup > Actions > Restart.'",
+    buildCommand: () => buildDsmPackageRestart("HyperBackup"),
   },
 
   {
@@ -1991,13 +2022,18 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "trigger_sharesync_resync",
-    description: "WRITE — Forces a ShareSync re-sync by restarting ShareSync. Specify the folder or task name in the 'filter' parameter. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE — Forces a ShareSync re-sync by restarting the SynologyDriveShareSync package via DSM WebAPI. Specify the folder or task name in the 'filter' parameter (informational only — all ShareSync tasks resume on restart). Requires DSM_USERNAME/DSM_PASSWORD in the container .env. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const folder = (input.filter as string | undefined)?.trim();
-      if (!folder) throw new Error("trigger_sharesync_resync requires the ShareSync folder name in the 'filter' parameter.");
-      return `echo 'Package restarts require the DSM process bus which is not available in the monitoring container. Please restart SynologyDriveShareSync via DSM Package Center, then re-sync folder: ${folder}'`;
+      if (!folder) throw new Error("trigger_sharesync_resync requires the ShareSync folder or task name in the 'filter' parameter.");
+      return [
+        `echo "=== Triggering ShareSync re-sync for folder: ${folder} ==="`,
+        `echo "Restarting SynologyDriveShareSync to force full re-sync of all tasks"`,
+        `echo ""`,
+        buildDsmPackageRestart("SynologyDriveShareSync"),
+      ].join("\n");
     },
   },
 

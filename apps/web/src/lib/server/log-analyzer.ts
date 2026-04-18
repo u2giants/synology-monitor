@@ -4,6 +4,7 @@
  */
 
 import { callMinimaxJSON } from "./minimax";
+import { buildBackendFindingsPromptContext } from "@/lib/server/backend-findings";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 
 // Types for the analysis result
@@ -138,6 +139,7 @@ async function fetchAnalysisData(lookbackMinutes: number) {
   ]);
 
   return {
+    backendFindings: await buildBackendFindingsPromptContext(supabase),
     alerts: alertsResult.data || [],
     logs: logsResult.data || [],
     securityEvents: securityResult.data || [],
@@ -149,12 +151,13 @@ async function fetchAnalysisData(lookbackMinutes: number) {
  * Format data for the AI prompt
  */
 function formatDataForPrompt(
+  backendFindings: string,
   alerts: unknown[],
   logs: unknown[],
   securityEvents: unknown[],
   driveLogs: unknown[]
 ): string {
-  const sections: string[] = [];
+  const sections: string[] = [backendFindings];
 
   if (alerts.length > 0) {
     sections.push(`## ACTIVE ALERTS (${alerts.length})\n${JSON.stringify(alerts, null, 2)}`);
@@ -334,7 +337,7 @@ export async function analyzeRecentLogs(
       };
     }
 
-    const userPrompt = `Analyze the following data from the Synology NAS monitoring system:\n\n${formatDataForPrompt(data.alerts, data.logs, data.securityEvents, data.driveLogs)}\n\nTotal: ${totalItems} events to analyze. Identify distinct root causes and group related events.`;
+    const userPrompt = `Analyze the following data from the Synology NAS monitoring system:\n\n${formatDataForPrompt(data.backendFindings, data.alerts, data.logs, data.securityEvents, data.driveLogs)}\n\nTotal: ${totalItems} events to analyze. Identify distinct root causes and group related events.`;
 
     const { data: minimaxData, error: minimaxError } = await callMinimaxJSON<MinimaxAnalysisResponse>(
       SYSTEM_PROMPT,

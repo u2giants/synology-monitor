@@ -7,8 +7,10 @@ import {
   getRemediationPlannerModel,
   getVerifierModel,
 } from "@/lib/server/ai-settings";
+import { buildBackendFindingsPromptContext } from "@/lib/server/backend-findings";
 import { parseJsonObject } from "@/lib/server/model-json";
 import type { IssueConfidence, IssueSeverity, IssueStatus } from "@/lib/server/issue-store";
+import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 
 export type ToolActionPlan = {
   /** Raw shell command to run on the NAS. */
@@ -82,10 +84,12 @@ async function callStageModel<T>(
   prompt: string,
   maxTokens = 8192,
 ) {
+  const supabase = await createSupabaseServerClient();
+  const backendFindings = await buildBackendFindingsPromptContext(supabase);
   const client = getOpenAIClient();
   const response = await client.chat.completions.create({
     model,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content: `${backendFindings}\n\n${prompt}` }],
     max_tokens: maxTokens,
   });
 

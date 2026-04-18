@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { buildBackendFindingsPromptContext } from "@/lib/server/backend-findings";
 import { collectNasDiagnostics, executeNasCommand } from "@/lib/server/nas-api-client";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { callMinimax, callMinimaxJSON } from "./minimax";
@@ -169,6 +170,7 @@ Respond ONLY with valid JSON:
 async function generateMinimaxDiagnosis(
   userQuestion: string,
   context: {
+    backend_findings_summary?: string;
     nas_units: Array<{ id: string; name: string; status: string }>;
     active_alerts: Array<{ severity: string; title: string; message: string }>;
     recent_drive_logs: Array<Record<string, unknown>>;
@@ -201,7 +203,7 @@ async function generateMinimaxDiagnosis(
     key_evidence: string[];
   }>(
     MINIMAX_DIAGNOSIS_SYSTEM,
-    `User question: ${userQuestion}\n\nAvailable data:\n${JSON.stringify(context, null, 2)}`
+    `${context.backend_findings_summary ?? ""}\n\nUser question: ${userQuestion}\n\nAvailable data:\n${JSON.stringify(context, null, 2)}`
   );
 
   if (error || !data) {
@@ -260,6 +262,7 @@ export async function generateCopilotResponse(
   const resourceCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
 
   const [
+    backendFindings,
     nasUnits,
     alerts,
     driveLogs,
@@ -270,6 +273,7 @@ export async function generateCopilotResponse(
     syncTaskSnapshots,
     netConnections,
   ] = await Promise.all([
+    buildBackendFindingsPromptContext(supabase),
     supabase.from("nas_units").select("id, name, hostname, model, status, last_seen").order("name"),
     supabase
       .from("alerts")
@@ -338,6 +342,7 @@ export async function generateCopilotResponse(
     authenticated_user: user.email,
     copilot_role: role,
     lookback_hours: lookbackHours,
+    backend_findings_summary: backendFindings,
     nas_units: nasUnits.data ?? [],
     active_alerts: alerts.data ?? [],
     recent_drive_logs: driveLogs.data ?? [],
@@ -417,6 +422,16 @@ export async function generateCopilotResponse(
             "Use only the allowed tools when proposing actions. Never invent shell commands outside the tool catalog. " +
             `The human's current role is ${role}. If the role is viewer, do not propose write actions. ` +
             "Cite the most relevant evidence IDs from the provided catalog.",
+        },
+      ],
+    },
+    {
+      type: "message" as const,
+      role: "system" as const,
+      content: [
+        {
+          type: "input_text" as const,
+          text: backendFindings,
         },
       ],
     },
