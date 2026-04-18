@@ -469,12 +469,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== ALL INSTALLED PACKAGES ==='",
-      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg list 2>/dev/null | head -60 || ls /host/packages/ 2>/dev/null | head -40 || echo 'Package list not available'",
+      "for d in /var/packages/*/; do pkg=$(basename \"$d\"); ver=$(grep -m1 '^version=' \"${d}INFO\" 2>/dev/null | cut -d= -f2-); enabled=$([ -f \"${d}enabled\" ] && echo enabled || echo disabled); echo \"$pkg $ver [$enabled]\"; done 2>/dev/null || echo 'Package list not available'",
       "echo ''",
       "echo '=== KEY PACKAGE STATUS ==='",
       "for pkg in SynologyDrive SynologyDriveShareSync HyperBackup HyperBackupVault CloudSync ActiveBackupForBusiness Moments VideoStation AudioStation ContainerManager; do",
-      "  status=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status \"$pkg\" 2>/dev/null | head -1)",
-      "  [ -n \"$status\" ] && echo \"$pkg: $status\"",
+      "  [ -d \"/var/packages/$pkg\" ] || continue",
+      "  ver=$(grep -m1 '^version=' \"/var/packages/$pkg/INFO\" 2>/dev/null | cut -d= -f2-)",
+      "  enabled=$([ -f \"/var/packages/$pkg/enabled\" ] && echo enabled || echo disabled)",
+      "  echo \"$pkg $ver [$enabled]\"",
       "done",
       "echo ''",
       "echo '=== RECENT PACKAGE EVENTS ==='",
@@ -598,11 +600,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== DRIVE PACKAGE STATUS ==='",
-      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
-      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+      "for pkg in SynologyDrive SynologyDriveShareSync; do ver=$(grep -m1 '^version=' /var/packages/$pkg/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/$pkg/enabled ] && echo enabled || echo disabled); echo \"$pkg: $ver [$enabled]\"; done",
       "echo ''",
       "echo '=== DRIVE VERSION ==='",
-      "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg version SynologyDrive 2>&1",
+      "grep -m1 '^version=' /var/packages/SynologyDrive/INFO 2>/dev/null || echo 'SynologyDrive not found'",
       "echo ''",
       "echo '=== DRIVE DATA DIR (all volumes) ==='",
       "for v in /volume[0-9]*; do",
@@ -753,7 +754,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 6) * 20, 40, 200);
       return [
         "echo '=== HYPER BACKUP STATUS ==='",
-        "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status HyperBackup 2>&1 || echo 'HyperBackup package not found'",
+        "ver=$(grep -m1 '^version=' /var/packages/HyperBackup/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/HyperBackup/enabled ] && echo enabled || echo disabled); echo \"HyperBackup: ${ver:-not found} [$enabled]\"",
         "echo ''",
         "echo '=== BACKUP TASK LIST ==='",
         "/host/usr/syno/bin/synobackup --list 2>/dev/null || echo 'No backup CLI available'",
@@ -799,19 +800,19 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const pkg = (input.package_name as string).trim();
       return [
         `echo '=== PACKAGE STATUS: ${pkg} ==='`,
-        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status ${quote(pkg)} 2>&1`,
+        `ver=$(grep -m1 '^version=' /var/packages/${quote(pkg)}/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/${quote(pkg)}/enabled ] && echo enabled || echo disabled); echo "${pkg}: \${ver:-not found} [\$enabled]"`,
         "echo ''",
         "echo '=== ENABLED STATE ==='",
-        `cat /host/var/packages/${quote(pkg)}/enabled 2>/dev/null || echo 'enabled file not found'`,
+        `[ -f /var/packages/${quote(pkg)}/enabled ] && echo 'enabled' || echo 'disabled (or not installed)'`,
         "echo ''",
         "echo '=== VAR DIRECTORY ==='",
-        `ls -lh /host/var/packages/${quote(pkg)}/var/ 2>/dev/null | head -20 || echo 'var dir not found'`,
+        `ls -lh /var/packages/${quote(pkg)}/var/ 2>/dev/null | head -20 || echo 'var dir not found'`,
         "echo ''",
         "echo '=== PID FILES ==='",
-        `find /host/var/packages/${quote(pkg)}/ -name '*.pid' -o -name 'pid' 2>/dev/null | while read -r pidfile; do echo "$pidfile:"; cat "$pidfile" 2>/dev/null; done || echo 'No PID files found'`,
+        `find /var/packages/${quote(pkg)}/ -name '*.pid' -o -name 'pid' 2>/dev/null | while read -r pidfile; do echo "$pidfile:"; cat "$pidfile" 2>/dev/null; done || echo 'No PID files found'`,
         "echo ''",
         "echo '=== LOCK FILES ==='",
-        `find /host/var/packages/${quote(pkg)}/ \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -10 || echo 'No lock files'`,
+        `find /var/packages/${quote(pkg)}/ \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -10 || echo 'No lock files'`,
         "echo ''",
         "echo '=== MATCHING PROCESSES ==='",
         `ps aux | grep -i ${quote(pkg.toLowerCase())} | grep -v grep | head -20 || echo 'No matching processes'`,
@@ -1562,8 +1563,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (incidentType === "drive" || incidentType === "general") {
         sections.push(
           "echo '=== DRIVE/SHARESYNC STATUS ==='",
-          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDrive 2>&1",
-          "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg status SynologyDriveShareSync 2>&1",
+          "for pkg in SynologyDrive SynologyDriveShareSync; do ver=$(grep -m1 '^version=' /var/packages/$pkg/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/$pkg/enabled ] && echo enabled || echo disabled); echo \"$pkg: $ver [$enabled]\"; done",
           "echo ''",
           "echo '=== DRIVE LOG TAIL (50 lines) ==='",
           "tail -50 /host/log/synologydrive.log 2>/dev/null || echo 'Drive log not found'",
@@ -1946,7 +1946,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Synology Drive package. Use when Drive is unresponsive or in an error state. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDrive",
+    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDrive/scripts/start-stop-status restart 2>&1 && echo 'SynologyDrive restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
   },
 
   {
@@ -1954,7 +1954,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the ShareSync package. Use when ShareSync is stuck or not syncing. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDriveShareSync",
+    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDriveShareSync/scripts/start-stop-status restart 2>&1 && echo 'SynologyDriveShareSync restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
   },
 
   {
@@ -1962,7 +1962,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Hyper Backup package. Use when backup jobs are stuck or failing to start. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart HyperBackup",
+    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/HyperBackup/scripts/start-stop-status restart 2>&1 && echo 'HyperBackup restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
   },
 
   {
@@ -1997,7 +1997,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const folder = (input.filter as string | undefined)?.trim();
       if (!folder) throw new Error("trigger_sharesync_resync requires the ShareSync folder name in the 'filter' parameter.");
-      return `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
+      return `PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDriveShareSync/scripts/start-stop-status restart 2>&1 && sleep 10 && echo "ShareSync restarted for folder: ${folder}" || echo 'restart via package script failed — use DSM Package Center to restart ShareSync manually'`;
     },
   },
 
