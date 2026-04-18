@@ -44,31 +44,30 @@ All 12 existing write tools enabled (previously `enabled_write_tools` was empty)
 - `clear_package_lockfiles`, `repair_drive_db_permissions`
 - `quarantine_path`, `repair_path_ownership`, `repair_path_acl`
 
-## Current Tool Count
+### Phase 3 — Recovery and Restoration (2026-04-18)
 
-Total: **80 tools** (66 read + 19 enabled write + 7 available-but-disabled write)
+Read tools (enabled):
+- `list_snapshot_candidates`, `list_drive_version_history`, `inspect_recycle_bin`
 
-## Remaining Work
-
-### Phase 3: Recovery and Restoration
-
-Add tools:
-- `list_snapshot_candidates`
-- `restore_path_from_snapshot`
-- `list_drive_version_history`
-- `restore_file_version`
-- `inspect_recycle_bin`
-- `restore_from_recycle_bin`
+Write tools enabled:
 - `generate_support_bundle`
 
-### Phase 4: Long-Running Task Orchestration
+Write tools added but disabled:
+- `restore_path_from_snapshot`, `restore_from_recycle_bin`
 
-Add async task start + poll + final status for:
-- SMART extended tests (already have start, need poll)
-- RAID scrub (already have start, need poll)
-- Btrfs scrub (already have start, need poll)
-- Package reindex / rebuild
-- Large ACL repair passes
+### Phase 4 — Task progress and cancellation (2026-04-18)
+
+Read tools (enabled):
+- `check_smart_test_progress`
+
+Write tools enabled:
+- `cancel_smart_test`, `cancel_btrfs_scrub`
+
+## Current Tool Count
+
+Total: **92 tools** (70 read + 22 enabled write + 9 available-but-disabled write)
+
+## Remaining Work
 
 ### Verification Backlog
 - Verify discovery tools on both NASes against real mounted volume layout
@@ -77,10 +76,15 @@ Add async task start + poll + final status for:
 - Verify which ACL utilities (`getfacl`, `setfacl`, `synoacltool`) and snapshot CLIs are available on DSM 7.3.2
 - Live test `check_interface_flaps` carrier_changes path on both NASes
 - Live test `check_bond_health` — confirm whether bonding is configured
+- Live test `list_snapshot_candidates` and `inspect_recycle_bin` on both NASes
 
 ### Tier-3 write tool enablement
 When ready to use path/config mutation tools, individually move from `_write_tools_available_disabled`
-to `enabled_write_tools` in `tools-config.json` and push.
+to `enabled_write_tools` in `tools-config.json` and push:
+- `restore_path_from_snapshot`, `restore_from_recycle_bin`
+- `clear_package_lockfiles`, `repair_drive_db_permissions`
+- `quarantine_path`, `repair_path_ownership`, `repair_path_acl`
+- `set_vm_overcommit_memory`, `persist_vm_overcommit_memory`
 
 ## Files Changed
 
