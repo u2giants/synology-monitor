@@ -73,7 +73,7 @@ function createMcpServer(): McpServer {
               return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
             }
 
-            if (preview.tier >= 2 && !input.confirmed) {
+            if (tool.write && preview.tier >= 2 && !input.confirmed) {
               return [
                 `[${config.name}] This action requires your approval before it runs.`,
                 ``,

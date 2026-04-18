@@ -63,12 +63,29 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bdocker\s+(run|create|exec|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
 }
 
+// safeRedirectRe strips redirect forms that are not writes:
+// - N>/dev/null or >>/dev/null  (discard output)
+// - N>&M                        (fd-to-fd, e.g. 2>&1)
+var (
+	safeRedirectRe   = regexp.MustCompile(`\d*>>?\s*/dev/null|\d*>&\d*`)
+	singleQuotedRe   = regexp.MustCompile(`'[^']*'`)
+	outputRedirectRe = regexp.MustCompile(`>\s*\S`)
+)
+
+// hasRealOutputRedirect returns true only when the command redirects output
+// to an actual file destination (not /dev/null, not fd-to-fd like 2>&1,
+// and not comparison operators inside quoted awk/shell strings).
+func hasRealOutputRedirect(command string) bool {
+	s := singleQuotedRe.ReplaceAllString(command, "")
+	s = safeRedirectRe.ReplaceAllString(s, "")
+	return outputRedirectRe.MatchString(s)
+}
+
 // writePatterns identifies commands that modify state (tier 2+).
 // Used to prevent Tier 1 execution of write operations.
 var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b`),
 	regexp.MustCompile(`(?i)\b(echo|printf|tee|cat)\b.*(>)`),   // redirections
-	regexp.MustCompile(`(?i)(>>|>\s*\S)`),                       // any output redirect
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
 	regexp.MustCompile(`(?i)\bsync\b`),
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
@@ -148,6 +165,9 @@ func Validate(command string, requestedTier int) error {
 				return errors.New("command requires tier 2 or higher (detected write pattern)")
 			}
 		}
+		if hasRealOutputRedirect(command) {
+			return errors.New("command requires tier 2 or higher (detected write pattern)")
+		}
 	}
 
 	// 3. Tier 2: may be a service op but must not touch user files
@@ -183,6 +203,9 @@ func ClassifyTier(command string) int {
 			isWrite = true
 			break
 		}
+	}
+	if !isWrite {
+		isWrite = hasRealOutputRedirect(command)
 	}
 	if !isWrite {
 		return TierRead
