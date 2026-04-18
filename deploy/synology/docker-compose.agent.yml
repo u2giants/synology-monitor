@@ -71,6 +71,7 @@ services:
       - /etc/passwd:/host/etc/passwd:ro
       - /etc/VERSION:/host/etc/VERSION:ro
       - /etc/synoinfo.conf:/host/etc/synoinfo.conf:ro
+      - /etc.defaults:/host/etc.defaults:ro
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
       - /var/packages/Tailscale:/var/packages/Tailscale:ro
