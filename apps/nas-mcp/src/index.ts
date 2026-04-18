@@ -2,8 +2,9 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
 import { ALL_TOOL_DEFS } from "./tool-definitions.js";
@@ -25,10 +26,6 @@ const enabledWrite = new Set<string>(toolsConfig.enabled_write_tools ?? []);
 
 // ─── MCP server factory ───────────────────────────────────────────────────────
 
-/**
- * Creates a new McpServer instance and registers all enabled tools on it.
- * A new instance is created per SSE connection.
- */
 function createMcpServer(): McpServer {
   const server = new McpServer({ name: "synology-nas", version: "1.0.0" });
 
@@ -37,7 +34,6 @@ function createMcpServer(): McpServer {
     const enabled = tool.write ? enabledWrite.has(tool.name) : enabledRead.has(tool.name);
     if (!enabled) continue;
 
-    // Write tools get an extra "confirmed" parameter for the two-step approval flow.
     const params = tool.write
       ? {
           ...tool.params,
@@ -77,7 +73,6 @@ function createMcpServer(): McpServer {
               return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
             }
 
-            // Write tools: show preview and require explicit confirmation
             if (preview.tier >= 2 && !input.confirmed) {
               return [
                 `[${config.name}] This action requires your approval before it runs.`,
@@ -112,7 +107,7 @@ function createMcpServer(): McpServer {
     });
   }
 
-  // run_command — a free-form tier-1-only tool for deep ad-hoc diagnosis
+  // run_command — free-form tier-1-only tool for deep ad-hoc diagnosis
   if (enabledRead.has("run_command")) {
     server.tool(
       "run_command",
@@ -161,10 +156,33 @@ function createMcpServer(): McpServer {
   return server;
 }
 
-// ─── HTTP server with SSE transport ──────────────────────────────────────────
+// ─── Session management ───────────────────────────────────────────────────────
 
-// Track active SSE transports by session ID
-const transports: Record<string, SSEServerTransport> = {};
+// Each MCP session gets its own transport + server pair.
+const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+async function getOrCreateSession(
+  sessionId: string | undefined,
+): Promise<StreamableHTTPServerTransport | null> {
+  if (sessionId) {
+    return sessions.get(sessionId) ?? null;
+  }
+  // New session
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => randomUUID(),
+  });
+  const mcpServer = createMcpServer();
+  await mcpServer.connect(transport);
+  transport.onclose = () => {
+    if (transport.sessionId) sessions.delete(transport.sessionId);
+  };
+  if (transport.sessionId) {
+    sessions.set(transport.sessionId, transport);
+  }
+  return transport;
+}
+
+// ─── HTTP server ──────────────────────────────────────────────────────────────
 
 function isAuthorized(req: { headers: { authorization?: string } }): boolean {
   if (!BEARER_TOKEN) return true;
@@ -172,10 +190,9 @@ function isAuthorized(req: { headers: { authorization?: string } }): boolean {
 }
 
 const httpServer = createServer(async (req, res) => {
-  // CORS headers
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id");
 
   if (req.method === "OPTIONS") {
     res.writeHead(204);
@@ -192,41 +209,36 @@ const httpServer = createServer(async (req, res) => {
       JSON.stringify({
         status: "ok",
         service: "nas-mcp",
-        read_tools: [...enabledRead].length,
-        write_tools: [...enabledWrite].length,
+        sessions: sessions.size,
+        read_tools: enabledRead.size,
+        write_tools: enabledWrite.size,
       }),
     );
     return;
   }
 
-  // All other endpoints require auth
   if (!isAuthorized(req as Parameters<typeof isAuthorized>[0])) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
     return;
   }
 
-  // SSE connection — client opens this to start an MCP session
-  if (url.pathname === "/sse" && req.method === "GET") {
-    const transport = new SSEServerTransport("/message", res);
-    transports[transport.sessionId] = transport;
-    res.on("close", () => {
-      delete transports[transport.sessionId];
-    });
-    const mcpServer = createMcpServer();
-    await mcpServer.connect(transport);
-    return;
-  }
+  // MCP endpoint — handles both Streamable HTTP (POST/GET) and session routing
+  if (url.pathname === "/sse" || url.pathname === "/mcp") {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const transport = await getOrCreateSession(sessionId);
 
-  // MCP message endpoint — client POSTs here during an active session
-  if (url.pathname === "/message" && req.method === "POST") {
-    const sessionId = url.searchParams.get("sessionId");
-    if (!sessionId || !transports[sessionId]) {
+    if (!transport) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Session not found" }));
       return;
     }
-    await transports[sessionId].handlePostMessage(req, res);
+
+    await transport.handleRequest(req, res);
+    // Store new session after first request sets the session ID
+    if (!sessionId && transport.sessionId) {
+      sessions.set(transport.sessionId, transport);
+    }
     return;
   }
 
@@ -237,5 +249,5 @@ const httpServer = createServer(async (req, res) => {
 httpServer.listen(PORT, () => {
   console.log(`NAS MCP server listening on port ${PORT}`);
   console.log(`Read tools: ${[...enabledRead].join(", ")}`);
-  console.log(`Write tools: ${[...enabledWrite].join(", ") || "(none — add names to enabled_write_tools in tools-config.json)"}`);
+  console.log(`Write tools: ${[...enabledWrite].join(", ") || "(none)"}`);
 });
