@@ -1946,7 +1946,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Synology Drive package. Use when Drive is unresponsive or in an error state. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDrive/scripts/start-stop-status restart 2>&1 && echo 'SynologyDrive restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
+    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart SynologyDrive via DSM Package Center > SynologyDrive > Actions > Restart.'",
   },
 
   {
@@ -1954,7 +1954,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the ShareSync package. Use when ShareSync is stuck or not syncing. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDriveShareSync/scripts/start-stop-status restart 2>&1 && echo 'SynologyDriveShareSync restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
+    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart SynologyDriveShareSync via DSM Package Center > SynologyDriveShareSync > Actions > Restart.'",
   },
 
   {
@@ -1962,7 +1962,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     description: "WRITE — Restarts the Hyper Backup package. Use when backup jobs are stuck or failing to start. Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target },
-    buildCommand: () => "PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/HyperBackup/scripts/start-stop-status restart 2>&1 && echo 'HyperBackup restarted' || echo 'restart via package script failed — use DSM Package Center to restart manually'",
+    buildCommand: () => "echo 'Package restarts require the DSM process bus (pkgmand/synoservice) which is not available in the monitoring container. Please restart HyperBackup via DSM Package Center > HyperBackup > Actions > Restart.'",
   },
 
   {
@@ -1997,7 +1997,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const folder = (input.filter as string | undefined)?.trim();
       if (!folder) throw new Error("trigger_sharesync_resync requires the ShareSync folder name in the 'filter' parameter.");
-      return `PATH=/usr/syno/bin:/usr/syno/sbin:$PATH sh /var/packages/SynologyDriveShareSync/scripts/start-stop-status restart 2>&1 && sleep 10 && echo "ShareSync restarted for folder: ${folder}" || echo 'restart via package script failed — use DSM Package Center to restart ShareSync manually'`;
+      return `echo 'Package restarts require the DSM process bus which is not available in the monitoring container. Please restart SynologyDriveShareSync via DSM Package Center, then re-sync folder: ${folder}'`;
     },
   },
 
