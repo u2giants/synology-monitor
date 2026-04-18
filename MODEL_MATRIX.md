@@ -10,10 +10,10 @@ Scope:
 - It is not a statement that every stage below is fully implemented today.
 
 Related source-of-truth docs:
-- [rebuild_plan.md](/worksp/monitor/app/rebuild_plan.md)
-- [AGENTS.md](/worksp/monitor/app/AGENTS.md)
-- [PLAN.md](/worksp/monitor/app/PLAN.md)
-- [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
+- [rebuild_plan.md](rebuild_plan.md)
+- [AGENTS.md](AGENTS.md)
+- [PLAN.md](PLAN.md)
+- [HANDOFF.md](HANDOFF.md)
 
 ## Why this exists
 
@@ -73,8 +73,8 @@ Why no model:
 - this is state discovery, not reasoning
 
 Current code touchpoints:
-- [capability-store.ts](/worksp/monitor/app/apps/web/src/lib/server/capability-store.ts)
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [capability-store.ts](apps/web/src/lib/server/capability-store.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
 
 ### Stage 1: Evidence extraction
 
@@ -125,8 +125,8 @@ Guardrails:
 - deterministic post-validation on keys and enums
 
 Current code touchpoints:
-- [fact-store.ts](/worksp/monitor/app/apps/web/src/lib/server/fact-store.ts)
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [fact-store.ts](apps/web/src/lib/server/fact-store.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
 
 Target future implementation:
 - move more extraction out of prompt text and into typed fact pipelines
@@ -168,8 +168,8 @@ Guardrails:
 - deterministic overrides should exist for obvious stable families
 
 Current code touchpoints:
-- [issue-detector.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-detector.ts)
-- [analysis/route.ts](/worksp/monitor/app/apps/web/src/app/api/analysis/route.ts)
+- [issue-detector.ts](apps/web/src/lib/server/issue-detector.ts)
+- [analysis/route.ts](apps/web/src/app/api/analysis/route.ts)
 
 Target future implementation:
 - deterministic pre-clustering first
@@ -213,7 +213,7 @@ Guardrails:
 - must explicitly degrade confidence if telemetry visibility is degraded
 
 Current code touchpoints:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
 
 Target future implementation:
 - split this out from the current all-in-one decision prompt
@@ -252,7 +252,7 @@ Guardrails:
 - remediation requires an exact target
 
 Current code touchpoints:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
 
 Target future implementation:
 - separate from hypothesis ranking prompt
@@ -291,7 +291,7 @@ Guardrails:
 - must separate "not enough information" from "manual step required"
 
 Current code touchpoints:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
 
 Target future implementation:
 - keep action templates deterministic even if planning remains model-driven
@@ -326,8 +326,8 @@ Guardrails:
 - must mention degraded visibility when relevant
 
 Current code touchpoints:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [assistant/page.tsx](/worksp/monitor/app/apps/web/src/app/(dashboard)/assistant/page.tsx)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+- [assistant/page.tsx](apps/web/src/app/(dashboard)/assistant/page.tsx)
 
 ### Stage 7: Verification
 
@@ -363,8 +363,8 @@ Guardrails:
 - if inconclusive, specify what evidence is still missing
 
 Current code touchpoints:
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [nas-api-client.ts](/worksp/monitor/app/apps/web/src/lib/server/nas-api-client.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+- [nas-api-client.ts](apps/web/src/lib/server/nas-api-client.ts)
 
 ## Recommended model allocation
 
@@ -447,10 +447,10 @@ This is how the target model stages should map onto the backend worker.
 
 ### Current worker entrypoints
 
-- [issue-workflow.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-workflow.ts)
-- [issue-agent.ts](/worksp/monitor/app/apps/web/src/lib/server/issue-agent.ts)
-- [issue-worker.mjs](/worksp/monitor/app/apps/web/scripts/issue-worker.mjs)
-- [drain/route.ts](/worksp/monitor/app/apps/web/src/app/api/internal/issue-worker/drain/route.ts)
+- [issue-workflow.ts](apps/web/src/lib/server/issue-workflow.ts)
+- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
+- [issue-worker.mjs](apps/web/scripts/issue-worker.mjs)
+- [drain/route.ts](apps/web/src/app/api/internal/issue-worker/drain/route.ts)
 
 ### Current job types
 
