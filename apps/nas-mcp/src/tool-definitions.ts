@@ -897,6 +897,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       return [
         `echo '=== PACKAGE LOGS: ${pkg} ==='`,
         "echo ''",
+        "echo '--- /host/log/packages/ (primary DSM 7 package log location) ---'",
+        `for f in /host/log/packages/${quote(pkg)}.log /host/log/packages/${pkgLower}.log; do`,
+        `  [ -f "$f" ] || continue`,
+        `  echo "=== $f ==="`,
+        `  tail -n ${lines} "$f"`,
+        `done 2>/dev/null`,
+        "echo ''",
         "echo '--- /var/packages log dir ---'",
         `for f in /host/var/packages/${quote(pkg)}/var/log/*.log; do`,
         `  [ -f "$f" ] || continue`,
@@ -929,7 +936,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const pkgLower = pkg.toLowerCase();
       return [
         `echo '=== SEARCHING ${pkg} LOGS FOR: ${f} ==='`,
-        `for logf in /host/var/packages/${quote(pkg)}/var/log/*.log /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log /host/log/synolog/synopkg.log; do`,
+        `for logf in /host/log/packages/${quote(pkg)}.log /host/log/packages/${pkgLower}.log /host/var/packages/${quote(pkg)}/var/log/*.log /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log /host/log/synolog/synopkg.log; do`,
         `  [ -f "$logf" ] || continue`,
         `  matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
         `  [ "$matches" -gt 0 ] 2>/dev/null || continue`,
@@ -1059,16 +1066,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: () => [
       "echo '=== BTRFS SCRUB STATUS (all volumes) ==='",
       "found=0",
-      "for v in /volume[0-9]*; do",
+      "for v in /btrfs/volume[0-9]*; do",
       "  [ -d \"$v\" ] || continue",
-      "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
-      "  [ \"$fstype\" = 'btrfs' ] || continue",
       "  found=1",
       "  echo \"--- $v ---\"",
       "  btrfs scrub status \"$v\" 2>&1",
       "  echo ''",
       "done 2>/dev/null",
-      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found (btrfs may not be available or volumes use another FS)'",
+      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'",
       "echo ''",
       "echo '=== RAID SYNC STATUS (/proc/mdstat) ==='",
       "cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
@@ -1119,43 +1124,47 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== BTRFS FILESYSTEM USAGE (all volumes) ==='",
-      "for v in /volume[0-9]*; do",
+      "for v in /btrfs/volume[0-9]* /volume[0-9]*; do",
       "  [ -d \"$v\" ] || continue",
       "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
       "  [ \"$fstype\" = 'btrfs' ] || continue",
       "  echo \"--- $v ---\"",
       "  btrfs filesystem usage \"$v\" 2>&1 | head -30",
       "  echo ''",
+      "  break",
       "done 2>/dev/null || echo 'btrfs not available or no btrfs volumes'",
       "echo ''",
       "echo '=== BTRFS DEVICE STATS (error counters) ==='",
-      "for v in /volume[0-9]*; do",
+      "for v in /btrfs/volume[0-9]* /volume[0-9]*; do",
       "  [ -d \"$v\" ] || continue",
       "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
       "  [ \"$fstype\" = 'btrfs' ] || continue",
       "  echo \"--- $v ---\"",
       "  btrfs device stats \"$v\" 2>&1",
       "  echo ''",
+      "  break",
       "done 2>/dev/null || true",
       "echo ''",
       "echo '=== BTRFS BALANCE STATUS ==='",
-      "for v in /volume[0-9]*; do",
+      "for v in /btrfs/volume[0-9]* /volume[0-9]*; do",
       "  [ -d \"$v\" ] || continue",
       "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
       "  [ \"$fstype\" = 'btrfs' ] || continue",
       "  echo \"--- $v ---\"",
       "  btrfs balance status \"$v\" 2>&1 | head -10",
       "  echo ''",
+      "  break",
       "done 2>/dev/null || true",
       "echo ''",
       "echo '=== BTRFS SUBVOLUMES ==='",
-      "for v in /volume[0-9]*; do",
+      "for v in /btrfs/volume[0-9]* /volume[0-9]*; do",
       "  [ -d \"$v\" ] || continue",
       "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
       "  [ \"$fstype\" = 'btrfs' ] || continue",
       "  echo \"--- $v ---\"",
       "  btrfs subvolume list \"$v\" 2>&1 | head -20",
       "  echo ''",
+      "  break",
       "done 2>/dev/null || true",
     ].join("\n"),
   },
@@ -1996,55 +2005,57 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "restart_synologand",
-    description: "WRITE — Restarts the synologand daemon (core DSM package manager and hook dispatcher). Use when synologand is hung or consuming excessive CPU. Prefer this over killing the process directly.",
+    description: "WRITE — Restarts the synologand daemon (core DSM package manager and hook dispatcher). Use when synologand is hung or consuming excessive CPU. DSM will automatically respawn it after kill.",
     write: true,
     params: { target },
     buildCommand: () => [
       "echo '=== SYNOLOGAND BEFORE RESTART ==='",
       "ps aux | grep synologand | grep -v grep | head -5",
       "echo ''",
-      "echo '=== RESTARTING SYNOLOGAND ==='",
-      "/host/usr/syno/bin/synoservice --restart synologand 2>&1 || echo 'synoservice restart failed'",
+      "echo '=== RESTARTING SYNOLOGAND (SIGTERM — DSM will respawn) ==='",
+      "pkill -SIGTERM -x synologand 2>&1 && echo 'SIGTERM sent to synologand' || echo 'synologand not found running'",
       "echo ''",
-      "echo '=== SYNOLOGAND AFTER RESTART (3s delay) ==='",
-      "sleep 3",
+      "echo '=== SYNOLOGAND AFTER RESTART (5s delay) ==='",
+      "sleep 5",
       "ps aux | grep synologand | grep -v grep | head -5",
     ].join("\n"),
   },
 
   {
     name: "restart_invoked_related_services",
-    description: "WRITE — Restarts the invoked daemon and related DSM scheduler services. Use when scheduled tasks are not running or invoked is hung or consuming excessive CPU.",
+    description: "WRITE — Restarts the invoked daemon and esynoscheduler (DSM task scheduler). Use when scheduled tasks are not running or invoked is hung. DSM will respawn after kill.",
     write: true,
     params: { target },
     buildCommand: () => [
       "echo '=== INVOKED PROCESSES BEFORE RESTART ==='",
-      "ps aux | grep -E 'invoked|synoscheduler' | grep -v grep | head -10",
+      "ps aux | grep -E 'invoked|esynoscheduler' | grep -v grep | head -10",
       "echo ''",
-      "echo '=== RESTARTING INVOKED ==='",
-      "/host/usr/syno/bin/synoservice --restart invoked 2>&1 || echo 'synoservice restart of invoked failed'",
+      "echo '=== RESTARTING invoked (SIGTERM) ==='",
+      "pkill -SIGTERM -x invoked 2>&1 && echo 'SIGTERM sent to invoked' || echo 'invoked not found'",
+      "echo '=== RESTARTING esynoscheduler (SIGTERM) ==='",
+      "pkill -SIGTERM -x esynoscheduler 2>&1 && echo 'SIGTERM sent to esynoscheduler' || echo 'esynoscheduler not found'",
       "echo ''",
-      "echo '=== INVOKED PROCESSES AFTER RESTART (3s delay) ==='",
-      "sleep 3",
-      "ps aux | grep -E 'invoked|synoscheduler' | grep -v grep | head -10",
+      "echo '=== PROCESSES AFTER RESTART (5s delay) ==='",
+      "sleep 5",
+      "ps aux | grep -E 'invoked|esynoscheduler' | grep -v grep | head -10",
     ].join("\n"),
   },
 
   {
     name: "restart_scheduler_services",
-    description: "WRITE — Restarts DSM scheduler services (crond). Use when scheduled tasks have stopped running and restart of invoked alone did not resolve it.",
+    description: "WRITE — Restarts crond. Use when scheduled tasks have stopped running and restart of invoked alone did not resolve it. DSM respawns crond automatically.",
     write: true,
     params: { target },
     buildCommand: () => [
-      "echo '=== SCHEDULER PROCESSES BEFORE RESTART ==='",
-      "ps aux | grep -E 'crond|synoscheduler' | grep -v grep | head -10",
+      "echo '=== CROND BEFORE RESTART ==='",
+      "ps aux | grep -E '\\bcrond?\\b' | grep -v grep | head -5",
       "echo ''",
-      "echo '=== RESTARTING CROND ==='",
-      "/host/usr/syno/bin/synoservice --restart crond 2>&1 || echo 'crond restart failed'",
+      "echo '=== RESTARTING CROND (SIGTERM) ==='",
+      "pkill -SIGTERM -x crond 2>&1 && echo 'SIGTERM sent to crond' || pkill -SIGTERM -x cron 2>&1 && echo 'SIGTERM sent to cron' || echo 'crond not found'",
       "echo ''",
-      "echo '=== SCHEDULER PROCESSES AFTER RESTART (2s delay) ==='",
-      "sleep 2",
-      "ps aux | grep -E 'crond|synoscheduler' | grep -v grep | head -10",
+      "echo '=== CROND AFTER RESTART (3s delay) ==='",
+      "sleep 3",
+      "ps aux | grep -E '\\bcrond?\\b' | grep -v grep | head -5",
     ].join("\n"),
   },
 
@@ -2065,10 +2076,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo '=== RESTARTING NETWORK SERVICE: ${svc} ==='`,
         `echo ''`,
         `echo '--- trying synopkg restart ---'`,
-        `/host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a package or restart failed'`,
+        `/host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'`,
         `echo ''`,
-        `echo '--- trying synoservice restart ---'`,
-        `/host/usr/syno/bin/synoservice --restart ${quote(mappedSvc)} 2>/dev/null && echo 'synoservice restart succeeded' || echo 'synoservice: service not found or restart failed'`,
+        `echo '--- trying pkill/respawn for service processes ---'`,
+        `pkill -SIGTERM -x ${quote(mappedSvc)} 2>&1 && echo "SIGTERM sent to ${mappedSvc} (DSM will respawn)" || echo "${mappedSvc}: process not found"`,
         `echo ''`,
         `echo '=== SERVICE PROCESSES AFTER RESTART (2s delay) ==='`,
         `sleep 2`,
@@ -2079,30 +2090,33 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "start_btrfs_scrub",
-    description: "WRITE — Starts a Btrfs scrub on a volume to check data integrity. Pass the volume path (e.g. /volume1) in filter, or leave empty to start scrub on all Btrfs volumes. Scrubs run in the background; use check_scrub_status to monitor progress.",
+    description: "WRITE — Starts a Btrfs scrub on a volume to check data integrity. Pass the volume name (e.g. 'volume1') in filter, or leave empty to start scrub on all Btrfs volumes. Scrubs run in the background; use check_scrub_status to monitor progress.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const volumeFilter = (input.filter as string | undefined)?.trim();
       if (volumeFilter) {
+        const vol = volumeFilter.replace(/^\//, "").replace(/^btrfs\//, "");
+        const btrfsPath = `/btrfs/${vol}`;
         return [
-          `echo '=== STARTING BTRFS SCRUB: ${volumeFilter} ==='`,
-          `btrfs scrub start ${quote(volumeFilter)} 2>&1`,
+          `echo '=== STARTING BTRFS SCRUB: ${btrfsPath} ==='`,
+          `btrfs scrub start ${quote(btrfsPath)} 2>&1`,
           `echo ''`,
           `echo '=== SCRUB STATUS ==='`,
-          `btrfs scrub status ${quote(volumeFilter)} 2>&1`,
+          `btrfs scrub status ${quote(btrfsPath)} 2>&1`,
         ].join("\n");
       }
       return [
         `echo '=== STARTING BTRFS SCRUB (all btrfs volumes) ==='`,
-        `for v in /volume[0-9]*; do`,
+        `found=0`,
+        `for v in /btrfs/volume[0-9]*; do`,
         `  [ -d "$v" ] || continue`,
-        `  fstype=$(findmnt -no FSTYPE "$v" 2>/dev/null)`,
-        `  [ "$fstype" = 'btrfs' ] || continue`,
+        `  found=1`,
         `  echo "Starting scrub on $v"`,
         `  btrfs scrub start "$v" 2>&1`,
         `  echo ''`,
-        `done 2>/dev/null || echo 'No btrfs volumes found'`,
+        `done 2>/dev/null`,
+        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'`,
       ].join("\n");
     },
   },
@@ -2140,24 +2154,28 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const volumeFilter = (input.filter as string | undefined)?.trim();
       if (volumeFilter) {
+        const volName = volumeFilter.replace(/^\/+/, "").replace(/^btrfs\//, "");
+        const btrfsPath = `/btrfs/${volName}`;
+        const qb = quote(btrfsPath);
         return [
-          `echo '=== CREATING PRECHANGE SNAPSHOT: ${volumeFilter} ==='`,
+          `echo '=== CREATING PRECHANGE SNAPSHOT: ${btrfsPath} ==='`,
           `ts=$(date +%Y%m%d_%H%M%S)`,
-          `snap="${volumeFilter}/@prechange_$ts"`,
-          `btrfs subvolume snapshot -r ${quote(volumeFilter)} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — volume may not be btrfs or subvolume snapshot not supported'`,
+          `snap="${btrfsPath}/@prechange_\${ts}"`,
+          `btrfs subvolume snapshot -r ${qb} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.agent.yml)'`,
         ].join("\n");
       }
       return [
         `echo '=== CREATING PRECHANGE SNAPSHOTS (all btrfs volumes) ==='`,
         `ts=$(date +%Y%m%d_%H%M%S)`,
-        `for v in /volume[0-9]*; do`,
+        `found=0`,
+        `for v in /btrfs/volume[0-9]*; do`,
         `  [ -d "$v" ] || continue`,
-        `  fstype=$(findmnt -no FSTYPE "$v" 2>/dev/null)`,
-        `  [ "$fstype" = 'btrfs' ] || continue`,
+        `  found=1`,
         `  snap="$v/@prechange_$ts"`,
         `  echo "Snapshotting $v -> $snap"`,
         `  btrfs subvolume snapshot -r "$v" "$snap" 2>&1 && echo '  OK' || echo '  FAILED'`,
-        `done 2>/dev/null || echo 'No btrfs volumes found'`,
+        `done 2>/dev/null`,
+        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'`,
       ].join("\n");
     },
   },
@@ -2425,14 +2443,15 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "cancel_btrfs_scrub",
-    description: "WRITE — Cancels an in-progress Btrfs scrub on a volume. Pass the mount point (e.g. '/volume1') in filter. Use check_scrub_status first to confirm a scrub is running.",
+    description: "WRITE — Cancels an in-progress Btrfs scrub on a volume. Pass the volume name (e.g. 'volume1') in filter. Use check_scrub_status first to confirm a scrub is running.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const mp = (input.filter as string | undefined)?.trim();
-      if (!mp) throw new Error("cancel_btrfs_scrub: filter must be a mount point (e.g. '/volume1').");
-      if (!/^\/volume[0-9]+$/.test(mp)) throw new Error("cancel_btrfs_scrub: mount point must match /volumeN.");
-      const q = quote(mp);
+      if (!mp) throw new Error("cancel_btrfs_scrub: filter must be a volume name (e.g. 'volume1').");
+      if (!/^volume[0-9]+$/.test(mp)) throw new Error("cancel_btrfs_scrub: filter must be a bare volume name like 'volume1'.");
+      const btrfsPath = `/btrfs/${mp}`;
+      const q = quote(btrfsPath);
       return [
         `echo '=== CURRENT SCRUB STATUS ==='`,
         `btrfs scrub status ${q} 2>&1`,

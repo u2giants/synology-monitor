@@ -54,6 +54,8 @@ services:
     restart: unless-stopped
     security_opt:
       - "apparmor=unconfined"  # Synology DSM rejects default apparmor profile on container init
+    cap_add:
+      - SYS_ADMIN              # required for btrfs subvolume list, scrub, and snapshot operations
     env_file:
       - .env
     environment:
@@ -67,6 +69,11 @@ services:
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
       - /var/packages/Tailscale:/var/packages/Tailscale:ro
+      # Full btrfs volume mount — required for btrfs subvolume list, scrub, and snapshot ops.
+      # CAP_SYS_ADMIN (above) is also required. Defaults to /volume1.
+      # For a second volume set BTRFS_VOLUME2_PATH=/volume2 and uncomment the next line.
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+      # - ${BTRFS_VOLUME2_PATH:-/volume2}:/btrfs/volume2:rw
       - ${SHARE_FILES_PATH:-/volume1/files}:/volume1/files:ro
       - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/volume1/styleguides:ro
       - ${SHARE_USERS_PATH:-/volume1/users}:/volume1/users:ro

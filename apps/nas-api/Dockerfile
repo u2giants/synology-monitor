@@ -24,8 +24,10 @@ RUN apk add --no-cache \
   docker-cli-compose \
   e2fsprogs \
   findutils \
+  gcompat \
   grep \
   iproute2 \
+  libc6-compat \
   lsof \
   procps \
   smartmontools \
