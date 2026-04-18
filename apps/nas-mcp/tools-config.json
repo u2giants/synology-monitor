@@ -71,7 +71,37 @@
     "run_command"
   ],
 
-  "enabled_write_tools": [],
+  "enabled_write_tools": [
+    "restart_monitor_agent",
+    "stop_monitor_agent",
+    "start_monitor_agent",
+    "pull_monitor_agent",
+    "build_monitor_agent",
+    "restart_nas_api",
+    "restart_synology_drive_server",
+    "restart_synology_drive_sharesync",
+    "restart_hyper_backup",
+    "rename_file_to_old",
+    "remove_invalid_chars",
+    "trigger_sharesync_resync",
+    "restart_synologand",
+    "restart_invoked_related_services",
+    "restart_scheduler_services",
+    "restart_network_service_safe",
+    "start_btrfs_scrub",
+    "start_smart_test",
+    "create_prechange_snapshot"
+  ],
+
+  "_write_tools_available_disabled": [
+    "set_vm_overcommit_memory",
+    "persist_vm_overcommit_memory",
+    "clear_package_lockfiles",
+    "repair_drive_db_permissions",
+    "quarantine_path",
+    "repair_path_ownership",
+    "repair_path_acl"
+  ],
 
   "_write_tools_available": [
     "restart_monitor_agent",
@@ -85,7 +115,21 @@
     "restart_hyper_backup",
     "rename_file_to_old",
     "remove_invalid_chars",
-    "trigger_sharesync_resync"
+    "trigger_sharesync_resync",
+    "restart_synologand",
+    "restart_invoked_related_services",
+    "restart_scheduler_services",
+    "restart_network_service_safe",
+    "start_btrfs_scrub",
+    "start_smart_test",
+    "create_prechange_snapshot",
+    "set_vm_overcommit_memory",
+    "persist_vm_overcommit_memory",
+    "clear_package_lockfiles",
+    "repair_drive_db_permissions",
+    "quarantine_path",
+    "repair_path_ownership",
+    "repair_path_acl"
   ],
 
   "_tool_descriptions": {
@@ -167,6 +211,20 @@
     "restart_hyper_backup": "WRITE: Restarts the Hyper Backup package — always asks your approval first",
     "rename_file_to_old": "WRITE: Renames a problem file by adding .old — always asks your approval first",
     "remove_invalid_chars": "WRITE: Removes sync-breaking characters from a filename — always asks your approval first",
-    "trigger_sharesync_resync": "WRITE: Forces a ShareSync re-sync by restarting ShareSync — always asks your approval first"
+    "trigger_sharesync_resync": "WRITE: Forces a ShareSync re-sync by restarting ShareSync — always asks your approval first",
+    "restart_synologand": "WRITE: Restarts the synologand daemon via synoservice — always asks your approval first",
+    "restart_invoked_related_services": "WRITE: Restarts the invoked daemon and related DSM scheduler services — always asks your approval first",
+    "restart_scheduler_services": "WRITE: Restarts crond/DSM scheduler services — always asks your approval first",
+    "restart_network_service_safe": "WRITE: Restarts a named network service (smb, nfs, ssh, etc.) via synopkg or synoservice — always asks your approval first",
+    "start_btrfs_scrub": "WRITE: Starts a Btrfs scrub on one or all data volumes — always asks your approval first",
+    "start_smart_test": "WRITE: Starts a SMART short or long self-test on a specific disk — always asks your approval first",
+    "create_prechange_snapshot": "WRITE: Creates a read-only Btrfs snapshot as a recovery point before changes — always asks your approval first",
+    "set_vm_overcommit_memory": "WRITE (disabled): Sets vm.overcommit_memory live via sysctl — enable in enabled_write_tools to use",
+    "persist_vm_overcommit_memory": "WRITE (disabled): Persists vm.overcommit_memory to sysctl.conf for reboot survival — enable to use",
+    "clear_package_lockfiles": "WRITE (disabled): Removes stale lock files for a named package — enable in enabled_write_tools to use",
+    "repair_drive_db_permissions": "WRITE (disabled): Fixes ownership and permissions on @synologydrive directories — enable to use",
+    "quarantine_path": "WRITE (disabled): Renames an exact path to .quarantine.{timestamp} — enable in enabled_write_tools to use",
+    "repair_path_ownership": "WRITE (disabled): chown on an exact path with optional recursion — enable in enabled_write_tools to use",
+    "repair_path_acl": "WRITE (disabled): setfacl ACL modification on an exact path — enable in enabled_write_tools to use"
   }
 }

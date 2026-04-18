@@ -1835,4 +1835,339 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       return `/host/usr/syno/bin/synopkg restart SynologyDriveShareSync && sleep 10 && echo "ShareSync restarted for folder: ${folder}"`;
     },
   },
+
+  // ── Phase 2: New remediation tools ───────────────────────────────────────────
+
+  {
+    name: "restart_synologand",
+    description: "WRITE — Restarts the synologand daemon (core DSM package manager and hook dispatcher). Use when synologand is hung or consuming excessive CPU. Prefer this over killing the process directly.",
+    write: true,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SYNOLOGAND BEFORE RESTART ==='",
+      "ps aux | grep synologand | grep -v grep | head -5",
+      "echo ''",
+      "echo '=== RESTARTING SYNOLOGAND ==='",
+      "/host/usr/syno/bin/synoservice --restart synologand 2>&1 || echo 'synoservice restart failed'",
+      "echo ''",
+      "echo '=== SYNOLOGAND AFTER RESTART (3s delay) ==='",
+      "sleep 3",
+      "ps aux | grep synologand | grep -v grep | head -5",
+    ].join("\n"),
+  },
+
+  {
+    name: "restart_invoked_related_services",
+    description: "WRITE — Restarts the invoked daemon and related DSM scheduler services. Use when scheduled tasks are not running or invoked is hung or consuming excessive CPU.",
+    write: true,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== INVOKED PROCESSES BEFORE RESTART ==='",
+      "ps aux | grep -E 'invoked|synoscheduler' | grep -v grep | head -10",
+      "echo ''",
+      "echo '=== RESTARTING INVOKED ==='",
+      "/host/usr/syno/bin/synoservice --restart invoked 2>&1 || echo 'synoservice restart of invoked failed'",
+      "echo ''",
+      "echo '=== INVOKED PROCESSES AFTER RESTART (3s delay) ==='",
+      "sleep 3",
+      "ps aux | grep -E 'invoked|synoscheduler' | grep -v grep | head -10",
+    ].join("\n"),
+  },
+
+  {
+    name: "restart_scheduler_services",
+    description: "WRITE — Restarts DSM scheduler services (crond). Use when scheduled tasks have stopped running and restart of invoked alone did not resolve it.",
+    write: true,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== SCHEDULER PROCESSES BEFORE RESTART ==='",
+      "ps aux | grep -E 'crond|synoscheduler' | grep -v grep | head -10",
+      "echo ''",
+      "echo '=== RESTARTING CROND ==='",
+      "/host/usr/syno/bin/synoservice --restart crond 2>&1 || echo 'crond restart failed'",
+      "echo ''",
+      "echo '=== SCHEDULER PROCESSES AFTER RESTART (2s delay) ==='",
+      "sleep 2",
+      "ps aux | grep -E 'crond|synoscheduler' | grep -v grep | head -10",
+    ].join("\n"),
+  },
+
+  {
+    name: "restart_network_service_safe",
+    description: "WRITE — Safely restarts a named Synology network service using synopkg or synoservice. Pass the service name in filter: smb, nfs, afp, ftp, ssh, rsync, or a package name like ContainerManager. Does NOT restart core network interfaces.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const svc = (input.filter as string | undefined)?.trim();
+      if (!svc) throw new Error("restart_network_service_safe requires the service name in filter (e.g. smb, nfs, ssh).");
+      const serviceMap: Record<string, string> = {
+        smb: "smbd", samba: "smbd", nfs: "nfsd", afp: "afpd",
+        ftp: "ftpd", ssh: "sshd", rsync: "rsyncd",
+      };
+      const mappedSvc = serviceMap[svc.toLowerCase()] || svc;
+      return [
+        `echo '=== RESTARTING NETWORK SERVICE: ${svc} ==='`,
+        `echo ''`,
+        `echo '--- trying synopkg restart ---'`,
+        `/host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a package or restart failed'`,
+        `echo ''`,
+        `echo '--- trying synoservice restart ---'`,
+        `/host/usr/syno/bin/synoservice --restart ${quote(mappedSvc)} 2>/dev/null && echo 'synoservice restart succeeded' || echo 'synoservice: service not found or restart failed'`,
+        `echo ''`,
+        `echo '=== SERVICE PROCESSES AFTER RESTART (2s delay) ==='`,
+        `sleep 2`,
+        `ps aux | grep -iE ${quote(svc)} | grep -v grep | head -10 || echo 'No matching processes found'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "start_btrfs_scrub",
+    description: "WRITE — Starts a Btrfs scrub on a volume to check data integrity. Pass the volume path (e.g. /volume1) in filter, or leave empty to start scrub on all Btrfs volumes. Scrubs run in the background; use check_scrub_status to monitor progress.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const volumeFilter = (input.filter as string | undefined)?.trim();
+      if (volumeFilter) {
+        return [
+          `echo '=== STARTING BTRFS SCRUB: ${volumeFilter} ==='`,
+          `btrfs scrub start ${quote(volumeFilter)} 2>&1`,
+          `echo ''`,
+          `echo '=== SCRUB STATUS ==='`,
+          `btrfs scrub status ${quote(volumeFilter)} 2>&1`,
+        ].join("\n");
+      }
+      return [
+        `echo '=== STARTING BTRFS SCRUB (all btrfs volumes) ==='`,
+        `for v in /volume[0-9]*; do`,
+        `  [ -d "$v" ] || continue`,
+        `  fstype=$(findmnt -no FSTYPE "$v" 2>/dev/null)`,
+        `  [ "$fstype" = 'btrfs' ] || continue`,
+        `  echo "Starting scrub on $v"`,
+        `  btrfs scrub start "$v" 2>&1`,
+        `  echo ''`,
+        `done 2>/dev/null || echo 'No btrfs volumes found'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "start_smart_test",
+    description: "WRITE — Starts a SMART self-test on a specific disk. Pass test type and device in filter as 'short:/dev/sda' or 'long:/dev/sda'. Use check_smart_detail to see results after the test completes (short: ~2min, long: ~hours).",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const spec = (input.filter as string | undefined)?.trim();
+      if (!spec) throw new Error("start_smart_test requires 'short:/dev/sda' or 'long:/dev/sda' in filter.");
+      const colonIdx = spec.indexOf(":");
+      const testType = spec.slice(0, colonIdx).trim();
+      const device = spec.slice(colonIdx + 1).trim();
+      if (!testType || !device) throw new Error("start_smart_test: filter must be 'short:/dev/sda' or 'long:/dev/sda'.");
+      if (!["short", "long", "conveyance"].includes(testType)) {
+        throw new Error("start_smart_test: test type must be 'short', 'long', or 'conveyance'.");
+      }
+      return [
+        `echo '=== STARTING SMART ${testType.toUpperCase()} TEST: ${device} ==='`,
+        `smartctl -t ${quote(testType)} ${quote(device)} 2>&1`,
+        `echo ''`,
+        `echo '=== CURRENT SELF-TEST LOG ==='`,
+        `smartctl -l selftest ${quote(device)} 2>&1 | head -10`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "create_prechange_snapshot",
+    description: "WRITE — Creates a read-only Btrfs snapshot of a volume as a recovery point before making changes. Pass the volume path (e.g. /volume1) in filter, or leave empty to snapshot all Btrfs volumes. Snapshot is named @prechange_{timestamp}.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const volumeFilter = (input.filter as string | undefined)?.trim();
+      if (volumeFilter) {
+        return [
+          `echo '=== CREATING PRECHANGE SNAPSHOT: ${volumeFilter} ==='`,
+          `ts=$(date +%Y%m%d_%H%M%S)`,
+          `snap="${volumeFilter}/@prechange_$ts"`,
+          `btrfs subvolume snapshot -r ${quote(volumeFilter)} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — volume may not be btrfs or subvolume snapshot not supported'`,
+        ].join("\n");
+      }
+      return [
+        `echo '=== CREATING PRECHANGE SNAPSHOTS (all btrfs volumes) ==='`,
+        `ts=$(date +%Y%m%d_%H%M%S)`,
+        `for v in /volume[0-9]*; do`,
+        `  [ -d "$v" ] || continue`,
+        `  fstype=$(findmnt -no FSTYPE "$v" 2>/dev/null)`,
+        `  [ "$fstype" = 'btrfs' ] || continue`,
+        `  snap="$v/@prechange_$ts"`,
+        `  echo "Snapshotting $v -> $snap"`,
+        `  btrfs subvolume snapshot -r "$v" "$snap" 2>&1 && echo '  OK' || echo '  FAILED'`,
+        `done 2>/dev/null || echo 'No btrfs volumes found'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "set_vm_overcommit_memory",
+    description: "WRITE — Sets vm.overcommit_memory via sysctl. Use value 1 to allow overcommit (fixes invoked/synologand OOM conditions). Change is live immediately but not persistent across reboots. Pass value (0, 1, or 2) in filter.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const value = (input.filter as string | undefined)?.trim() || "1";
+      if (!/^[012]$/.test(value)) throw new Error("set_vm_overcommit_memory: value must be 0, 1, or 2.");
+      return [
+        `echo '=== CURRENT vm.overcommit_memory ==='`,
+        `sysctl vm.overcommit_memory 2>&1`,
+        `echo ''`,
+        `echo '=== SETTING vm.overcommit_memory=${value} ==='`,
+        `sysctl -w vm.overcommit_memory=${value} 2>&1`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `sysctl vm.overcommit_memory 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "persist_vm_overcommit_memory",
+    description: "WRITE — Persists the vm.overcommit_memory sysctl setting across reboots by writing to /etc/sysctl.conf on the NAS host. Run after set_vm_overcommit_memory to make the change survive a reboot. Pass value in filter (default: 1).",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const value = (input.filter as string | undefined)?.trim() || "1";
+      if (!/^[012]$/.test(value)) throw new Error("persist_vm_overcommit_memory: value must be 0, 1, or 2.");
+      return [
+        `echo '=== CURRENT vm.overcommit_memory ENTRIES IN sysctl.conf ==='`,
+        `grep -n 'vm.overcommit' /host/etc/sysctl.conf 2>/dev/null || echo '(no existing vm.overcommit entries)'`,
+        `echo ''`,
+        `echo '=== WRITING PERSISTENT ENTRY ==='`,
+        `grep -v 'vm.overcommit_memory' /host/etc/sysctl.conf 2>/dev/null > /tmp/sysctl_tmp && echo 'vm.overcommit_memory = ${value}' >> /tmp/sysctl_tmp && cp /tmp/sysctl_tmp /host/etc/sysctl.conf && echo 'Written successfully' || echo 'Failed to update /host/etc/sysctl.conf'`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `grep 'vm.overcommit_memory' /host/etc/sysctl.conf 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "clear_package_lockfiles",
+    description: "WRITE — Removes stale lock files for a specific named package that are preventing it from starting. Always run inspect_package_lockfiles first to confirm the files are stale. Requires package_name.",
+    write: true,
+    params: { target, package_name: packageName },
+    buildCommand: (input) => {
+      const pkg = (input.package_name as string).trim();
+      return [
+        `echo '=== LOCK FILES FOR: ${pkg} ==='`,
+        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | while read -r lf; do`,
+        `  printf '%s (mtime: %s)\\n' "$lf" "$(stat -c '%y' "$lf" 2>/dev/null)"`,
+        `done | head -20 || echo 'No lock files found for ${pkg}'`,
+        `echo ''`,
+        `echo '=== REMOVING LOCK FILES ==='`,
+        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | while read -r lf; do`,
+        `  echo "Removing: $lf"`,
+        `  rm -f "$lf" && echo '  OK' || echo '  FAILED'`,
+        `done`,
+        `echo ''`,
+        `echo '=== VERIFY (should be empty) ==='`,
+        `find /host/var/packages/${quote(pkg)}/ -maxdepth 5 \\( -name '*.lock' -o -name 'lock' \\) 2>/dev/null | head -10 || echo 'No lock files remaining for ${pkg}'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "repair_drive_db_permissions",
+    description: "WRITE — Fixes ownership and permissions on Synology Drive data and database directories. Use when Drive fails to start due to permission errors on its @synologydrive directories.",
+    write: true,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== CURRENT PERMISSIONS ON @synologydrive DIRS ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v/@synologydrive\" ] || continue",
+      "  echo \"--- $v/@synologydrive ---\"",
+      "  stat -c '%A %U:%G %n' \"$v/@synologydrive\" 2>/dev/null",
+      "  ls -la \"$v/@synologydrive/\" 2>/dev/null | head -10",
+      "done 2>/dev/null || echo 'No @synologydrive dirs found'",
+      "echo ''",
+      "echo '=== REPAIRING PERMISSIONS ==='",
+      "for v in /volume[0-9]*; do",
+      "  [ -d \"$v/@synologydrive\" ] || continue",
+      "  echo \"Fixing $v/@synologydrive\"",
+      "  chown -R SynologyDrive:SynologyDrive \"$v/@synologydrive\" 2>/dev/null && echo '  chown SynologyDrive:SynologyDrive OK' || (chown -R root:root \"$v/@synologydrive\" 2>/dev/null && echo '  chown root:root OK (SynologyDrive user not found)')",
+      "  chmod 700 \"$v/@synologydrive\" 2>/dev/null && echo '  chmod 700 OK'",
+      "done 2>/dev/null",
+      "echo ''",
+      "echo '=== VERIFY ==='",
+      "for v in /volume[0-9]*; do [ -d \"$v/@synologydrive\" ] && stat -c '%A %U:%G %n' \"$v/@synologydrive\" 2>/dev/null; done 2>/dev/null || echo 'No @synologydrive dirs found'",
+    ].join("\n"),
+  },
+
+  {
+    name: "quarantine_path",
+    description: "WRITE — Renames an exact path to {path}.quarantine.{timestamp}, isolating it from active use without deleting it. Use to remove a problematic file from sync or service access before further investigation. Requires exact_path.",
+    write: true,
+    params: { target, exact_path: exactPath },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      if (!p) throw new Error("quarantine_path requires exact_path.");
+      return [
+        `echo '=== QUARANTINE TARGET ==='`,
+        `stat ${quote(p)} 2>&1 || { echo 'Path not found: ${p}'; exit 1; }`,
+        `echo ''`,
+        `echo '=== RENAMING TO .quarantine.{timestamp} ==='`,
+        `ts=$(date +%Y%m%d_%H%M%S)`,
+        `dest="${p}.quarantine.$ts"`,
+        `mv ${quote(p)} "$dest" && echo "Quarantined: $dest" || echo 'FAILED to rename — check permissions'`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `ls -la "$dest" 2>/dev/null && echo 'Quarantine confirmed' || echo 'Verify failed'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "repair_path_ownership",
+    description: "WRITE — Changes owner and group on an exact path using chown. Pass 'owner:group' in filter (e.g. admin:users). Prefix with 'recursive:' to recurse into directories (e.g. 'recursive:admin:users'). Requires exact_path.",
+    write: true,
+    params: { target, exact_path: exactPath, filter },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const spec = (input.filter as string | undefined)?.trim();
+      if (!spec) throw new Error("repair_path_ownership requires 'owner:group' in filter (e.g. admin:users or recursive:admin:users).");
+      const recursive = spec.startsWith("recursive:");
+      const ownerGroup = recursive ? spec.replace(/^recursive:/, "") : spec;
+      const chownFlag = recursive ? "-R " : "";
+      return [
+        `echo '=== CURRENT OWNERSHIP ==='`,
+        `stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+        `echo ''`,
+        `echo '=== APPLYING chown ${chownFlag}${ownerGroup} ==='`,
+        `chown ${chownFlag}${quote(ownerGroup)} ${quote(p)} 2>&1 && echo 'chown succeeded' || echo 'chown FAILED'`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "repair_path_acl",
+    description: "WRITE — Modifies ACL entries on an exact path using setfacl. Pass the ACL modification in filter: 'u:username:rwx' to grant, 'm:u:username:rwx' to modify, '-x u:username' to remove one entry, or '-b' to remove all ACL entries. Requires exact_path.",
+    write: true,
+    params: { target, exact_path: exactPath, filter },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const aclSpec = (input.filter as string | undefined)?.trim();
+      if (!aclSpec) throw new Error("repair_path_acl requires ACL spec in filter (e.g. 'u:username:rwx' or '-b' to remove all).");
+      if (/[;&|`$(){}]/.test(aclSpec)) throw new Error("repair_path_acl: ACL spec contains unsafe characters.");
+      return [
+        `echo '=== CURRENT ACL ==='`,
+        `getfacl ${quote(p)} 2>&1 || stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+        `echo ''`,
+        `echo '=== APPLYING setfacl: ${aclSpec} ==='`,
+        `setfacl ${aclSpec} ${quote(p)} 2>&1 && echo 'setfacl succeeded' || echo 'setfacl FAILED — check if setfacl is available and ACL support is enabled on this volume'`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `getfacl ${quote(p)} 2>&1 || stat -c 'mode=%A owner=%U:%G %n' ${quote(p)} 2>&1`,
+      ].join("\n");
+    },
+  },
 ];

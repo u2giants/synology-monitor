@@ -183,7 +183,11 @@ Recommended starting sequence for path-sensitive incidents:
 3. `inspect_mounts`
 4. the specific package, log, or file diagnostic tool you actually need
 
-## Available write tools (disabled by default)
+## Available write tools
+
+Write tools always require `confirmed: true` — the MCP server shows a preview of the exact command before executing anything.
+
+### Enabled write tools
 
 | Tool | What it does |
 |---|---|
@@ -192,11 +196,34 @@ Recommended starting sequence for path-sensitive incidents:
 | `start_monitor_agent` | Start the agent |
 | `pull_monitor_agent` | Pull latest agent image |
 | `build_monitor_agent` | Rebuild agent container |
+| `restart_nas_api` | Restart the NAS API container |
 | `restart_synology_drive_server` | Restart the Synology Drive package |
 | `restart_synology_drive_sharesync` | Restart ShareSync |
+| `restart_hyper_backup` | Restart Hyper Backup |
 | `rename_file_to_old` | Rename a problem file by appending `.old` |
 | `remove_invalid_chars` | Remove sync-breaking characters from a filename |
 | `trigger_sharesync_resync` | Force a ShareSync re-sync |
+| `restart_synologand` | Restart the synologand daemon via synoservice |
+| `restart_invoked_related_services` | Restart the invoked daemon and DSM scheduler services |
+| `restart_scheduler_services` | Restart crond |
+| `restart_network_service_safe` | Restart a named network service (smb, nfs, ssh, etc.) |
+| `start_btrfs_scrub` | Start a Btrfs integrity scrub on one or all volumes |
+| `start_smart_test` | Start a SMART short or long self-test on a specific disk |
+| `create_prechange_snapshot` | Create a read-only Btrfs snapshot as a recovery point |
+
+### Available but disabled write tools
+
+To enable: copy the name into `enabled_write_tools` in `tools-config.json` and push.
+
+| Tool | What it does |
+|---|---|
+| `set_vm_overcommit_memory` | Set vm.overcommit_memory live via sysctl (pass value 0/1/2 in filter) |
+| `persist_vm_overcommit_memory` | Persist vm.overcommit_memory to sysctl.conf for reboot survival |
+| `clear_package_lockfiles` | Remove stale lock files for a named package |
+| `repair_drive_db_permissions` | Fix ownership and permissions on @synologydrive directories |
+| `quarantine_path` | Rename an exact path to .quarantine.{timestamp} |
+| `repair_path_ownership` | chown on an exact path (pass owner:group or recursive:owner:group in filter) |
+| `repair_path_acl` | setfacl ACL modification on an exact path (pass ACL spec in filter) |
 
 ## Deployment
 
