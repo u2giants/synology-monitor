@@ -48,6 +48,12 @@ export type NextStepPlanResult = {
   remediation_action: ToolActionPlan | null;
   /** ID of a sibling issue this issue is blocked by. If set, this investigation pauses until that issue resolves. */
   depends_on_issue_id: string | null;
+  /**
+   * Actions the agent identified as needed but cannot perform with available shell access.
+   * Each entry is a short description: "what capability is missing and why it's needed".
+   * Surfaced to the operator as explicit gaps — e.g. "need DSM_USERNAME/DSM_PASSWORD in .env to restart Drive via WebAPI".
+   */
+  tool_gaps: string[];
 };
 
 export type OperatorExplanationResult = {
@@ -152,9 +158,29 @@ You have full shell access to the affected NAS via a tiered execution API. Write
 
 Tier system:
 - tier 1 (read-only): df, cat, ls, ps, dmesg, grep on logs, smartctl -A, btrfs status, find, sqlite3 SELECT, docker ps, etc. Auto-executes, no approval needed.
-- tier 2 (service ops): docker start/stop/restart, synopkg restart, systemctl restart, docker compose up/down. Requires operator approval.
-- tier 3 (file ops): mv, cp, rm, touch, or any write to /volume*. Requires operator approval.
+- tier 2 (service ops): pkill, docker start/stop/restart, docker compose up/down, btrfs scrub start, DSM WebAPI calls (curl to localhost:5000/webapi). Requires operator approval.
+- tier 3 (file ops): mv, cp, rm, touch, chown, chmod, or any write to /volume*. Requires operator approval.
 Hard-blocked (never use): mkfs, fdisk, dd if=, rm -rf /, useradd/userdel/usermod, firmware flashing, apt/opkg install, umount /volume, shutdown/reboot/halt.
+
+AVAILABLE CAPABILITIES — use these exact patterns:
+
+Shell access (always available):
+- pkill -SIGTERM -x <process> — kill a host daemon (container runs with pid:host so this reaches DSM processes)
+- btrfs scrub start /btrfs/volume1 — requires no extra setup (CAP_SYS_ADMIN is granted)
+- docker compose restart / up -d — for monitor stack containers at /volume1/docker/synology-monitor-agent
+
+DSM WebAPI (requires DSM_USERNAME + DSM_PASSWORD in container .env — if missing, emit as tool_gap):
+- Package restart: curl -sfG "http://localhost:5000/webapi/entry.cgi" --data-urlencode "api=SYNO.Core.Package" --data-urlencode "version=1" --data-urlencode "method=stop" --data-urlencode "id=<PackageId>" --data-urlencode "_sid=$SID"
+- Backup task run: api=SYNO.Backup.Task version=1 method=run taskId=<id>
+- Scheduled task run: api=SYNO.Core.TaskScheduler version=4 method=run_now id=<id>
+- Scheduled task enable/disable: method=enable or method=disable
+- Auth first: SID=$(curl -sfG "http://localhost:5000/webapi/entry.cgi" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=login" --data-urlencode "account=\${DSM_USERNAME}" --data-urlencode "passwd=\${DSM_PASSWORD}" --data-urlencode "format=sid" 2>/dev/null | grep -o '"sid":"[^"]*"' | cut -d'"' -f4)
+
+NOT available (emit as tool_gap if needed):
+- Installing or uninstalling DSM packages
+- Creating/modifying DSM user accounts
+- Accessing DSM GUI-only features (no API endpoint exists)
+- Writing to /etc or /usr/syno on the host
 
 Return JSON only:
 {
@@ -182,7 +208,8 @@ Return JSON only:
     "rollback_plan": "how to revert",
     "risk": "low|medium|high"
   } or null,
-  "depends_on_issue_id": "uuid of sibling issue blocking this one" or null
+  "depends_on_issue_id": "uuid of sibling issue blocking this one" or null,
+  "tool_gaps": ["DSM_USERNAME/DSM_PASSWORD not confirmed in .env — cannot restart Drive via WebAPI without them"] or []
 }
 
 ESCALATION RULES — check these before anything else:

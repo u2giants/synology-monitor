@@ -97,8 +97,8 @@ var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bnohup\b`),
 	regexp.MustCompile(`(?i)\bat\b`),            // at-job scheduling
 	regexp.MustCompile(`(?i)\bcrontab\s+-[el]\b`), // crontab edit/list is write
-	// DSM WebAPI write operations (package stop/start, backup trigger, task run)
-	regexp.MustCompile(`(?i)SYNO\.(Core\.Package|Backup\.Task|Core\.TaskScheduler).*method=(stop|start|run|trigger|delete)`),
+	// DSM WebAPI write operations (package stop/start, backup trigger, task run/enable/disable)
+	regexp.MustCompile(`(?i)SYNO\.(Core\.Package|Backup\.Task|Core\.TaskScheduler).*method=(stop|start|run|run_now|trigger|delete|enable|disable)`),
 }
 
 // filePatterns identifies file-system write operations that touch user data.

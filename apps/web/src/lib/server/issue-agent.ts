@@ -601,6 +601,13 @@ function buildAgentResponse(
     parts.push(plan.next_step.trim());
   }
 
+  const gaps = (plan.tool_gaps ?? []).filter(Boolean);
+  if (gaps.length > 0) {
+    parts.push(
+      `**Capability gaps identified** (actions needed but not currently possible):\n${gaps.map((g) => `- ${g}`).join("\n")}`,
+    );
+  }
+
   return parts.join("\n\n").trim();
 }
 

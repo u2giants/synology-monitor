@@ -45,6 +45,36 @@ function quote(value: string): string {
 }
 
 /**
+ * Builds a shell command that makes a single authenticated DSM WebAPI call.
+ * Handles login, the API call, result check, and logout.
+ * Requires DSM_USERNAME and DSM_PASSWORD in the container environment (.env).
+ */
+function buildDsmApiCall(
+  api: string,
+  version: number,
+  method: string,
+  extraArgs: string[], // each entry is a --data-urlencode "key=value" fragment (value may reference $SHELL_VAR)
+  description: string,
+): string {
+  return [
+    `if [ -z "\${DSM_USERNAME:-}" ] || [ -z "\${DSM_PASSWORD:-}" ]; then echo "ERROR: DSM_USERNAME/DSM_PASSWORD not set in .env — required for WebAPI calls"; exit 1; fi`,
+    `DSM_BASE="http://localhost:\${DSM_PORT:-5000}/webapi/entry.cgi"`,
+    `echo "=== Authenticating to DSM WebAPI ==="`,
+    `SID=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=login" --data-urlencode "account=\${DSM_USERNAME}" --data-urlencode "passwd=\${DSM_PASSWORD}" --data-urlencode "format=sid" 2>/dev/null | grep -o '"sid":"[^"]*"' | cut -d'"' -f4)`,
+    `if [ -z "$SID" ]; then echo "ERROR: DSM login failed — check DSM_USERNAME/DSM_PASSWORD and port \${DSM_PORT:-5000}"; exit 1; fi`,
+    `echo "Authenticated"`,
+    `echo ""`,
+    `echo "=== ${description} (${api} v${version} method=${method}) ==="`,
+    `RESULT=$(curl -sfG "$DSM_BASE" --data-urlencode "api=${api}" --data-urlencode "version=${version}" --data-urlencode "method=${method}" ${extraArgs.join(" ")} --data-urlencode "_sid=$SID" 2>/dev/null)`,
+    `echo "$RESULT"`,
+    `echo "$RESULT" | grep -q '"success":true' && echo "OK" || echo "Non-success — check DSM for errors"`,
+    `echo ""`,
+    `curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=logout" --data-urlencode "_sid=$SID" >/dev/null 2>&1 || true`,
+    `echo "Session closed"`,
+  ].join("\n");
+}
+
+/**
  * Builds a shell command that restarts a DSM package via the local WebAPI.
  * Requires DSM_USERNAME and DSM_PASSWORD in the container environment (.env).
  * Validator classifies this as Tier 2 because it matches the SYNO.Core.Package
@@ -2451,6 +2481,76 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `ls -lh "$out"`,
         `echo "Path: $out"`,
       ].join("\n");
+    },
+  },
+
+  // ── DSM WebAPI: backup and scheduled task control ───────────────────────
+
+  {
+    name: "trigger_backup_task",
+    description: "WRITE — Triggers an immediate run of a HyperBackup task via DSM WebAPI. Pass the task ID (integer from check_backup_status) in filter. Requires DSM_USERNAME/DSM_PASSWORD in .env. Shows a preview and asks for your approval before doing anything.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const taskId = (input.filter as string | undefined)?.trim();
+      if (!taskId) throw new Error("trigger_backup_task: filter must be the HyperBackup task ID (integer from check_backup_status).");
+      if (!/^\d+$/.test(taskId)) throw new Error("trigger_backup_task: task ID must be a positive integer.");
+      return buildDsmApiCall(
+        "SYNO.Backup.Task", 1, "run",
+        [`--data-urlencode "taskId=${taskId}"`],
+        `Triggering HyperBackup task ${taskId}`,
+      );
+    },
+  },
+
+  {
+    name: "run_scheduled_task",
+    description: "WRITE — Triggers an immediate run of a DSM scheduled task via DSM WebAPI. Pass the task ID (integer from check_scheduled_tasks) in filter. Requires DSM_USERNAME/DSM_PASSWORD in .env. Shows a preview and asks for your approval before doing anything.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const taskId = (input.filter as string | undefined)?.trim();
+      if (!taskId) throw new Error("run_scheduled_task: filter must be the scheduled task ID (integer from check_scheduled_tasks).");
+      if (!/^\d+$/.test(taskId)) throw new Error("run_scheduled_task: task ID must be a positive integer.");
+      return buildDsmApiCall(
+        "SYNO.Core.TaskScheduler", 4, "run_now",
+        [`--data-urlencode "id=${taskId}"`],
+        `Running scheduled task ${taskId}`,
+      );
+    },
+  },
+
+  {
+    name: "enable_scheduled_task",
+    description: "WRITE — Enables a disabled DSM scheduled task via DSM WebAPI. Pass the task ID (integer from check_scheduled_tasks) in filter. Requires DSM_USERNAME/DSM_PASSWORD in .env. Shows a preview and asks for your approval before doing anything.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const taskId = (input.filter as string | undefined)?.trim();
+      if (!taskId) throw new Error("enable_scheduled_task: filter must be the scheduled task ID (integer from check_scheduled_tasks).");
+      if (!/^\d+$/.test(taskId)) throw new Error("enable_scheduled_task: task ID must be a positive integer.");
+      return buildDsmApiCall(
+        "SYNO.Core.TaskScheduler", 4, "enable",
+        [`--data-urlencode "id=${taskId}"`],
+        `Enabling scheduled task ${taskId}`,
+      );
+    },
+  },
+
+  {
+    name: "disable_scheduled_task",
+    description: "WRITE — Disables a DSM scheduled task via DSM WebAPI. Use to suppress a runaway or broken task without deleting it. Pass the task ID (integer from check_scheduled_tasks) in filter. Requires DSM_USERNAME/DSM_PASSWORD in .env. Shows a preview and asks for your approval before doing anything.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const taskId = (input.filter as string | undefined)?.trim();
+      if (!taskId) throw new Error("disable_scheduled_task: filter must be the scheduled task ID (integer from check_scheduled_tasks).");
+      if (!/^\d+$/.test(taskId)) throw new Error("disable_scheduled_task: task ID must be a positive integer.");
+      return buildDsmApiCall(
+        "SYNO.Core.TaskScheduler", 4, "disable",
+        [`--data-urlencode "id=${taskId}"`],
+        `Disabling scheduled task ${taskId}`,
+      );
     },
   },
 
