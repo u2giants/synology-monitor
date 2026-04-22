@@ -266,3 +266,36 @@ Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-
 | `NAS_EDGE2_API_URL` | HTTP URL of the NAS 2 API |
 | `NAS_EDGE2_API_SECRET` | Bearer secret for NAS 2 API |
 | `NAS_EDGE2_API_SIGNING_KEY` | HMAC key for tier 2/3 approval tokens on NAS 2 |
+
+## Troubleshooting
+
+### Container shows `exited:unhealthy` in Coolify but starts fine manually
+
+**Root cause (diagnosed April 2026):** Coolify's health check was defaulting to `GET /` on port 3001, which returns 404. Coolify was treating this as unhealthy and tearing the container down immediately after every deploy, making the MCP unreachable.
+
+**Fix:** A `HEALTHCHECK` instruction is now baked into the Dockerfile pointing at `GET /health` (the correct endpoint). This makes Coolify's container-level health check work correctly without relying on Coolify UI settings.
+
+**If this recurs:** Check that Coolify's health check settings for app `efl17f5iocnz94840pexre9d` are:
+- Health check path: `/health`
+- Port: `3001`
+- Return code: `200`
+
+These can be verified/fixed via the Coolify API:
+```bash
+curl http://178.156.180.212:8000/api/v1/applications/efl17f5iocnz94840pexre9d \
+  -H "Authorization: Bearer <coolify-token>" | jq '{health_check_enabled,health_check_path,health_check_port,health_check_return_code}'
+```
+
+### Diagnosing a crashed container when logs aren't available
+
+When the container has exited and `docker logs` returns nothing, run it manually without `--rm` to capture the crash output:
+
+```bash
+cd /data/coolify/applications/efl17f5iocnz94840pexre9d
+docker run -d --name nas-mcp-debug --network coolify --env-file .env \
+  ghcr.io/u2giants/synology-monitor-nas-mcp:latest
+sleep 5
+docker logs nas-mcp-debug
+docker inspect nas-mcp-debug --format='{{.State.ExitCode}}'
+docker rm -f nas-mcp-debug
+```
