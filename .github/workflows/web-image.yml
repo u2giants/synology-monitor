@@ -3,7 +3,7 @@ name: Publish Web Image
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - ".github/workflows/web-image.yml"
       - "apps/web/**"

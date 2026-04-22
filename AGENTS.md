@@ -57,14 +57,14 @@ Supabase is the shared source of truth for:
 ### Web
 
 The web app deploys through GitHub Actions and Coolify:
-1. push to `master`
+1. push to `main`
 2. [web-image.yml](.github/workflows/web-image.yml) builds and pushes the web image
 3. workflow triggers Coolify redeploy
 
 ### Agent
 
 The agent deploys through GitHub Actions plus NAS-side container recreation:
-1. push to `master`
+1. push to `main`
 2. [agent-image.yml](.github/workflows/agent-image.yml) builds and pushes the agent image
 3. each NAS pulls and recreates `synology-monitor-agent`
 

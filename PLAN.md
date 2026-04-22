@@ -81,7 +81,7 @@ Those remaining gaps are now surfaced as runtime warnings rather than being mist
 
 - Live site: `https://mon.designflow.app`
 - Deployment model:
-  1. push to `master`
+  1. push to `main`
   2. GitHub Actions builds `ghcr.io/u2giants/synology-monitor-web:latest`
   3. workflow triggers Coolify redeploy
 - This is defined in:

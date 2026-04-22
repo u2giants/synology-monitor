@@ -51,7 +51,7 @@ Write tools always show a preview of the exact command before executing. Set `co
 
 ## Enabling/disabling tools
 
-`tools-config.json` controls which tools are active. Changes take effect after a push to `master` (GitHub Actions rebuilds the image, Coolify redeploys).
+`tools-config.json` controls which tools are active. Changes take effect after a push to `main` (GitHub Actions rebuilds the image, Coolify redeploys).
 
 ```json
 {
