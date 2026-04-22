@@ -312,3 +312,80 @@ list_pull_requests(owner="popcre", repo="designflow-backend", state="open")
 - **popdam is not on the VPS** — there is no SSH or Docker access to it, ever.
 - **Secrets in `docker exec ... env` are real production secrets.** Never log, commit, or share them publicly.
 - The `coolify-server` MCP runs commands on your local Windows machine via the `coolify` SSH alias. If SSH isn't working, check `C:\Users\ahazan2\.ssh\config` and that `id_ed25519` key is present.
+
+---
+
+## devops-mcp — VPS Access for Claude Desktop (Cowork)
+
+This section covers how Claude desktop (Cowork mode) connects to the VPS. It replaces the old `coolify-server` SSH pattern for AI-driven devops tasks.
+
+### What changed
+
+The stack now includes a dedicated MCP server (`devops-mcp`) running as a Docker container on the VPS, accessible over HTTPS via Cloudflare Tunnel. Claude desktop connects to it using the `mcp-remote` npm package — no SSH, no local tunnel, no `.bat` files required.
+
+| Old approach | New approach |
+|---|---|
+| `coolify-server` MCP → SSH → VPS | `devops-mcp` MCP → HTTPS → Cloudflare Tunnel → VPS container |
+| Required SSH key on dev machine | Bearer token only |
+| Roo Code / Windsurf only | Claude desktop (Cowork) + Roo Code + Windsurf |
+
+### devops-mcp endpoints
+
+| URL | Auth | What it does |
+|---|---|---|
+| `https://mcp.designflow.app/` | None | HTML status page — registered agents, audit activity, tool list |
+| `https://mcp.designflow.app/mcp` | Bearer token | MCP Streamable HTTP endpoint — all AI clients POST JSON-RPC here |
+
+### How Claude desktop connects on Windows
+
+Two entries in `%APPDATA%\Claude\claude_desktop_config.json`:
+
+```json
+"devops-mcp": {
+  "command": "C:\\PROGRA~1\\nodejs\\npx.cmd",
+  "args": [
+    "-y", "mcp-remote@latest",
+    "https://mcp.designflow.app/mcp",
+    "--transport", "http",
+    "--header", "Authorization: Bearer <TOKEN_ROOCODE value from Coolify>"
+  ]
+},
+"synology-monitor": {
+  "command": "C:\\PROGRA~1\\nodejs\\npx.cmd",
+  "args": [
+    "-y", "mcp-remote@latest",
+    "https://nas-mcp.designflow.app/sse",
+    "--header", "Authorization: Bearer <NAS bearer token>"
+  ]
+}
+```
+
+The `--transport http` flag is required for devops-mcp (Streamable HTTP). The synology-monitor uses SSE and does not need that flag.
+
+**Replicating on a new Windows PC:** There is a PowerShell script that safely merges these entries into an existing config without overwriting anything. See [devops-mcp docs/claude-desktop-setup.md](https://github.com/u2giants/devops-mcp/blob/main/docs/claude-desktop-setup.md).
+
+### devops-mcp tools available in Claude
+
+| Tool | What it does |
+|---|---|
+| `run_command` | Run any shell command on the VPS host |
+| `read_file` / `write_file` | Read or write any file on the VPS |
+| `list_directory` | Browse the VPS filesystem |
+| `docker_ps` / `docker_logs` / `docker_action` | Manage containers |
+| `service_status` / `service_action` | Manage systemd services |
+| `view_audit_log` | See a log of every tool call made by every agent |
+| `health` | Server info and registered agent list |
+
+### Authentication
+
+Each AI agent has its own bearer token set in Coolify as `TOKEN_<NAME>`. The Claude desktop token is `TOKEN_ROOCODE`. To add a new agent: add `TOKEN_<NAME>=<secret>` in Coolify → Environment Variables → Save → Restart.
+
+### Audit log
+
+Every tool call is logged to a persistent Docker volume. Each line is JSON:
+
+```json
+{"ts": "2026-04-22T06:00:00Z", "agent": "roocode", "tool": "run_command", "args": {"command": "docker ps"}, "ok": true, "duration_ms": 111}
+```
+
+Ask Claude: *"show me the last 50 audit log entries"* to see recent activity.
