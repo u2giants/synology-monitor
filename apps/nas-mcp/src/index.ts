@@ -163,9 +163,12 @@ const sessions = new Map<string, StreamableHTTPServerTransport>();
 
 async function getOrCreateSession(
   sessionId: string | undefined,
-): Promise<StreamableHTTPServerTransport | null> {
+): Promise<{ transport: StreamableHTTPServerTransport; isStale: boolean }> {
   if (sessionId) {
-    return sessions.get(sessionId) ?? null;
+    const existing = sessions.get(sessionId);
+    if (existing) return { transport: existing, isStale: false };
+    // Unknown session ID — server was restarted and lost in-memory state.
+    // Fall through and create a fresh session rather than returning 404.
   }
   // New session
   const transport = new StreamableHTTPServerTransport({
@@ -179,7 +182,7 @@ async function getOrCreateSession(
   if (transport.sessionId) {
     sessions.set(transport.sessionId, transport);
   }
-  return transport;
+  return { transport, isStale: sessionId !== undefined };
 }
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
@@ -226,17 +229,17 @@ const httpServer = createServer(async (req, res) => {
   // MCP endpoint — handles both Streamable HTTP (POST/GET) and session routing
   if (url.pathname === "/sse" || url.pathname === "/mcp") {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const transport = await getOrCreateSession(sessionId);
+    const { transport, isStale } = await getOrCreateSession(sessionId);
 
-    if (!transport) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Session not found" }));
-      return;
+    // Stale session ID: strip it from the request so the freshly-created transport
+    // doesn't see a mismatched ID and reject the request with HTTP 400.
+    if (isStale) {
+      delete (req.headers as Record<string, unknown>)["mcp-session-id"];
     }
 
     await transport.handleRequest(req, res);
     // Store new session after first request sets the session ID
-    if (!sessionId && transport.sessionId) {
+    if ((!sessionId || isStale) && transport.sessionId) {
       sessions.set(transport.sessionId, transport);
     }
     return;
