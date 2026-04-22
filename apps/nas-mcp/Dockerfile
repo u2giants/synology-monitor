@@ -16,4 +16,6 @@ COPY --from=builder /app/node_modules ./node_modules
 # and Coolify will automatically rebuild and redeploy this container.
 COPY tools-config.json .
 EXPOSE 3001
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3001/health || exit 1
 CMD ["node", "dist/index.js"]
