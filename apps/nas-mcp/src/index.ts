@@ -220,6 +220,43 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  // Tools catalog — no auth required; lets any AI agent discover the full
+  // enabled tool surface without needing an active MCP session.
+  if (url.pathname === "/tools" && req.method === "GET") {
+    const descMap = new Map<string, string>(ALL_TOOL_DEFS.map((t) => [t.name, t.description]));
+    descMap.set(
+      "run_command",
+      "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution.",
+    );
+
+    const readTools = [...enabledRead].map((name) => ({
+      name,
+      description: descMap.get(name) ?? "",
+      requires_approval: false,
+    }));
+
+    const writeTools = [...enabledWrite].map((name) => ({
+      name,
+      description: descMap.get(name) ?? "",
+      requires_approval: true,
+    }));
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        {
+          service: "nas-mcp",
+          total: readTools.length + writeTools.length,
+          read_tools: readTools,
+          write_tools: writeTools,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
   if (!isAuthorized(req as Parameters<typeof isAuthorized>[0])) {
     res.writeHead(401, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Unauthorized" }));
