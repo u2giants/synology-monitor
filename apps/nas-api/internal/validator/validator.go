@@ -128,7 +128,7 @@ var (
 	}
 
 	allowedReadDockerCommands = []*regexp.Regexp{
-		regexp.MustCompile(`^(?:/usr/local/bin/)?docker ps --format .+$`),
+		regexp.MustCompile(`^(?:timeout \d+ )?(?:/usr/local/bin/)?docker ps --format .+$`),
 		regexp.MustCompile(`^docker stats --no-stream --format .+$`),
 		regexp.MustCompile(`^docker inspect --format .+$`),
 		regexp.MustCompile(`(?s)^for dir in /sys/fs/cgroup/blkio/docker/\*/; do.+docker inspect --format .+$`),

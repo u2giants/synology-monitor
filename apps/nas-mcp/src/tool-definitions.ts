@@ -293,7 +293,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     write: false,
     params: { target },
     buildCommand: () =>
-      "docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
+      "timeout 15 docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
   },
 
   {
