@@ -1256,6 +1256,48 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "disk_latency_test",
+    description: "Read-only latency sample across all SATA disks (or a specific disk via filter, e.g. '/dev/sda' or 'sda'). Reads 64 MB per disk with O_DIRECT to bypass page cache, then computes average read latency from the /proc/diskstats rd_ticks/rd_ios delta. Zero writes — completely non-destructive.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const spec = (input.filter as string | undefined)?.trim();
+      const diskGlob = spec
+        ? quote(spec.startsWith("/") ? spec : `/dev/${spec}`)
+        : "/dev/sd?";
+      return [
+        "echo '=== DISK READ LATENCY SAMPLE TEST (read-only, O_DIRECT) ==='",
+        "echo 'Method: 64 MB sequential read per disk, 4 K blocks, O_DIRECT (bypasses page cache)'",
+        "echo 'Latency = rd_ticks / rd_ios delta from /proc/diskstats'",
+        "echo ''",
+        `for d in ${diskGlob}; do`,
+        "  [ -b \"$d\" ] || continue",
+        "  dev=$(basename \"$d\")",
+        "  echo \"--- $dev ---\"",
+        "  smartctl -i \"$d\" 2>/dev/null | grep -E 'Device Model|Model Number|Serial Number' | head -3",
+        "  snap=$(awk -v d=\"$dev\" '$3==d{print $4,$7;exit}' /proc/diskstats 2>/dev/null)",
+        "  b_ios=$(echo \"$snap\" | awk '{print $1}'); b_ios=${b_ios:-0}",
+        "  b_ticks=$(echo \"$snap\" | awk '{print $2}'); b_ticks=${b_ticks:-0}",
+        "  dd if=\"$d\" of=/dev/null bs=4k count=16384 iflag=direct 2>&1 | grep -E 'bytes|copied'",
+        "  snap=$(awk -v d=\"$dev\" '$3==d{print $4,$7;exit}' /proc/diskstats 2>/dev/null)",
+        "  p_ios=$(echo \"$snap\" | awk '{print $1}'); p_ios=${p_ios:-0}",
+        "  p_ticks=$(echo \"$snap\" | awk '{print $2}'); p_ticks=${p_ticks:-0}",
+        "  d_ios=$((p_ios - b_ios))",
+        "  d_ticks=$((p_ticks - b_ticks))",
+        "  if [ \"$d_ios\" -gt 0 ]; then",
+        "    awk -v t=\"$d_ticks\" -v n=\"$d_ios\" 'BEGIN{printf \"  Avg read latency: %.2f ms/op  (%d ops, %d ms total)\\n\",t/n,n,t}'",
+        "  else",
+        "    echo '  Avg read latency: unavailable (diskstats delta = 0)'",
+        "  fi",
+        "  echo ''",
+        "done",
+        "echo '=== POST-TEST DISKSTATS SNAPSHOT ==='",
+        "iostat -x -d 2>/dev/null | grep -E '^(Device|sd)' || awk '$4>0{printf \"%-10s  rd_ios:%-8d  rd_ticks:%-8d  avg_lat:%.2f ms\\n\",$3,$4,$7,($4>0?$7/$4:0)}' /proc/diskstats | grep '^sd'",
+      ].join("\n");
+    },
+  },
+
+  {
     name: "check_volume_quota_and_inode_pressure",
     description: "Shows inode usage pressure and Btrfs qgroup quota state for all data volumes. High inode usage can prevent new files from being created even when disk space is available.",
     write: false,
