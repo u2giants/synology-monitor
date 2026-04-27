@@ -170,18 +170,18 @@ async function getOrCreateSession(
     // Unknown session ID — server was restarted and lost in-memory state.
     // Fall through and create a fresh session rather than returning 404.
   }
-  // New session
+  // Pre-generate the UUID and register the transport BEFORE handleRequest runs.
+  // Without this, the Mcp-Session-Id header reaches the client while the session
+  // is still unregistered — mcp-remote immediately sends notifications/initialized
+  // with that ID, hits the "Server not initialized" 400, and the connection fails.
+  const newSessionId = randomUUID();
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: () => newSessionId,
   });
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
-  transport.onclose = () => {
-    if (transport.sessionId) sessions.delete(transport.sessionId);
-  };
-  if (transport.sessionId) {
-    sessions.set(transport.sessionId, transport);
-  }
+  transport.onclose = () => sessions.delete(newSessionId);
+  sessions.set(newSessionId, transport);
   return { transport, isStale: sessionId !== undefined };
 }
 
@@ -275,10 +275,6 @@ const httpServer = createServer(async (req, res) => {
     }
 
     await transport.handleRequest(req, res);
-    // Store new session after first request sets the session ID
-    if ((!sessionId || isStale) && transport.sessionId) {
-      sessions.set(transport.sessionId, transport);
-    }
     return;
   }
 
