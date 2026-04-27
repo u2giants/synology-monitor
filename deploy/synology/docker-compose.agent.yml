@@ -63,6 +63,7 @@ services:
     environment:
       TZ: ${TZ:-UTC}
     volumes:
+      - /dev:/dev              # block devices (sda–sdf) for smartctl and dd disk latency tests
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
       - /usr/syno:/host/usr/syno:ro
