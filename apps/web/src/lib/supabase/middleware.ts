@@ -2,7 +2,12 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 export async function updateSession(request: NextRequest) {
-  if (request.nextUrl.pathname.startsWith("/api/internal/issue-worker/")) {
+  const { pathname } = request.nextUrl;
+  if (
+    pathname.startsWith("/api/internal/issue-worker/") ||
+    pathname === "/api/health" ||
+    pathname === "/api/analysis/cron"
+  ) {
     return NextResponse.next({ request });
   }
 
