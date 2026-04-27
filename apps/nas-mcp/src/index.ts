@@ -170,18 +170,25 @@ async function getOrCreateSession(
     // Unknown session ID — server was restarted and lost in-memory state.
     // Fall through and create a fresh session rather than returning 404.
   }
-  // New session
+  // New session.
+  // Register the transport in the sessions map inside sessionIdGenerator so
+  // it is stored the instant the ID is created — before the HTTP response is
+  // written. Without this, a rapid follow-up request (e.g. notifications/
+  // initialized arriving before handleRequest() returns) would not find the
+  // session and create a spurious second transport, causing "Server not
+  // initialized" errors.
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
+    sessionIdGenerator: () => {
+      const id = randomUUID();
+      sessions.set(id, transport);
+      return id;
+    },
   });
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
   transport.onclose = () => {
     if (transport.sessionId) sessions.delete(transport.sessionId);
   };
-  if (transport.sessionId) {
-    sessions.set(transport.sessionId, transport);
-  }
   return { transport, isStale: sessionId !== undefined };
 }
 
@@ -275,10 +282,6 @@ const httpServer = createServer(async (req, res) => {
     }
 
     await transport.handleRequest(req, res);
-    // Store new session after first request sets the session ID
-    if ((!sessionId || isStale) && transport.sessionId) {
-      sessions.set(transport.sessionId, transport);
-    }
     return;
   }
 
