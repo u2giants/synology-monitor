@@ -53,6 +53,7 @@ services:
     network_mode: host         # must see the same network interfaces as the NAS
     pid: host                  # share host PID namespace so pkill/ps can reach DSM processes
     restart: unless-stopped
+    privileged: true            # required for raw block-device reads (disk latency test via dd iflag=direct)
     security_opt:
       - "apparmor=unconfined"  # Synology DSM rejects default apparmor profile on container init
     cap_add:

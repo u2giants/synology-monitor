@@ -22,7 +22,9 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bfdisk\b`),
 	regexp.MustCompile(`(?i)\bparted\b`),
 	regexp.MustCompile(`(?i)\bmdadm\s+--fail\b`),
-	regexp.MustCompile(`(?i)\bdd\s+if=`),
+	// Block dd writing TO real block devices (e.g. dd if=/dev/zero of=/dev/sda).
+	// dd reading FROM a device to /dev/null (latency test) is intentionally allowed.
+	regexp.MustCompile(`(?i)\bdd\b.*\bof=/dev/(?:sd|nvme|md|mmcblk|vd|xvd|hd)`),
 	regexp.MustCompile(`(?i)\bwipefs\b`),
 	// Root filesystem destruction
 	regexp.MustCompile(`(?i)\brm\s+(-\S*f\S*\s+)*/?$`),
