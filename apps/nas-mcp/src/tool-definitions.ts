@@ -1333,6 +1333,102 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "check_smart_extended",
+    description: "Deep per-disk SMART diagnostics via 'smartctl -x': full attribute table (including attr 199 UDMA_CRC_Error_Count for interface/slot errors), complete error log with error type (ICRC=interface vs UNC=media), self-test history, and SCT temperature/error-recovery data. Specify a device in filter (e.g. 'sda' or '/dev/sda') for full untruncated output on one disk, or omit to scan all disks at 80 lines each.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const spec = (input.filter as string | undefined)?.trim();
+      if (spec) {
+        const dev = quote(spec.startsWith("/") ? spec : `/dev/${spec}`);
+        return [
+          `echo '=== EXTENDED SMART: ${dev} ==='`,
+          "echo 'Attr 199 UDMA_CRC_Error_Count > 0  →  interface/cable/slot error (not disk media)'",
+          "echo 'Attr   5 Reallocated_Sector_Ct  > 0  →  bad sectors remapped by the drive internally'",
+          "echo 'Attr 197 Current_Pending_Sector  > 0  →  sectors unreadable, awaiting remap'",
+          "echo 'Attr 198 Offline_Uncorrectable   > 0  →  confirmed unreadable sectors'",
+          "echo 'Error log type ICRC = interface error;  UNC = media/sector error'",
+          "echo ''",
+          `smartctl -x ${dev} 2>&1`,
+        ].join("\n");
+      }
+      return [
+        "echo '=== EXTENDED SMART (all disks — use filter for full output on a single disk) ==='",
+        "echo 'Attr 199 UDMA_CRC_Error_Count > 0  →  interface/cable/slot error (not disk media)'",
+        "echo 'Error log type ICRC = interface;  UNC = media/sector'",
+        "echo ''",
+        "for d in /dev/sd?; do",
+        "  [ -b \"$d\" ] || continue",
+        "  echo \"=== $(basename \"$d\") ===\"",
+        "  smartctl -x \"$d\" 2>&1 | head -80",
+        "  echo ''",
+        "done",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "check_ata_port_errors",
+    description: "Diagnoses whether disk errors originate in the drive or the SATA slot/cable/controller. Shows: (1) dmesg ATA/AHCI errors tagged by port number — the port identifies the physical slot, independent of which drive is in it; (2) sysfs /sys/block/sd* symlinks mapping each drive to its ATA port number; (3) kernel ata_port error counters from sysfs; (4) SMART attr 199 UDMA_CRC_Error_Count per disk. High CRC + dmesg exceptions on a specific port after swapping drives = slot/backplane fault; errors that follow the drive = disk fault. Also reports /proc/sys/kernel/dmesg_restrict.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== dmesg_restrict ==='",
+      "restrict=$(cat /proc/sys/kernel/dmesg_restrict 2>/dev/null || echo 'unreadable')",
+      "echo \"dmesg_restrict = $restrict  (0=open, 1=requires CAP_SYSLOG — container has it via privileged:true)\"",
+      "echo ''",
+
+      "echo '=== DISK → ATA PORT MAPPING (sysfs symlinks) ==='",
+      "echo 'ATA port number = physical slot on the controller/backplane'",
+      "found_sysfs=0",
+      "for d in /sys/block/sd*; do",
+      "  [ -e \"$d\" ] || continue",
+      "  found_sysfs=1",
+      "  dev=$(basename \"$d\")",
+      "  link=$(readlink \"$d\" 2>/dev/null)",
+      "  ata=$(echo \"$link\" | grep -oE 'ata[0-9]+' | head -1)",
+      "  pci=$(echo \"$link\" | grep -oE '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-9]' | head -1)",
+      "  printf '/dev/%-6s  ATA port: %-8s  PCI: %s\\n' \"$dev\" \"${ata:-(unknown)}\" \"${pci:-(unknown)}\"",
+      "done 2>/dev/null",
+      "[ \"$found_sysfs\" -eq 0 ] && echo 'No sd* entries in /sys/block'",
+      "echo ''",
+
+      "echo '=== lsblk: TRANSPORT + SCSI HOST:CHANNEL:TARGET:LUN ==='",
+      "lsblk -o NAME,SIZE,TRAN,HCTL 2>/dev/null | grep -E '^NAME|^sd' || echo 'lsblk not available'",
+      "echo ''",
+
+      "echo '=== ATA PORT SYSFS ERROR COUNTERS ==='",
+      "found_ata=0",
+      "for port_dir in /sys/class/ata_port/ata* /host/sys/class/ata_port/ata*; do",
+      "  [ -d \"$port_dir\" ] || continue",
+      "  found_ata=1",
+      "  port=$(basename \"$port_dir\")",
+      "  err=$(cat \"$port_dir/ata_error\" 2>/dev/null)",
+      "  printf '%s  ata_error=%s\\n' \"$port\" \"${err:-(no counter)}\"",
+      "done 2>/dev/null",
+      "[ \"$found_ata\" -eq 0 ] && echo 'No ata_port entries found in sysfs (normal on some DSM kernels)'",
+      "echo ''",
+
+      "echo '=== KERNEL ATA / AHCI ERRORS (dmesg) ==='",
+      "dmesg -T 2>/dev/null | grep -iE 'ata[0-9]+\\.[0-9]+|exception Emask|hard resetting link|SATA link (down|up)|failed command|I/O error.*sd[a-z]|blk_update_request.*I/O error|ahci.*error|NCQ.*error' | tail -60",
+      "[ $? -ne 0 ] && echo 'No ATA/AHCI errors in dmesg (or dmesg not accessible)'",
+      "echo ''",
+
+      "echo '=== SMART ATTR 199: UDMA CRC ERROR COUNT (interface fault indicator) ==='",
+      "echo 'Non-zero CRC count  →  data corruption on the SATA link (cable/backplane/controller port)'",
+      "printf '%-8s  %-14s  %-12s  %s\\n' 'DISK' 'UDMA_CRC(199)' 'REALLOC(5)' 'MODEL'",
+      "for d in /dev/sd?; do",
+      "  [ -b \"$d\" ] || continue",
+      "  attrs=$(smartctl -A \"$d\" 2>/dev/null)",
+      "  crc=$(echo \"$attrs\" | awk '/UDMA_CRC_Error_Count/{print $10}' | head -1)",
+      "  realloc=$(echo \"$attrs\" | awk '/Reallocated_Sector_Ct/{print $10}' | head -1)",
+      "  model=$(smartctl -i \"$d\" 2>/dev/null | awk -F: '/Device Model|Model Number/{gsub(/^ +/,\"\",$2); print $2}' | head -1 | cut -c1-24)",
+      "  printf '%-8s  %-14s  %-12s  %s\\n' \"$(basename \"$d\")\" \"${crc:--}\" \"${realloc:--}\" \"$model\"",
+      "done 2>/dev/null || echo 'smartctl not available or no disks found'",
+    ].join("\n"),
+  },
+
+  {
     name: "check_volume_quota_and_inode_pressure",
     description: "Shows inode usage pressure and Btrfs qgroup quota state for all data volumes. High inode usage can prevent new files from being created even when disk space is available.",
     write: false,
