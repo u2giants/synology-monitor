@@ -2169,10 +2169,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "restart_nas_api",
-    description: "WRITE — Restarts the NAS API container (the service that runs commands on the NAS). Use if the API becomes unresponsive. Shows a preview and asks for your approval.",
+    description: "WRITE — Recreates and starts the NAS API container from the current docker-compose config (picks up any config changes like privileged mode). Use if the API becomes unresponsive or after a compose config change. Shows a preview and asks for your approval.",
     write: true,
     params: { target },
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose restart nas-api",
+    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose up -d nas-api",
   },
 
   {

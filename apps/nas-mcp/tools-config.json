@@ -232,7 +232,7 @@
     "start_monitor_agent": "WRITE: Starts the Synology Monitor agent — always asks your approval first",
     "pull_monitor_agent": "WRITE: Downloads the latest monitor agent version — always asks your approval first",
     "build_monitor_agent": "WRITE: Rebuilds the monitor agent container — always asks your approval first",
-    "restart_nas_api": "WRITE: Restarts the NAS API container — always asks your approval first",
+    "restart_nas_api": "WRITE: Recreates the NAS API container from current compose config (applies privileged/volume changes) — always asks your approval first",
     "restart_synology_drive_server": "WRITE: Restarts the Synology Drive package — always asks your approval first",
     "restart_synology_drive_sharesync": "WRITE: Restarts the ShareSync package — always asks your approval first",
     "restart_hyper_backup": "WRITE: Restarts the Hyper Backup package — always asks your approval first",
