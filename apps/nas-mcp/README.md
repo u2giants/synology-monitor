@@ -1,13 +1,13 @@
 # NAS MCP Server
 
-Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protocol (MCP) over SSE.
+Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protocol (MCP) over Streamable HTTP.
 
 ## Connection
 
 | | |
 |---|---|
 | **URL** | `https://nas-mcp.designflow.app/sse` |
-| **Transport** | SSE (Server-Sent Events) |
+| **Transport** | Streamable HTTP (the `/sse` URL is preserved for client backwards compatibility) |
 | **Auth** | `Authorization: Bearer <token>` |
 
 Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment for this service.
@@ -210,7 +210,7 @@ Write tools always require `confirmed: true` — the MCP server shows a preview 
 | `start_monitor_agent` | Start the agent |
 | `pull_monitor_agent` | Pull latest agent image |
 | `build_monitor_agent` | Rebuild agent container |
-| `restart_nas_api` | Restart the NAS API container |
+| `restart_nas_api` | Recreate the NAS API container from current compose config (`docker compose up -d nas-api`) — picks up any compose config changes |
 | `restart_synology_drive_server` | Restart the Synology Drive package |
 | `restart_synology_drive_sharesync` | Restart ShareSync |
 | `restart_hyper_backup` | Restart Hyper Backup |
@@ -248,7 +248,7 @@ To enable: copy the name into `enabled_write_tools` in `tools-config.json` and p
 
 Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-operating-rules.md)):
 
-- Push to `master` with changes under `apps/nas-mcp/**`
+- Push to `main` with changes under `apps/nas-mcp/**`
 - GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
 - Coolify auto-deploys (app UUID: `efl17f5iocnz94840pexre9d`, project: Synology Monitor → production)
 

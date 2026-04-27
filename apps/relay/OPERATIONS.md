@@ -2,47 +2,20 @@
 
 ## Status
 
-Implemented in the repo:
+The relay is live at `https://mon.designflow.app/relay` (local: `http://127.0.0.1:8787`).
 
-- public relay app exists under [apps/relay](apps/relay:1)
-- NAS API repo hardening is implemented in:
-  - [apps/nas-api/cmd/server/main.go](apps/nas-api/cmd/server/main.go:1)
-  - [apps/nas-api/internal/validator/validator.go](apps/nas-api/internal/validator/validator.go:1)
-  - [apps/nas-api/Dockerfile](apps/nas-api/Dockerfile:1)
-- Synology `nas-api` live mounts were expanded on both NASes
+It is deployed as a Docker container on the VPS. There is no GitHub Actions workflow for it — deployments are manual.
 
-Important:
-
-- The stricter NAS API code is **not live yet** until the NAS API image is rebuilt and redeployed.
-- The expanded mounts **are live now** on both NASes.
-- The relay is live on this VPS at:
-  - `https://mon.designflow.app/relay`
-  - local-only container endpoint: `http://127.0.0.1:8787`
-
-## Required relay env
-
-- `PORT`
-- `RELAY_ALLOWED_ORIGINS`
-- `RELAY_BEARER_TOKEN`
-- `RELAY_ADMIN_SECRET`
-- `NAS_EDGE1_API_URL`
-- `NAS_EDGE1_API_SECRET`
-- `NAS_EDGE1_API_SIGNING_KEY`
-- `NAS_EDGE2_API_URL`
-- `NAS_EDGE2_API_SECRET`
-- `NAS_EDGE2_API_SIGNING_KEY`
-
-## Run locally on the VPS
-
-From repo root:
+## Running locally on the VPS
 
 ```bash
 cd apps/relay
 cp .env.example .env
+# edit .env with real values
 node src/server.mjs
 ```
 
-## Docker run example
+## Docker deployment
 
 ```bash
 docker build -t synology-monitor-relay apps/relay
@@ -54,64 +27,16 @@ docker run -d \
   synology-monitor-relay
 ```
 
-## Recommended deployment shape
+## Recommended setup
 
-- run the relay on the VPS, not on Lovable
-- expose the relay over HTTPS
-- keep NAS API private on Tailscale only
-- let the Lovable app call the relay, not the NAS API directly
-
-## Recommended next deployment steps
-
-1. Deploy the relay on the VPS.
-2. Put it behind HTTPS.
-3. Restrict `RELAY_ALLOWED_ORIGINS` to the exact Lovable app origin.
-4. Update the Lovable app to call the relay.
-5. Rebuild and redeploy the NAS API image so the stricter validator and extra runtime tools become live.
+- Run the relay on the VPS, not on Lovable
+- Expose it over HTTPS via the existing Coolify/Caddy reverse proxy
+- Restrict `RELAY_ALLOWED_ORIGINS` to the exact Lovable app origin
+- Keep NAS API private on Tailscale only
 
 ## Verification
 
-Relay:
-
 ```bash
 curl http://127.0.0.1:8787/health
-```
-
-Catalog:
-
-```bash
-curl \
-  -H "Authorization: Bearer $RELAY_BEARER_TOKEN" \
-  http://127.0.0.1:8787/catalog
-```
-
-Preview:
-
-```bash
-curl \
-  -H "Authorization: Bearer $RELAY_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"target":"edgesynology1","action":"check_backup_status","input":{"lookbackHours":12}}' \
-  http://127.0.0.1:8787/actions/preview
-```
-
-Execute read action:
-
-```bash
-curl \
-  -H "Authorization: Bearer $RELAY_BEARER_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"target":"edgesynology1","action":"check_backup_status","input":{"lookbackHours":12}}' \
-  http://127.0.0.1:8787/actions/exec
-```
-
-Execute write action:
-
-```bash
-curl \
-  -H "Authorization: Bearer $RELAY_BEARER_TOKEN" \
-  -H "X-Relay-Admin-Secret: $RELAY_ADMIN_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"target":"edgesynology1","action":"restart_monitor_agent"}' \
-  http://127.0.0.1:8787/actions/exec
+curl -H "Authorization: Bearer $RELAY_BEARER_TOKEN" http://127.0.0.1:8787/catalog
 ```

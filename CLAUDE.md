@@ -16,10 +16,10 @@ Key constraints repeated here so they cannot be missed:
 ## Codebase orientation
 
 - `apps/nas-mcp/` — MCP server that exposes NAS tools to AI agents over HTTPS
-- `apps/nas-api/` — REST API running on each Synology NAS (SSH bridge)
+- `apps/nas-api/` — REST API running on each Synology NAS (three-tier shell execution, NOT an SSH bridge)
 - `apps/agent/` — monitoring agent deployed on each NAS via Docker
 - `apps/web/` — Next.js dashboard at `https://mon.designflow.app`
-- `apps/relay/` — relay service bridging web → NAS API
+- `apps/relay/` — relay service for external clients (web app talks to NAS API directly over Tailscale)
 - `.github/workflows/` — one workflow per app, all trigger on push to `main`
 
 ## Infrastructure
@@ -33,4 +33,4 @@ Key constraints repeated here so they cannot be missed:
 - [AI_OPERATING_RULES.md](./AI_OPERATING_RULES.md) — deployment and safety rules
 - [AGENTS.md](./AGENTS.md) — full architecture and component map
 - [AI_INFRASTRUCTURE_GUIDE.md](./AI_INFRASTRUCTURE_GUIDE.md) — live infrastructure reference
-- [ROO_MCP_GUIDE.md](./ROO_MCP_GUIDE.md) — MCP server details and tool lists
+- [apps/nas-mcp/README.md](./apps/nas-mcp/README.md) — MCP server tool catalog and details

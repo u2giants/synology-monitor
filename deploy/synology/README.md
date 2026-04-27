@@ -1,273 +1,159 @@
-# Synology Agent Deployment
+# NAS Deployment
 
-Last verified: 2026-04-09 UTC
+Deployment contract for the NAS-side monitor stack.
 
-Scope:
-- Canonical deployment and runtime contract for the Synology agent and monitor-stack controls.
+## Layout on each NAS
 
-This file documents the actual deployment contract for the Synology agent.
-
-It also documents the monitor-stack control assumption used by the web app:
-- monitor write actions target `/volume1/docker/synology-monitor-agent`
-- the web app does not assume arbitrary Docker control outside that stack
-
-## Canonical layout on each NAS
-
-Live directory:
-```text
+```
 /volume1/docker/synology-monitor-agent/
-  compose.yaml
-  .env
+  compose.yaml      ← keep in sync with deploy/synology/docker-compose.agent.yml
+  .env              ← generated from nas-1.env.example or nas-2.env.example
 ```
 
-`compose.yaml` should be kept in sync with:
-- [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
-
-`.env` is generated from the per-NAS example file:
-- NAS 1: [nas-1.env.example](deploy/synology/nas-1.env.example)
-- NAS 2: [nas-2.env.example](deploy/synology/nas-2.env.example)
+The file is named `compose.yaml` on the NAS. The authoritative source in the repo is `deploy/synology/docker-compose.agent.yml`. They should be kept in sync manually when you deploy compose config changes.
 
 ## Running containers
 
-The compose stack runs three containers:
-
 | Container | Image | Purpose |
-|---|---|---|
-| `synology-monitor-agent` | `ghcr.io/u2giants/synology-monitor-agent:latest` | Passive metrics collector, pushes to Supabase |
-| `synology-monitor-nas-api` | `ghcr.io/u2giants/synology-monitor-nas-api:latest` | Three-tier HTTP shell execution API for issue agent |
-| `synology-monitor-watchtower` | `containrrr/watchtower` | Auto-updates both containers from GHCR |
+|-----------|-------|---------|
+| `synology-monitor-agent` | `ghcr.io/u2giants/synology-monitor-agent:latest` | Passive metrics/log collector, pushes to Supabase |
+| `synology-monitor-nas-api` | `ghcr.io/u2giants/synology-monitor-nas-api:latest` | Three-tier HTTP shell execution API |
+| `synology-monitor-watchtower` | `containrrr/watchtower` | Polls GHCR every 5 minutes and restarts updated containers |
 
-The NAS API listens on port 7734 (configurable via `NAS_API_PORT` in `.env`).
+NAS API listens on port 7734 (configurable via `NAS_API_PORT` in `.env`).
 
-Docker binary on Synology:
-- `/var/packages/ContainerManager/target/usr/bin/docker`
+Docker binary on Synology: `/var/packages/ContainerManager/target/usr/bin/docker`
 
-Monitor-stack control commands used by the web app and issue agent:
-- `docker compose stop`
-- `docker compose up -d`
-- `docker compose restart`
-- `docker compose pull`
-- `docker compose build --pull`
+## Normal update flow (code changes only)
 
-All of them run from:
-- `/volume1/docker/synology-monitor-agent`
+1. Push to `main`
+2. GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-{agent,nas-api}:latest`
+3. Watchtower polls GHCR within 5 minutes, pulls the new image, and restarts the container
 
-## Deployment model
+No manual NAS access required for code-only changes.
 
-1. Push to `master`
-2. GitHub Actions builds and publishes:
-   - `ghcr.io/u2giants/synology-monitor-agent:latest`
-3. Each NAS must pull and recreate the container
+## Compose config changes (volumes, privileged, env)
 
-The agent does not auto-update itself.
+Watchtower restarts containers from their **original creation parameters** — it does not re-read `compose.yaml`. When you change `docker-compose.agent.yml` (e.g., adding mounts, changing `privileged`), the compose file must be updated on the NAS and the container must be recreated:
 
-## Required update sequence
-
-Run this on the NAS:
+**After pushing to `main` and waiting for Watchtower to pull the new image:**
 
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 cd /volume1/docker/synology-monitor-agent
 
+# Update compose.yaml with the new content from the repo
+# Then recreate the container:
+$DOCKER compose -f compose.yaml up -d nas-api        # just the NAS API
+# or
+$DOCKER compose -f compose.yaml up -d                # full stack
+```
+
+Alternatively, use the `restart_nas_api` MCP write tool — it runs `docker compose up -d nas-api`, which recreates the container from the current compose file.
+
+**Full stop-and-recreate (when Synology Container Manager reuses old parameters):**
+
+```sh
 $DOCKER compose -f compose.yaml pull
 $DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER compose -f compose.yaml up -d
 ```
 
-Why `stop` and `rm` matter:
-- Synology Docker/Container Manager often reuses the existing container definition
-- `compose up -d` alone is not reliable for switching to the newly pulled image
+## NAS API container requirements
 
-## Coolify web app environment variables
+The `nas-api` service in `docker-compose.agent.yml` requires:
 
-The web app reads NAS API credentials from these environment variables (set in Coolify):
+| Config | Why |
+|--------|-----|
+| `privileged: true` | Raw block device access for `dd iflag=direct` (disk latency tests) and `smartctl` |
+| `pid: host` | `pkill`/`ps` must reach DSM processes outside the container |
+| `/dev:/dev` | Exposes `/dev/sda`–`/dev/sdf` and other block devices inside the container |
+| `cap_add: SYS_ADMIN` | `btrfs subvolume list`, `btrfs scrub`, and snapshot operations |
+| `security_opt: apparmor=unconfined` | Synology DSM rejects the default apparmor profile on container init |
 
-```
-NAS_EDGE1_API_URL=http://100.107.131.35:7734
-NAS_EDGE1_API_SECRET=<must match NAS_API_SECRET in NAS 1 .env>
-NAS_EDGE1_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 1 .env>
+Without `privileged: true` and `/dev:/dev`, disk latency tests and SMART extended diagnostics will fail because block device files don't exist inside the container.
 
-NAS_EDGE2_API_URL=http://100.107.131.36:7734
-NAS_EDGE2_API_SECRET=<must match NAS_API_SECRET in NAS 2 .env>
-NAS_EDGE2_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 2 .env>
-```
-
-The exact values are in [apps/web/.env.example](apps/web/.env.example).
-
-## AGENT_IMAGE_TAG rule
-
-`.env` should normally contain:
-
-```sh
-AGENT_IMAGE_TAG=latest
-```
-
-If it is pinned to a SHA tag, pulling `latest` will not change the running image.
-
-## Required mounts
-
-The canonical compose file mounts:
+## Required mounts (agent)
 
 | Host path | Container path | Why |
-|---|---|---|
-| `/proc` | `/host/proc` | process stats, disk stats, network stats, proc I/O fallback |
-| `/sys` | `/host/sys` | cgroup stats, Btrfs counters, thermal data |
-| `/etc/passwd` | `/host/etc/passwd` | UID to username resolution |
-| `/var/log` | `/host/log` | system logs, Drive logs, backup logs |
+|-----------|---------------|-----|
+| `/proc` | `/host/proc` | Per-process CPU/mem/IO and disk stats |
+| `/sys` | `/host/sys` | cgroup IO stats, Btrfs counters, thermal data |
+| `/etc/passwd` | `/host/etc/passwd` | UID→username resolution |
+| `/var/log` | `/host/log` | System, Drive, backup logs |
 | `/var/packages` | `/host/packages` | Synology package logs |
-| `/volume1/@appdata/HyperBackup` | `/host/appdata/HyperBackup` | Hyper Backup task fallback metadata |
+| `/volume1/@appdata/HyperBackup` | `/host/appdata/HyperBackup` | Hyper Backup fallback task metadata |
 
-This `/sys` mount is not optional for the current design. Without it:
-- cgroup-based container I/O becomes incomplete
-- Btrfs error collection cannot work correctly
+The `/sys` mount is required. Without it: cgroup-based container I/O stats are incomplete, and Btrfs error collection cannot work.
 
 ## Share mounts
 
-The compose file mounts explicit shares instead of `/volume1` because Synology Container Manager rejects top-level `/volume1` bind mounts on compose-driven recreates.
+Explicit share-by-share mounts are used instead of `/volume1` because Synology Container Manager rejects top-level `/volume1` bind mounts on compose-driven recreates.
 
-If a share path does not exist on a NAS:
-- either create the share
-- or remove/comment that bind from the NAS-local compose file and matching env references
+If a share path does not exist on a NAS, either create the share or remove that bind from the local `compose.yaml` and the corresponding env var.
 
-## Expected startup signals
+## Environment variables
 
-You should see startup lines for all major collectors, including:
-- `schedtasks`
-- `hyperbackup`
-- `infra`
-- `storagepool`
-- `container-io`
-- `share-health`
-- `service-health`
-- `sys-extras`
+See `deploy/synology/nas-1.env.example` and `nas-2.env.example` for the full list.
 
-## Low-I/O design
+Key variables:
 
-The agent is intentionally conservative about host disk I/O:
-- the new `infra` collector reads only small proc/sys counters, `statfs`, and small Hyper Backup metadata files
-- it does not recursively scan shares
-- it does not tail large files beyond the existing log watcher behavior
-- default cadence is `INFRA_INTERVAL=2m`
+| Variable | Purpose |
+|----------|---------|
+| `NAS_API_SECRET` | Bearer token for NAS API access (must match web app `NAS_EDGE*_API_SECRET`) |
+| `NAS_API_APPROVAL_SIGNING_KEY` | HMAC key for approval tokens (must match web app `NAS_EDGE*_API_SIGNING_KEY`) |
+| `NAS_API_PORT` | NAS API listening port (default `7734`) |
+| `AGENT_IMAGE_TAG` | Image tag to deploy (keep as `latest` for auto-updates) |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_KEY` | Supabase API key for the agent |
+| `TZ` | Timezone (e.g., `America/New_York`) |
 
-The highest-I/O collectors remain:
-- process snapshots
-- diskstats
-- log watcher
-
-If NAS disk pressure becomes a concern, raise these env vars first:
-- `PROCESS_INTERVAL`
-- `DISKSTATS_INTERVAL`
-- `LOG_INTERVAL`
-- `INFRA_INTERVAL`
-
-## Live telemetry expectations
-
-### Confirmed working
-
-- `smon_container_io` should receive rows after the second 30-second sample
-- `smon_metrics.type='cpu_iowait_pct'` should continue to receive rows
-- `smon_metrics.type in ('net_rx_errors_ps','net_tx_errors_ps','share_used_bytes','share_growth_bytes')` should receive rows
-- `scheduled_task` warnings can appear in `smon_logs`
-- snapshot-replication API warnings can appear in `smon_logs`
-- Hyper Backup fallback metrics can appear even when the DSM API does not return task rows
-
-Operator-visible surfaces that depend on that telemetry:
-- `/metrics` CPU chart includes `cpu_iowait_pct`
-- `/metrics` shows a current iowait card
-
-### Not guaranteed to produce rows on current DSM
-
-The following collectors are deployed, but the current NAS units do not yet fully support their request shapes:
-- scheduled tasks
-- snapshot replication
-- possibly Hyper Backup task listing
-- DSM Log Center structured log listing
-
-Important:
-- empty tables do not imply healthy subsystems
-- check `smon_logs` for explicit API-unavailable warnings
-
-## Current DSM-specific caveats
-
-### Scheduled tasks
-
-Observed on current NAS:
-- `SYNO.Core.TaskScheduler` is advertised
-- current call shape returns `API error code: 103`
-
-Current behavior:
-- no task rows yet
-- warning log emitted instead
-
-### Snapshot replication
-
-Observed on current NAS:
-- current attempted APIs return unsupported/unavailable responses
-
-Current behavior:
-- no snapshot rows yet
-- warning log emitted instead
-
-### Hyper Backup
-
-Current behavior:
-- collector is deployed
-- DSM API task rows may still be unavailable on some DSM builds
-- fallback task metadata is now read from Hyper Backup appdata
-- last-success age and error-code metrics can continue even when the API is empty
-
-### DSM structured Log Center entries
-
-Current behavior:
-- parser handles string log levels now
-- live row ingestion is not yet confirmed on the current NASes
+If `AGENT_IMAGE_TAG` is pinned to a SHA, Watchtower will not pick up `latest` on the next pull. Reset to `latest` for normal operation.
 
 ## Verification commands
 
-### Confirm running revision
-
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
-$DOCKER ps --format 'table {{.Names}}\t{{.Status}}\t{{.Label "org.opencontainers.image.revision"}}'
-```
 
-### Confirm `/host/sys` exists in the running container
+# Check all three containers are running
+$DOCKER ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
-```sh
-$DOCKER exec synology-monitor-agent sh -lc 'ls -d /host/sys /host/sys/fs /host/sys/fs/btrfs 2>/dev/null || true'
-```
+# Check the deployed revision
+$DOCKER ps --format 'table {{.Names}}\t{{.Label "org.opencontainers.image.revision"}}'
 
-### Check recent agent logs
+# NAS API health check
+curl http://localhost:7734/health
 
-```sh
+# Recent agent logs
 $DOCKER logs --tail 120 synology-monitor-agent 2>&1
+
+# Recent NAS API logs
+$DOCKER logs --tail 60 synology-monitor-nas-api 2>&1
+
+# Verify /dev is accessible inside nas-api (disk latency tests need this)
+$DOCKER exec synology-monitor-nas-api ls /dev/sd* 2>/dev/null
 ```
 
-### Check current CPU iowait manually on the NAS
+## Tuning agent I/O impact
 
-```sh
-vmstat 1 3 | tail -1
-top -b -n2 -d0.3 2>/dev/null | grep 'Cpu(s)' | tail -1
-```
+The agent is designed to be low-I/O. If NAS disk pressure becomes a concern, increase these intervals:
 
-The web tool `check_cpu_iowait` runs equivalent checks for the issue agent.
+| Env var | Default | Controls |
+|---------|---------|---------|
+| `PROCESS_INTERVAL` | 15s | Process snapshots |
+| `DISKSTATS_INTERVAL` | 15s | Disk I/O stats |
+| `LOG_INTERVAL` | 10s | Log watcher |
+| `INFRA_INTERVAL` | 2m | Network link, share metrics, HyperBackup fallback |
 
-### Check for explicit blind-spot warnings in Supabase
+## DSM-specific caveats
 
-Look for `smon_logs.source` values such as:
-- `scheduled_task`
-- `hyperbackup`
-- `dsm_system_log`
-- `storage` messages beginning with `Snapshot replication API unavailable:`
+**Scheduled tasks:** `SYNO.Core.TaskScheduler` v4 returns error 103 on current NAS builds. The agent falls back through v3/v2/v1 automatically. Warning logs appear in `smon_logs` if all versions fail.
 
-## Why the latest deployment changes were made
+**Snapshot replication:** Uses `SYNO.DR.Plan` API. `edgesynology2` has the package; `edgesynology1` does not. No DR plans are currently configured on either NAS.
 
-The extended telemetry work originally had two structural problems:
-- the code emitted data for tables that were not in tracked schema
-- DSM API failures often degraded into “no data” without any warning
+**Hyper Backup:** DSM API task listing may be unreliable. The agent falls back to reading from `/volume1/@appdata/HyperBackup/` — this path must be mounted (it is, in the canonical compose file).
 
-The deployment and runtime changes in this repo now enforce:
-- schema exists before emitter code depends on it
-- unsupported DSM APIs surface as warning logs
-- `/sys` is mounted because the collectors now rely on it
+**DSM Log Center entries:** The parser handles both int and string log level formats. Live ingestion is not yet verified.
+
+An empty telemetry table does not mean a subsystem is healthy. Check `smon_logs` for `API unavailable` or similar warning entries.

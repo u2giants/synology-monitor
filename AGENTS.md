@@ -1,382 +1,249 @@
 # Synology Monitor — Architecture Guide
 
-Last verified: 2026-04-09 UTC
-
-Scope:
-- Canonical architecture overview.
-- Use this to understand subsystem boundaries, key files, and non-negotiable rules.
-
-This file is the canonical technical overview for this repository.
+This is the canonical technical reference for this repository. Read it before adding features, debugging, or running any diagnostic session.
 
 ## System purpose
 
-This system monitors two Synology NAS devices and gives the operator:
-- live telemetry
-- grouped issues
-- a persistent issue conversation
-- a controlled approval path for fixes
-
-The product priority is not generic server monitoring. It is:
-- Synology Drive / ShareSync reliability
-- file operation visibility
-- sync and replication failures
-- storage and I/O attribution
-- silent task and backup failures
-- operator-guided resolution per issue
-
-## High-level architecture
-
-### Agent side
-
-Each NAS runs the Go agent container. The agent:
-- polls DSM APIs
-- reads `/proc`, `/sys`, and log files
-- watches shared folders for security-style events
-- writes telemetry into a local SQLite WAL
-- flushes batched payloads to Supabase
-
-### Web side
-
-The Next.js app:
-- reads telemetry from Supabase
-- groups telemetry into issues
-- stores durable issue threads, evidence, actions, and messages
-- runs the issue agent loop against one issue at a time
-- exposes restricted monitor-stack controls and current iowait visibility to operators
-
-### Persistence
-
-Supabase is the shared source of truth for:
-- telemetry
-- detected issues
-- issue memory
-- action history
-
-## Deployment architecture
-
-### Web
-
-The web app deploys through GitHub Actions and Coolify:
-1. push to `main`
-2. [web-image.yml](.github/workflows/web-image.yml) builds and pushes the web image
-3. workflow triggers Coolify redeploy
-
-### Agent
-
-The agent deploys through GitHub Actions plus NAS-side container recreation:
-1. push to `main`
-2. [agent-image.yml](.github/workflows/agent-image.yml) builds and pushes the agent image
-3. each NAS pulls and recreates `synology-monitor-agent`
-
-Canonical compose file:
-- [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
-
-## Web architecture
-
-### Primary issue flow
-
-Core files:
-- [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
-- [issue-store.ts](apps/web/src/lib/server/issue-store.ts)
-- [issue-workflow.ts](apps/web/src/lib/server/issue-workflow.ts)
-- [workflow-store.ts](apps/web/src/lib/server/workflow-store.ts)
-- [fact-store.ts](apps/web/src/lib/server/fact-store.ts)
-- [capability-store.ts](apps/web/src/lib/server/capability-store.ts)
-- [issue-view.ts](apps/web/src/lib/server/issue-view.ts)
-- [copilot-issues.ts](apps/web/src/lib/server/copilot-issues.ts)
-- [issue-detector.ts](apps/web/src/lib/server/issue-detector.ts)
-- [tools.ts](apps/web/src/lib/server/tools.ts)
-- [nas-api-client.ts](apps/web/src/lib/server/nas-api-client.ts)
-- [route.ts](apps/web/src/app/api/docker/actions/route.ts)
-
-The current system is issue-centric:
-- one issue record per problem
-- one thread of messages per issue
-- evidence and actions attached to that issue
-- normalized facts attached to the issue
-- capability state tracked per NAS
-- issue jobs and transitions tracked explicitly
-- monitor-stack operations are routed through explicit action templates, not generic shell access
-
-The old phase-machine model is not the authoritative architecture anymore.
-
-### Workflow ownership
-
-The workflow is now backend-owned:
-- request handlers enqueue jobs into `smon_issue_jobs`
-- the issue worker drains jobs
-- transitions are recorded in `smon_issue_state_transitions`
-
-Worker runtime:
-- `inline` mode: request path drains jobs immediately
-- `background` mode: the dedicated worker endpoint drains jobs using service-role Supabase access
-
-Relevant files:
-- [issue-workflow.ts](apps/web/src/lib/server/issue-workflow.ts)
-- [workflow-store.ts](apps/web/src/lib/server/workflow-store.ts)
-- [admin.ts](apps/web/src/lib/supabase/admin.ts)
-- [drain/route.ts](apps/web/src/app/api/internal/issue-worker/drain/route.ts)
-- [issue-worker.mjs](apps/web/scripts/issue-worker.mjs)
-- [docker-entrypoint.sh](apps/web/docker-entrypoint.sh)
-
-### Tooling and operator control
-
-The web app now exposes two important operational surfaces:
-- direct `cpu_iowait_pct` visibility in `/metrics`
-- restricted monitor-stack Docker actions in `/docker`
-
-Files:
-- [page.tsx](apps/web/src/app/(dashboard)/metrics/page.tsx)
-- [page.tsx](apps/web/src/app/(dashboard)/docker/page.tsx)
-- [tools.ts](apps/web/src/lib/server/tools.ts)
-- [route.ts](apps/web/src/app/api/docker/actions/route.ts)
-
-Important tool additions:
-- `check_cpu_iowait`
-- `stop_monitor_agent`
-- `start_monitor_agent`
-- `restart_monitor_agent`
-- `pull_monitor_agent`
-- `build_monitor_agent`
-
-Scope rule:
-- these Docker write actions are limited to `/volume1/docker/synology-monitor-agent`
-- they do not grant arbitrary Docker control over unrelated containers
-
-### Issue agent behavior
-
-For one cycle:
-1. load issue record
-2. load recent issue messages
-3. load recent actions and evidence
-4. gather telemetry context
-5. derive normalized facts from telemetry
-6. update per-NAS capability state
-7. call the decision model
-8. persist updated issue state, reply, evidence, and actions
-9. run auto-approved diagnostics if appropriate
-10. stop at approval boundaries for remediation
-
-Important design rule:
-- query failures and missing telemetry must be represented as degraded visibility, not mistaken for subsystem health
-
-That is now enforced through:
-- `telemetry_errors` in [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
-- persisted normalized facts in [fact-store.ts](apps/web/src/lib/server/fact-store.ts)
-- persisted capability registry rows in [capability-store.ts](apps/web/src/lib/server/capability-store.ts)
-
-## Agent architecture
-
-### Entry point
-
-All collectors are started from:
-- [main.go](apps/agent/cmd/agent/main.go)
-
-### WAL and sender
-
-The sender:
-- buffers writes locally
-- flushes every 30 seconds
-- writes per-table payload batches
-
-Files:
-- [sender.go](apps/agent/internal/sender/sender.go)
-- [types.go](apps/agent/internal/sender/types.go)
-
-### DSM client
-
-All DSM API access goes through:
-- [client.go](apps/agent/internal/dsm/client.go)
-
-Recent important fixes here:
-- system log levels can be parsed from int or string
-- scheduled-task / backup / snapshot collectors no longer silently return nil on API failure
-
-## Collector inventory
-
-### Always-on collectors
-
-| Collector | File | Primary outputs | Interval |
-|---|---|---|---|
-| system | [system.go](apps/agent/internal/collector/system.go) | `smon_metrics`, `smon_container_status` | 30s |
-| storage | [system.go](apps/agent/internal/collector/system.go) | `smon_storage_snapshots` | 60s |
-| drive | [drive.go](apps/agent/internal/collector/drive.go) | Drive tables, sync task data, log entries | 30s |
-| process | [process.go](apps/agent/internal/collector/process.go) | `smon_process_snapshots` | 15s |
-| diskstats | [diskstats.go](apps/agent/internal/collector/diskstats.go) | `smon_disk_io_stats` | 15s |
-| connections | [connections.go](apps/agent/internal/collector/connections.go) | `smon_net_connections` | 30s |
-| logwatcher | [watcher.go](apps/agent/internal/logwatcher/watcher.go) | `smon_logs` | 10s |
-| sharehealth | [sharehealth.go](apps/agent/internal/collector/sharehealth.go) | `smon_logs`, `smon_metrics` | 2m |
-| services | [services.go](apps/agent/internal/collector/services.go) | `smon_service_health`, logs, metrics | 60s |
-| sysextras | [sysextras.go](apps/agent/internal/collector/sysextras.go) | `smon_metrics`, `smon_logs` | 30s |
-| custom | [custom.go](apps/agent/internal/collector/custom.go) | `smon_custom_metric_data` | 60s poll |
-| security | [watcher.go](apps/agent/internal/security/watcher.go) | `smon_security_events` | event-driven |
-| schedtasks | [schedtasks.go](apps/agent/internal/collector/schedtasks.go) | `smon_scheduled_tasks`, warning logs | 5m |
-| hyperbackup | [hyperbackup.go](apps/agent/internal/collector/hyperbackup.go) | `smon_backup_tasks`, warning logs | 5m |
-| storagepool | [storagepool.go](apps/agent/internal/collector/storagepool.go) | `smon_snapshot_replicas`, storage logs, metrics | 60s / 5m |
-| container_io | [container_io.go](apps/agent/internal/collector/container_io.go) | `smon_container_io` | 30s |
-
-### Important collector behavior notes
-
-#### `container_io`
-
-Implemented in:
-- [container_io.go](apps/agent/internal/collector/container_io.go)
-
-Behavior:
-- tries cgroup files under `/host/sys`
-- falls back to `/sys`
-- if Synology’s blkio files are absent, falls back to summing `/proc/<pid>/io` for cgroup task PIDs
-
-Status:
-- verified live
-- `smon_container_io` now has rows in production
-
-#### `sysextras`
-
-Implemented in:
-- [sysextras.go](apps/agent/internal/collector/sysextras.go)
-
-Behavior:
-- emits `cpu_iowait_pct` into `smon_metrics`
-- that metric is consumed by issue detection, normalized facts, and the metrics UI
-
-Status:
-- verified live
-- now first-class in the operator UI
-
-#### `schedtasks`
-
-Implemented in:
-- [schedtasks.go](apps/agent/internal/collector/schedtasks.go)
+Monitor two Synology NAS devices and give the operator:
+- live telemetry (CPU, I/O, disk, network, sync state)
+- grouped issues with persistent memory
+- AI-assisted diagnosis that stops at approval boundaries
+- controlled write access for common remediations
 
-Behavior:
-- attempts DSM scheduled-task API
-- writes rows if supported
-- writes a warning log if API is unavailable
+The product priority is: Synology Drive / ShareSync reliability, file operation visibility, sync and replication failures, storage and I/O attribution, and silent backup failures. It is **not** a generic server monitoring platform.
 
-Live reality:
-- the current NAS advertises `SYNO.Core.TaskScheduler`
-- current request shape returns `API error code: 103`
-- no task rows verified yet
-- warning logs are verified
+---
 
-#### `hyperbackup`
+## Components
 
-Implemented in:
-- [hyperbackup.go](apps/agent/internal/collector/hyperbackup.go)
+### Agent (`apps/agent/`)
 
-Behavior:
-- tries multiple DSM APIs
-- writes task rows if available
-- writes warning logs if APIs fail
-- treats non-zero numeric `last_result` as failure
+Go binary that runs on each NAS inside a Docker container.
 
-Live reality:
-- rows not yet verified on the current NASes
-- failure surfacing is implemented
+- Polls DSM APIs, reads `/proc`, `/sys`, and log files
+- Watches shared folders for security-style events
+- Writes telemetry to a local SQLite WAL, then flushes to Supabase in 30-second batches
+- Each collector runs on an independent goroutine with a configurable interval
 
-#### `storagepool`
+Entry point: `apps/agent/cmd/agent/main.go`
 
-Implemented in:
-- [storagepool.go](apps/agent/internal/collector/storagepool.go)
+### NAS API (`apps/nas-api/`)
 
-Behavior:
-- reads `/host/proc/mdstat` for RAID activity and degraded arrays
-- attempts snapshot-replication APIs
-- writes warning logs when snapshot APIs are unavailable
+Go HTTP service that runs on each NAS, exposing a three-tier shell execution API.
 
-Live reality:
-- degraded RAID-style log entries are present
-- snapshot-replication warnings are present
-- snapshot task rows are not yet verified
+- `POST /preview` — classifies a command's tier and returns a human-readable summary, without executing
+- `POST /exec` — executes a command after validating tier rules and (for tier 2/3) verifying an HMAC approval token
+- `GET /health` — returns build SHA and timestamp
 
-#### `sharehealth`
+Access is via Tailscale only. The web app and NAS MCP talk to it directly over the private VPN network.
 
-Implemented in:
-- [sharehealth.go](apps/agent/internal/collector/sharehealth.go)
+Entry point: `apps/nas-api/cmd/server/main.go`
 
-Behavior:
-- enumerates shares
-- emits share quota metrics and threshold warnings
-- reads DSM structured Log Center events
-- now handles log levels encoded as strings
-- writes warning logs if structured DSM system logs are unavailable
+### NAS MCP (`apps/nas-mcp/`)
 
-Live reality:
-- share-related telemetry is active
-- structured `dsm_system_log` rows are not yet verified
+TypeScript MCP server deployed on Coolify. Exposes ~109 named NAS diagnostic and remediation tools to AI agents over the Model Context Protocol.
 
-## Database model
+- Talks to the NAS API on behalf of the AI agent
+- Handles tier-2/3 preview-and-confirm workflow (first call returns preview; pass `confirmed: true` to execute)
+- All tools defined in `tool-definitions.ts`; enabled/disabled by `tools-config.json` (baked into image at build)
 
-### Core telemetry
+Endpoint: `https://nas-mcp.designflow.app/sse`
 
-Important tables:
-- `smon_metrics`
-- `smon_logs`
-- `smon_storage_snapshots`
-- `smon_service_health`
-- `smon_process_snapshots`
-- `smon_disk_io_stats`
-- `smon_net_connections`
-- `smon_container_status`
-- `smon_sync_task_snapshots`
+### Web App (`apps/web/`)
 
-### Extended telemetry
+Next.js app deployed on Coolify at `https://mon.designflow.app`.
 
-Added and now tracked in repo:
-- `smon_scheduled_tasks`
-- `smon_backup_tasks`
-- `smon_snapshot_replicas`
-- `smon_container_io`
+- Reads telemetry from Supabase
+- Groups telemetry into issues with persistent memory
+- Runs the AI issue agent loop (diagnosis → evidence → hypothesis → next step)
+- Exposes operator-visible surfaces: issue threads, `/metrics`, `/docker` controls
 
-Migration:
-- [00025_create_extended_telemetry_tables_and_log_sources.sql](supabase/migrations/00025_create_extended_telemetry_tables_and_log_sources.sql)
+### Relay (`apps/relay/`)
 
-### Issue memory
+TypeScript HTTP service running on the VPS. Sits between older Lovable-hosted frontend clients and the private NAS APIs.
 
-Issue-centric tables:
-- `smon_issues`
-- `smon_issue_messages`
-- `smon_issue_evidence`
-- `smon_issue_actions`
+- Translates named action requests into NAS API calls
+- The web app itself talks to NAS APIs directly (not via the relay)
+- The relay is deployed separately from the main CI/CD pipeline — see [apps/relay/README.md](apps/relay/README.md)
 
-These are the backbone of the new issue architecture.
+---
 
-## Canonical operational rules
+## Data flow
 
-### Documentation rule
+```
+[NAS]                       [Supabase]               [Coolify VPS]
+agent → SQLite WAL ─────────► telemetry tables ◄────── web app reads
+                                                        groups into issues
+                                                        runs AI loop
+                                                             │
+                                                        calls NAS API
+                                                        (via Tailscale)
+                                                             │
+[NAS]                                                        ▼
+nas-api ◄─────────────────────────────────────────── preview / exec
+    └─ validates tier, verifies HMAC token
+    └─ executes shell command
+    └─ returns stdout/stderr/exit code
+```
 
-Do not describe “implemented in code” as “verified live” unless it has been checked against production behavior.
+AI agents (Claude Desktop / Claude Code) connect to the NAS MCP, which talks to the same NAS API.
 
-### Schema rule
+---
 
-Do not add sender payload fields unless the target Supabase table already has matching columns.
+## NAS API tier system
 
-### Telemetry rule
+Every command is classified into one of three tiers:
 
-An empty table must not be interpreted as health if the collector or DSM API may be unsupported.
+| Tier | Name | Approval | Examples |
+|------|------|----------|---------|
+| 1 | Read-only | Auto-executes | `smartctl -a`, `cat /var/log/...`, `btrfs filesystem df` |
+| 2 | Service op | HMAC token required | `docker compose restart`, `synopkg restart SynologyDrive` |
+| 3 | File op | HMAC token required | `mv /volume1/...`, `chown`, `btrfs snapshot` |
+| -1 | Hard-blocked | Never | `mkfs`, `fdisk`, `dd of=/dev/sda`, `shutdown`, `useradd` |
 
-Preferred behavior:
-- write real rows when supported
-- write explicit warning logs when unsupported
+**HMAC token flow:** The web app (or NAS MCP) calls `/preview`, gets the tier, builds an HMAC-signed approval token (15-minute expiry, signed with `NAS_API_APPROVAL_SIGNING_KEY`), and includes it in the `/exec` call. The NAS API verifies the token — command, tier, and expiry must all match the signature.
 
-### Deploy rule
+**`dd` note:** `dd if=<device> of=/dev/null iflag=direct` is tier 1 (read-only latency test). Only `dd` writing **to** a block device is hard-blocked. The pattern `\bdd\b.*\bof=/dev/(sd|nvme|...)` catches writes; reads to `/dev/null` are not blocked.
 
-Do not rely on `compose up -d` alone to switch agent images on Synology. Pull, stop, remove, then recreate.
+**Docker allowlist:** Docker commands are not blanket-allowed at tier 2. Only a fixed allowlist of monitor-stack compose commands is permitted (see `validator.go:allowedServiceCommands`). `docker run`, `docker exec`, `docker cp`, and all other Docker subcommands are hard-blocked regardless of tier.
+
+---
+
+## NAS container stack
+
+All three containers live at `/volume1/docker/synology-monitor-agent/` on each NAS. The compose file there should match `deploy/synology/docker-compose.agent.yml` in this repo.
+
+| Container | Image | Purpose |
+|-----------|-------|---------|
+| `synology-monitor-agent` | `ghcr.io/u2giants/synology-monitor-agent:latest` | Passive telemetry collector |
+| `synology-monitor-nas-api` | `ghcr.io/u2giants/synology-monitor-nas-api:latest` | Shell execution API |
+| `synology-monitor-watchtower` | `containrrr/watchtower` | Auto-pulls new images every 5 minutes |
+
+**`nas-api` container requirements:**
+- `privileged: true` — required for raw block device access (`dd iflag=direct`, `smartctl`)
+- `pid: host` — required for `pkill`/`ps` to reach DSM processes
+- `/dev:/dev` — exposes block device files inside the container
+- `cap_add: SYS_ADMIN` — required for `btrfs subvolume list`, `btrfs scrub`, and snapshot operations
+- `security_opt: apparmor=unconfined` — Synology DSM rejects the default apparmor profile on container init
 
-## Current known limitations
+**Synology binary execution:** The nas-api image is Debian-based (not Alpine) because Synology's glibc binaries (`synopkg`, `synoacltool`, `synoshare`) link against glibc symbols absent in musl. The `entrypoint.sh` creates symlinks so those binaries find expected DSM paths (`/usr/syno`, `/var/packages`, `/etc/synoinfo.conf`). It also emulates `get_key_value`, which DSM package scripts call but which isn't a standalone binary.
 
-- scheduled-task DSM API request shape still needs reverse-engineering
-- snapshot-replication DSM API request shape still needs reverse-engineering
-- Hyper Backup task listing still needs verification on the live NASes
-- structured DSM Log Center event ingestion still needs verification or a revised request shape
+**Watchtower vs. compose config changes:** Watchtower pulls a new image and restarts the container from its original creation parameters. It does **not** re-read `docker-compose.agent.yml`. If compose config changes (volumes, `privileged`, etc.), the container must be recreated with `docker compose up -d` for the changes to take effect. The `restart_nas_api` write tool now runs `docker compose up -d nas-api` precisely for this reason.
 
-These are now visible in runtime logs instead of being silently hidden.
+---
 
-## Files to read first
+## Agent collector inventory
 
-1. [PLAN.md](PLAN.md)
-2. [HANDOFF.md](HANDOFF.md)
-3. [issue-agent.ts](apps/web/src/lib/server/issue-agent.ts)
-4. [client.go](apps/agent/internal/dsm/client.go)
-5. [docker-compose.agent.yml](deploy/synology/docker-compose.agent.yml)
+| Collector | File | Main outputs | Interval |
+|-----------|------|-------------|----------|
+| system | `system.go` | `smon_metrics`, `smon_container_status` | 30s |
+| storage | `system.go` | `smon_storage_snapshots` | 60s |
+| drive | `drive.go` | Drive tables, sync task data, log entries | 30s |
+| process | `process.go` | `smon_process_snapshots` | 15s |
+| diskstats | `diskstats.go` | `smon_disk_io_stats` | 15s |
+| connections | `connections.go` | `smon_net_connections` | 30s |
+| logwatcher | `watcher.go` | `smon_logs` | 10s |
+| sharehealth | `sharehealth.go` | `smon_logs`, `smon_metrics` | 2m |
+| services | `services.go` | `smon_service_health`, logs, metrics | 60s |
+| sysextras | `sysextras.go` | `smon_metrics` (`cpu_iowait_pct`) | 30s |
+| infra | `infra.go` | network link state, share metrics, HyperBackup fallback | 2m |
+| custom | `custom.go` | `smon_custom_metric_data` | 60s |
+| security | `security/watcher.go` | `smon_security_events` | event-driven |
+| schedtasks | `schedtasks.go` | `smon_scheduled_tasks`, warning logs | 5m |
+| hyperbackup | `hyperbackup.go` | `smon_backup_tasks`, warning logs | 5m |
+| storagepool | `storagepool.go` | `smon_snapshot_replicas`, logs, metrics | 60s / 5m |
+| container_io | `container_io.go` | `smon_container_io` | 30s |
+
+**DSM API reliability notes:**
+
+- `schedtasks`: `SYNO.Core.TaskScheduler` v4 returns error 103 on current NAS builds. The DSM client falls back through v3/v2/v1. Warning logs are emitted when all versions fail.
+- `hyperbackup`: DSM API task rows may be absent on some builds. The collector falls back to reading task state from `/volume1/@appdata/HyperBackup/config/task_state.conf` and adjacent logs.
+- `storagepool`: Snapshot replication uses the `SYNO.DR.Plan` API family (not older guessed APIs). `edgesynology2` has the package installed; `edgesynology1` does not expose the same API surface. No DR plans are currently configured.
+- `sharehealth`: DSM structured Log Center event ingestion is implemented but not yet verified live on current NAS builds.
+
+An empty table does not mean a subsystem is healthy. Collectors emit explicit warning logs to `smon_logs` when APIs are unavailable. Check `smon_logs.source` values like `scheduled_task`, `hyperbackup`, `dsm_system_log`, and messages beginning with `Snapshot replication API unavailable:`.
+
+---
+
+## Supabase schema (key tables)
+
+**Telemetry:**
+- `smon_metrics` — time-series metrics (cpu, iowait, disk, network, share usage)
+- `smon_logs` — log events from all collectors and log watchers
+- `smon_storage_snapshots` — volume/disk SMART and RAID snapshots
+- `smon_disk_io_stats` — per-disk read/write throughput and IOPS
+- `smon_process_snapshots` — top processes by CPU/mem
+- `smon_net_connections` — active TCP connections
+- `smon_container_status` — Docker container running state
+- `smon_service_health` — Synology package health
+- `smon_sync_task_snapshots` — Drive/ShareSync task state
+- `smon_scheduled_tasks` — DSM scheduled task history
+- `smon_backup_tasks` — Hyper Backup task history
+- `smon_snapshot_replicas` — DR/snapshot replication state
+- `smon_container_io` — per-container disk I/O
+- `smon_security_events` — auth failures and security events
+
+**Issue memory:**
+- `smon_issues` — one row per detected problem
+- `smon_issue_messages` — AI and operator messages per issue
+- `smon_issue_evidence` — evidence items attached to issues
+- `smon_issue_actions` — actions taken per issue
+- `smon_issue_jobs` — work queue for the issue worker
+- `smon_issue_state_transitions` — audit trail of issue state changes
+
+Migrations live in `supabase/migrations/`.
+
+---
+
+## Issue agent workflow
+
+The issue agent (`apps/web/src/lib/server/issue-agent.ts`) runs per-issue:
+
+1. Load issue record, recent messages, actions, evidence
+2. Load recent telemetry context from Supabase
+3. Derive normalized facts (`fact-store.ts`) and update capability state (`capability-store.ts`)
+4. Call the decision model
+5. Persist reply, updated facts, evidence, and actions
+6. Auto-execute tier-1 diagnostics if appropriate
+7. Stop at tier-2/3 boundaries for operator approval
+
+**Critical rule:** query failures and missing telemetry are represented as degraded visibility, not as health. An absent table row never implies a healthy subsystem.
+
+Worker modes:
+- `inline` — the request handler drains the job queue synchronously
+- `background` — a dedicated worker endpoint drains jobs; runs from `docker-entrypoint.sh`
+
+---
+
+## NAS MCP session behavior
+
+- Transport: Streamable HTTP (not SSE, despite the `/sse` URL being preserved for client backwards compatibility)
+- Session IDs are pre-generated before `handleRequest` is called, then registered in the session map. This prevents a race condition where `mcp-remote` sends `notifications/initialized` before the session is stored.
+- Write tools show a command preview on the first call. Pass `confirmed: true` on the second call to execute. If the operator waits more than 15 minutes, the HMAC approval token expires and the flow must restart.
+
+---
+
+## Intentional behaviors that look surprising
+
+**`/sse` URL uses Streamable HTTP, not SSE.** The URL was the original SSE endpoint. The server now implements Streamable HTTP (the current MCP transport standard) but keeps the `/sse` path so existing client configs don't break. New clients can also use `/mcp`.
+
+**nas-mcp `tools-config.json` is in the image, not on disk.** The enabled tool list is compiled into the Docker image at build time. You cannot change which tools are active by editing a file on the server — you must push to `main` and let CI rebuild the image.
+
+**`restart_nas_api` uses `docker compose up -d`, not `docker compose restart`.** `restart` keeps the original creation parameters. `up -d` re-reads the compose file and recreates the container if config has changed. This is intentional so that compose config changes (like adding `privileged: true`) take effect without manual intervention.
+
+**Synology binaries run with `LD_LIBRARY_PATH`.** Synology's tools (`synoinfo`, `synoacltool`, etc.) are glibc binaries that need host library paths. The nas-api container mounts `/lib`, `/usr/lib`, `/usr/syno/lib` from the host, and tool commands prefix them with `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib`. This is not a security hole — those are read-only mounts.
+
+**`btrfs/volume1` mount instead of `/volume1`.** The nas-api mounts the full Btrfs volume at `/btrfs/volume1` instead of `/volume1` to avoid conflicting with the container's own `/volume1` path (which Synology Container Manager uses). The entrypoint symlinks `/volume1/@appstore → /btrfs/volume1/@appstore` to satisfy package scripts.
+
+---
+
+## Deployment quick reference
+
+| What changed | What to do |
+|-------------|------------|
+| `apps/agent/` code | Push to `main` → CI builds image → Watchtower auto-pulls on each NAS |
+| `apps/nas-api/` code | Push to `main` → CI builds image → Watchtower auto-pulls on each NAS |
+| `apps/nas-mcp/` code or `tools-config.json` | Push to `main` → CI builds image → Coolify auto-redeploys |
+| `apps/web/` code | Push to `main` → CI builds image → Coolify deploys |
+| Compose config change (volumes, privileged, env) | Push to `main` → wait for Watchtower to pull new image → run `restart_nas_api` (or `restart_monitor_agent`) via MCP to recreate container from updated compose |
+| Coolify env var change | Edit in Coolify UI → trigger redeploy |
