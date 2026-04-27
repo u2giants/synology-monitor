@@ -12,21 +12,20 @@ if [ "${RUN_ISSUE_WORKER:-false}" = "true" ]; then
 
   trap 'kill "$WEB_PID" "$WORKER_PID" 2>/dev/null || true' INT TERM
 
-  while kill -0 "$WEB_PID" 2>/dev/null && kill -0 "$WORKER_PID" 2>/dev/null; do
-    sleep 2
+  # Loop only on web server health — restart worker if it dies independently
+  while kill -0 "$WEB_PID" 2>/dev/null; do
+    if ! kill -0 "$WORKER_PID" 2>/dev/null; then
+      echo "[entrypoint] issue-worker exited, restarting..."
+      node scripts/issue-worker.mjs &
+      WORKER_PID=$!
+    fi
+    sleep 5
   done
 
-  EXIT_CODE=1
-  if ! kill -0 "$WEB_PID" 2>/dev/null; then
-    wait "$WEB_PID" || EXIT_CODE=$?
-  elif ! kill -0 "$WORKER_PID" 2>/dev/null; then
-    wait "$WORKER_PID" || EXIT_CODE=$?
-  fi
-
-  kill "$WEB_PID" "$WORKER_PID" 2>/dev/null || true
-  wait "$WEB_PID" 2>/dev/null || true
+  wait "$WEB_PID" || EXIT_CODE=$?
+  kill "$WORKER_PID" 2>/dev/null || true
   wait "$WORKER_PID" 2>/dev/null || true
-  exit "$EXIT_CODE"
+  exit "${EXIT_CODE:-1}"
 fi
 
 exec npx next start -p "${PORT:-3000}"

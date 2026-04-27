@@ -34,7 +34,7 @@ RUN npx next build
 
 # Production
 FROM node:22-alpine AS runner
-RUN npm install -g pnpm@9
+RUN npm install -g pnpm@9 && apk add --no-cache wget
 WORKDIR /app
 
 COPY --from=builder /app/node_modules ./node_modules
@@ -51,4 +51,8 @@ ENV HOSTNAME="0.0.0.0"
 EXPOSE 3000
 WORKDIR /app/apps/web
 RUN chmod +x /app/apps/web/docker-entrypoint.sh
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -q -O- http://localhost:3000/api/health || exit 1
+
 CMD ["/app/apps/web/docker-entrypoint.sh"]
