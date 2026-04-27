@@ -91,22 +91,54 @@ Connecting from Claude Desktop (`claude_desktop_config.json`):
 ## Web app environment variables (set in Coolify)
 
 ```
+# Supabase
 NEXT_PUBLIC_SUPABASE_URL=https://qnjimovrsaacneqkggsn.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
-SUPABASE_SERVICE_ROLE_KEY=<service role key>
+SUPABASE_SERVICE_ROLE_KEY=<service role key — required for /api/analysis/cron>
 
+# AI
+OPENROUTER_API_KEY=<primary LLM provider>
+OPENAI_API_KEY=<fallback if OPENROUTER_API_KEY is absent>
+OPENAI_CHAT_MODEL=gpt-4o
+MINIMAX_MODEL=minimax/minimax-m2.7   # default detection/extraction/clustering model
+COPILOT_ACTION_SIGNING_KEY=<HMAC key for tier-2/3 approval tokens>
+COPILOT_ADMIN_EMAILS=<comma-separated>
+
+# NAS API access (Tailscale)
 NAS_EDGE1_API_URL=http://100.107.131.35:7734
 NAS_EDGE1_API_SECRET=<must match NAS_API_SECRET in NAS 1 .env>
 NAS_EDGE1_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 1 .env>
-
 NAS_EDGE2_API_URL=http://100.107.131.36:7734
 NAS_EDGE2_API_SECRET=<must match NAS_API_SECRET in NAS 2 .env>
 NAS_EDGE2_API_SIGNING_KEY=<must match NAS_API_APPROVAL_SIGNING_KEY in NAS 2 .env>
 
-CRON_SECRET=<cron job auth>
+# Issue worker
+ISSUE_WORKER_MODE=background        # inline | background
+RUN_ISSUE_WORKER=true               # starts issue-worker.mjs alongside Next.js
+ISSUE_WORKER_TOKEN=<bearer token for /api/internal/issue-worker/drain>
+ISSUE_WORKER_INTERVAL_MS=3000
+ISSUE_WORKER_BATCH_LIMIT=10
+
+# Scheduled analysis cron
+CRON_SECRET=<must match the secret in the Coolify scheduled task command>
 ```
 
-The exact values are in `apps/web/.env.example`.
+See `apps/web/.env.example` for placeholder values and descriptions.
+
+---
+
+## Coolify scheduled tasks
+
+| Task | Frequency | Command | Container |
+|------|-----------|---------|-----------|
+| `smon-analysis-cron` | `*/15 * * * *` | `node -e "fetch('http://localhost:3000/api/analysis/cron?secret=<CRON_SECRET>').then(...)"` | `synology-monitor-web` |
+
+The task runs `docker exec synology-monitor-web node -e "..."` so it hits port 3000 inside the container, not the host. `node` is always available in the web image; no external tools needed.
+
+To edit: Coolify UI → Synology Monitor project → web app → Scheduled Tasks. If the task fails, check Coolify's `failed_jobs` table:
+```bash
+docker exec coolify php artisan tinker --execute="print_r(DB::table('failed_jobs')->orderBy('failed_at','desc')->limit(5)->get()->toArray());"
+```
 
 ---
 

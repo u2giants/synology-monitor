@@ -57,6 +57,8 @@ Next.js app deployed on Coolify at `https://mon.designflow.app`.
 - Groups telemetry into issues with persistent memory
 - Runs the AI issue agent loop (diagnosis → evidence → hypothesis → next step)
 - Exposes operator-visible surfaces: issue threads, `/metrics`, `/docker` controls
+- `GET /api/health` — Docker/Coolify health probe; returns `{"ok":true}`, no auth required
+- `GET /api/analysis/cron?secret=<CRON_SECRET>` — triggered every 15 minutes by a Coolify scheduled task; uses the service-role Supabase client to run `runIssueDetection` for every user (20-minute lookback window) and queues detected issues for the worker
 
 ### Relay (`apps/relay/`)
 
@@ -211,7 +213,9 @@ The issue agent (`apps/web/src/lib/server/issue-agent.ts`) runs per-issue:
 
 Worker modes:
 - `inline` — the request handler drains the job queue synchronously
-- `background` — a dedicated worker endpoint drains jobs; runs from `docker-entrypoint.sh`
+- `background` — a dedicated `issue-worker.mjs` process polls `POST /api/internal/issue-worker/drain` every 3 seconds; started by `docker-entrypoint.sh` when `RUN_ISSUE_WORKER=true`
+
+The entrypoint monitors both processes but only exits when Next.js dies. If the worker crashes, the entrypoint restarts it automatically. This means a transient worker failure (e.g., bad API response, unhandled error) does not take down the web server.
 
 ---
 
@@ -224,6 +228,12 @@ Worker modes:
 ---
 
 ## Intentional behaviors that look surprising
+
+**Web app Docker HEALTHCHECK calls `/api/health`, not `/` or a Supabase-backed route.** The health probe is intentionally shallow — it only confirms Next.js is serving. A deeper check (e.g., hitting Supabase) would cause Coolify to mark the container unhealthy during cold starts or transient Supabase hiccups, triggering unnecessary redeploys.
+
+**`/api/health` and `/api/analysis/cron` bypass the Supabase auth middleware.** Both routes handle their own auth — the cron validates `CRON_SECRET`, health needs no auth. They are explicitly skipped in `src/lib/supabase/middleware.ts` so each request doesn't make a Supabase round-trip just to be ignored.
+
+**`/api/analysis/cron` queries telemetry without a per-user RLS filter.** `fetchDetectionContext` queries `alerts`, `nas_logs`, and `metrics` without a `user_id` column filter — it reads the full telemetry dataset. This is intentional: all users in this deployment monitor the same NAS units. The `userId` parameter is used only when creating or attributing detected issues, not to scope the telemetry query.
 
 **`/sse` URL uses Streamable HTTP, not SSE.** The URL was the original SSE endpoint. The server now implements Streamable HTTP (the current MCP transport standard) but keeps the `/sse` path so existing client configs don't break. New clients can also use `/mcp`.
 
