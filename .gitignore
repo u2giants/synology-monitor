@@ -4,6 +4,7 @@ node_modules/
 # Build outputs
 .next/
 **/next-env.d.ts
+**/tsconfig.tsbuildinfo
 dist/
 out/
 
@@ -36,7 +37,7 @@ supabase/.temp/
 apps/agent/data/
 .claude/
 package-lock.json
-pnpm-lock.yaml
+# pnpm-lock.yaml is committed — required for reproducible CI and Codespaces installs
 
 # MCP config (contains credentials)
 .mcp.json
