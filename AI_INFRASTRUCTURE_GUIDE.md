@@ -33,8 +33,18 @@ Coolify manages all VPS-hosted containers. It is the source of truth for runtime
 | App | Coolify UUID |
 |-----|-------------|
 | NAS MCP | `efl17f5iocnz94840pexre9d` |
-| Web app | (check Coolify UI) |
+| Web app | `lrddgp8im0276gllujfu7wm3` |
 | Relay | (check Coolify UI) |
+
+### Container naming
+
+Coolify names containers with a UUID-plus-timestamp scheme (e.g. `lrddgp8im0276gllujfu7wm3-151927890021`). **Do not rename these containers.** Coolify's rolling update finds the old container by name and removes it; renaming it causes the rolling update to remove the newly-deployed container instead, leaving nothing running.
+
+To see containers with their human-readable Coolify resource names alongside the UUID names, run `dps` on the VPS (alias in `/root/.bashrc`):
+
+```bash
+dps   # shows Names + coolify.resourceName label + Status + Image
+```
 
 ### Coolify API usage
 
@@ -129,11 +139,11 @@ See `apps/web/.env.example` for placeholder values and descriptions.
 
 ## Coolify scheduled tasks
 
-| Task | Frequency | Command | Container |
-|------|-----------|---------|-----------|
-| `smon-analysis-cron` | `*/15 * * * *` | `node -e "fetch('http://localhost:3000/api/analysis/cron?secret=<CRON_SECRET>').then(...)"` | `synology-monitor-web` |
+| Task | Frequency | Command |
+|------|-----------|---------|
+| `smon-analysis-cron` | `*/15 * * * *` | `node -e "fetch('http://localhost:3000/api/analysis/cron?secret=<CRON_SECRET>').then(...)"` |
 
-The task runs `docker exec synology-monitor-web node -e "..."` so it hits port 3000 inside the container, not the host. `node` is always available in the web image; no external tools needed.
+The command runs inside the web container (Coolify execs into it using the application UUID, not the container name). It hits port 3000 directly — `node` is always present in the web image. `localhost:3000` works because it runs inside the container network, not from the host.
 
 To edit: Coolify UI → Synology Monitor project → web app → Scheduled Tasks. If the task fails, check Coolify's `failed_jobs` table:
 ```bash
@@ -183,7 +193,10 @@ NAS_EDGE2_API_SIGNING_KEY=<same as web app NAS_EDGE2_API_SIGNING_KEY>
 | Secret | Used by |
 |--------|---------|
 | `GITHUB_TOKEN` | All workflows — GHCR push (auto-provided by Actions) |
-| `COOLIFY_TOKEN` | `nas-mcp-image.yml` — triggers Coolify redeploy webhook |
+| `COOLIFY_TOKEN` | `nas-mcp-image.yml`, `web-image.yml` — Bearer token for Coolify redeploy webhook |
+| `COOLIFY_WEBHOOK_UUID` | `web-image.yml` — Coolify app UUID for the web app (`lrddgp8im0276gllujfu7wm3`); nas-mcp hardcodes its UUID directly in the workflow |
+| `NEXT_PUBLIC_SUPABASE_URL` | `web-image.yml` — baked into the Next.js build as a public env var |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `web-image.yml` — baked into the Next.js build as a public env var |
 
 ---
 

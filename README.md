@@ -61,12 +61,12 @@ synology-monitor/
 
 Every app has its own GitHub Actions workflow that triggers on `push` to `main` when relevant paths change:
 
-| App | Workflow | What happens on push |
-|-----|----------|---------------------|
-| `apps/agent/` | `agent-image.yml` | Builds and pushes `synology-monitor-agent:latest` to GHCR; Watchtower picks it up on each NAS |
-| `apps/nas-api/` | `nas-api-image.yml` | Builds and pushes `synology-monitor-nas-api:latest` to GHCR; Watchtower picks it up on each NAS |
-| `apps/nas-mcp/` | `nas-mcp-image.yml` | Builds and pushes image, then triggers Coolify redeploy via webhook |
-| `apps/web/` | `web-image.yml` | Builds and pushes image; Coolify deploys via its own polling |
+| App | Workflow | Trigger paths | What happens on push |
+|-----|----------|--------------|---------------------|
+| `apps/agent/` | `agent-image.yml` | `apps/agent/**` | Builds and pushes `synology-monitor-agent:latest` to GHCR; Watchtower picks it up on each NAS |
+| `apps/nas-api/` | `nas-api-image.yml` | `apps/nas-api/**` | Builds and pushes `synology-monitor-nas-api:latest` to GHCR; Watchtower picks it up on each NAS |
+| `apps/nas-mcp/` | `nas-mcp-image.yml` | `apps/nas-mcp/**` | Builds and pushes image, then triggers Coolify redeploy via webhook |
+| `apps/web/` | `web-image.yml` | `apps/web/**`, `packages/shared/**`, root config | Builds and pushes image, then triggers Coolify redeploy via webhook |
 
 **Watchtower limitation:** Watchtower pulls the new image and restarts the container, but it uses the original creation parameters — it does **not** re-read `docker-compose.agent.yml`. If you change compose config (volumes, `privileged`, env vars), you must manually run `docker compose up -d` on the NAS after Watchtower picks up the new image. See [deploy/synology/README.md](deploy/synology/README.md) for the update sequence.
 

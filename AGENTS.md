@@ -229,6 +229,8 @@ The entrypoint monitors both processes but only exits when Next.js dies. If the 
 
 ## Intentional behaviors that look surprising
 
+**Coolify container names are UUID-plus-timestamp (e.g. `lrddgp8im0276gllujfu7wm3-151927890021`), not human-readable.** Coolify's rolling update removes the old container by name after starting the new one. If the container is renamed to something human-readable before the rolling update finishes, Coolify removes the new container instead, leaving the app down. The containers must keep their Coolify-assigned names. Use `dps` on the VPS for a readable view.
+
 **Web app Docker HEALTHCHECK calls `/api/health`, not `/` or a Supabase-backed route.** The health probe is intentionally shallow — it only confirms Next.js is serving. A deeper check (e.g., hitting Supabase) would cause Coolify to mark the container unhealthy during cold starts or transient Supabase hiccups, triggering unnecessary redeploys.
 
 **`/api/health` and `/api/analysis/cron` bypass the Supabase auth middleware.** Both routes handle their own auth — the cron validates `CRON_SECRET`, health needs no auth. They are explicitly skipped in `src/lib/supabase/middleware.ts` so each request doesn't make a Supabase round-trip just to be ignored.
