@@ -3,8 +3,13 @@ set -eu
 
 cd /app/apps/web
 
+echo "[entrypoint] cwd=$(pwd)"
+echo "[entrypoint] PORT=${PORT:-3000} NODE_ENV=${NODE_ENV:-unset}"
+echo "[entrypoint] .next dir: $(test -d .next && echo present || echo MISSING)"
+echo "[entrypoint] next bin: $(test -f /app/node_modules/.bin/next && echo present || echo MISSING)"
+
 if [ "${RUN_ISSUE_WORKER:-false}" = "true" ]; then
-  npx next start -p "${PORT:-3000}" &
+  /app/node_modules/.bin/next start -p "${PORT:-3000}" &
   WEB_PID=$!
 
   node scripts/issue-worker.mjs &
@@ -28,4 +33,4 @@ if [ "${RUN_ISSUE_WORKER:-false}" = "true" ]; then
   exit "${EXIT_CODE:-1}"
 fi
 
-exec npx next start -p "${PORT:-3000}"
+exec /app/node_modules/.bin/next start -p "${PORT:-3000}"

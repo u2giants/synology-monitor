@@ -66,6 +66,6 @@ jobs:
 
       - name: Trigger Coolify redeploy
         run: |
-          curl -s -X GET \
+          curl -sSf -X GET \
             "http://178.156.180.212:8000/api/v1/deploy?uuid=${{ secrets.COOLIFY_WEBHOOK_UUID }}&force=false" \
             -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
