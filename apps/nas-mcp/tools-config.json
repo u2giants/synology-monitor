@@ -2,6 +2,7 @@
   "_readme": "This file controls what AI agents can do on your Synology NAS. Read tools are safe — they only look at things and run automatically. Write tools change state and ALWAYS ask for your approval before doing anything. To remove a tool, delete its name from the enabled list. To add a write tool, copy its name from _write_tools_available into enabled_write_tools. Push to GitHub for changes to take effect.",
 
   "enabled_read_tools": [
+    "get_investigation_guide",
     "check_system_info",
     "list_volumes",
     "list_shared_folders",
@@ -158,6 +159,7 @@
   ],
 
   "_tool_descriptions": {
+    "get_investigation_guide": "Returns a categorized summary of every enabled tool — call this when you are unsure which tool to use or need a mid-session refresher",
     "check_system_info": "DSM version, NAS model, uptime, CPU, memory — baseline context for any conversation",
     "list_volumes": "Discovers active NAS data volumes and their filesystem usage so later tools do not assume everything lives on /volume1",
     "list_shared_folders": "Lists DSM shared folders with their real paths and selected metadata",

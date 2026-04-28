@@ -19,6 +19,7 @@ const configPath = resolve(__dirname, "../tools-config.json");
 const toolsConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
   enabled_read_tools: string[];
   enabled_write_tools: string[];
+  _tool_descriptions?: Record<string, string>;
 };
 
 const enabledRead = new Set<string>(toolsConfig.enabled_read_tools ?? []);
@@ -105,6 +106,82 @@ function createMcpServer(): McpServer {
         content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
       };
     });
+  }
+
+  // get_investigation_guide — mid-session tool catalog refresher
+  if (enabledRead.has("get_investigation_guide")) {
+    const descriptions: Record<string, string> = toolsConfig._tool_descriptions ?? {};
+    const allDescriptions = new Map<string, string>([
+      ...ALL_TOOL_DEFS.map((t): [string, string] => [t.name, t.description]),
+      ["run_command", "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution."],
+      ["get_investigation_guide", "Returns a categorized summary of every enabled tool — call this when you are unsure which tool to use or need a mid-session refresher."],
+      ...Object.entries(descriptions),
+    ]);
+
+    // Group labels mapped from description prefixes and known clusters.
+    const groups: Array<{ label: string; match: (name: string, desc: string) => boolean }> = [
+      { label: "ESCAPE HATCH", match: (n) => n === "run_command" },
+      { label: "STARTING POINTS", match: (n) => ["get_resource_snapshot", "collect_incident_bundle", "check_system_info"].includes(n) },
+      { label: "FILE & FOLDER VISIBILITY", match: (_, d) => d.includes("PHASE-1E") || ["list_directory_contents", "find_problematic_files"].includes(_) },
+      { label: "LOG INVESTIGATION", match: (n, d) => d.includes("PHASE-1F") || ["search_all_logs", "tail_system_log", "tail_drive_server_log", "search_drive_server_log", "tail_sharesync_log", "search_webapi_log"].includes(n) },
+      { label: "DRIVE & SHARESYNC", match: (n) => ["check_sharesync_status", "check_drive_package_health", "check_drive_database", "check_share_database", "list_shared_folders", "check_drive_network", "check_synology_drive_network"].includes(n) || n.includes("sharesync") || n.includes("drive") },
+      { label: "RECOVERY (SNAPSHOTS, RECYCLE BIN, VERSIONS)", match: (_, d) => d.includes("PHASE-3") },
+      { label: "STORAGE HEALTH", match: (_, d) => d.includes("PHASE-1C") },
+      { label: "PACKAGE & SERVICE HEALTH", match: (_, d) => d.includes("PHASE-1B") || ["check_packages", "check_active_sessions", "check_security_log"].includes(_) },
+      { label: "NETWORK", match: (_, d) => d.includes("PHASE-1D") || ["check_tailscale", "check_network_health", "check_network_connections"].includes(_) },
+      { label: "IN-PROGRESS TEST STATUS", match: (_, d) => d.includes("PHASE-4") },
+      { label: "WRITE TOOLS (require your approval before executing)", match: (n) => enabledWrite.has(n) },
+    ];
+
+    server.tool(
+      "get_investigation_guide",
+      "Returns a categorized summary of every enabled tool. Call this at the start of an investigation or whenever you are unsure which tool covers a diagnostic need.",
+      {},
+      async () => {
+        const assigned = new Set<string>();
+        const lines: string[] = [
+          "# NAS MCP — Enabled Tool Guide",
+          "",
+          "All tools target one or both NAS units (edgesynology1 / edgesynology2 / both).",
+          "Read tools auto-execute. Write tools show a preview and require confirmed: true.",
+          "",
+        ];
+
+        for (const group of groups) {
+          const tools: string[] = [];
+          const pool = group.label.startsWith("WRITE") ? [...enabledWrite] : [...enabledRead];
+          for (const name of pool) {
+            if (assigned.has(name)) continue;
+            const desc = allDescriptions.get(name) ?? "";
+            if (group.match(name, desc)) {
+              tools.push(`  ${name} — ${desc.replace(/^PHASE-\S+:\s*/, "").replace(/^WRITE[:\s—]+/i, "")}`);
+              assigned.add(name);
+            }
+          }
+          if (tools.length > 0) {
+            lines.push(`## ${group.label}`);
+            lines.push(...tools);
+            lines.push("");
+          }
+        }
+
+        // Catch any unassigned read tools in a misc section
+        const misc = [...enabledRead].filter((n) => !assigned.has(n));
+        if (misc.length > 0) {
+          lines.push("## GENERAL");
+          for (const name of misc) {
+            const desc = allDescriptions.get(name) ?? "";
+            lines.push(`  ${name} — ${desc.replace(/^PHASE-\S+:\s*/, "")}`);
+          }
+          lines.push("");
+        }
+
+        lines.push("---");
+        lines.push("If no named tool fits, use run_command to run any read-only shell command.");
+
+        return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+      },
+    );
   }
 
   // run_command — free-form tier-1-only tool for deep ad-hoc diagnosis
