@@ -1084,6 +1084,39 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
+  {
+    name: "list_directory_contents",
+    description: "Lists files and subdirectories under an exact path: type, mode, owner, size, and mtime. Restricted to /volume* and /btrfs/volume* paths. max_depth defaults to 1 (immediate children only); maximum 3. Output capped at 200 entries. Use find_recent_path_changes when you only need files modified recently.",
+    write: false,
+    params: {
+      target,
+      exact_path: exactPath,
+      max_depth: z
+        .number()
+        .optional()
+        .default(1)
+        .describe("Recursion depth. Default 1 (immediate children only). Maximum 3."),
+    },
+    buildCommand: (input) => {
+      const p = (input.exact_path as string).trim();
+      const depth = Math.min(Math.max(1, Math.round((input.max_depth as number) ?? 1)), 3);
+      if (!p.startsWith("/volume") && !p.startsWith("/btrfs/volume")) {
+        return `echo 'ERROR: list_directory_contents is restricted to /volume* and /btrfs/volume* paths. Use run_command for other paths if needed.'`;
+      }
+      return [
+        `echo '=== DIRECTORY LISTING: ${p} (max_depth=${depth}) ==='`,
+        `if [ ! -e ${quote(p)} ]; then echo 'Path does not exist'; exit 0; fi`,
+        `find ${quote(p)} -maxdepth ${depth} 2>/dev/null | head -200 | while IFS= read -r entry; do`,
+        `  stat -c '%F %A %U:%G %8s %y %n' "$entry" 2>/dev/null`,
+        `done`,
+        `echo ''`,
+        `echo '=== ENTRY COUNT ==='`,
+        `total=$(find ${quote(p)} -maxdepth ${depth} 2>/dev/null | wc -l)`,
+        `echo "Total entries at depth ${depth}: $total (output capped at 200)"`,
+      ].join("\n");
+    },
+  },
+
   // ── Phase 1C: Storage deep health ────────────────────────────────────────────
 
   {
