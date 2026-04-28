@@ -1,3 +1,4 @@
+import path from "path";
 import type { NextConfig } from "next";
 import { execSync } from "child_process";
 
@@ -15,6 +16,9 @@ function gitInfo() {
 const { sha, date } = gitInfo();
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  // Trace from monorepo root so packages/shared is included in the bundle
+  outputFileTracingRoot: path.join(__dirname, "../../"),
   env: {
     NEXT_PUBLIC_BUILD_SHA: sha,
     NEXT_PUBLIC_BUILD_DATE: date,

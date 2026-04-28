@@ -32,16 +32,21 @@ ENV BUILD_SHA=$BUILD_SHA
 WORKDIR /app/apps/web
 RUN npx next build
 
-# Production
+# Production — standalone output only, no pnpm or node_modules copy needed
 FROM node:22-alpine AS runner
-RUN npm install -g pnpm@9 && apk add --no-cache wget
+RUN apk add --no-cache wget
 WORKDIR /app
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/shared ./packages/shared
-COPY --from=builder /app/apps/web ./apps/web
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/pnpm-workspace.yaml ./
+# Standalone bundle (includes its own minimal node_modules + server.js)
+COPY --from=builder /app/apps/web/.next/standalone ./
+# Static assets and public dir are not included in standalone — copy separately
+COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/apps/web/public ./apps/web/public
+# Issue worker script (not part of Next.js build output)
+COPY --from=builder /app/apps/web/scripts ./apps/web/scripts
+# Entrypoint
+COPY --from=builder /app/apps/web/docker-entrypoint.sh ./apps/web/docker-entrypoint.sh
+RUN chmod +x /app/apps/web/docker-entrypoint.sh
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -49,10 +54,8 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 EXPOSE 3000
-WORKDIR /app/apps/web
-RUN chmod +x /app/apps/web/docker-entrypoint.sh
 
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=3 \
   CMD wget -q -O- http://localhost:3000/api/health || exit 1
 
 CMD ["/app/apps/web/docker-entrypoint.sh"]
