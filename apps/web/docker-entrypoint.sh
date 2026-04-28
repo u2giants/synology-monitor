@@ -34,14 +34,10 @@ if [ "${RUN_ISSUE_WORKER:-false}" = "true" ]; then
   kill "$WORKER_PID" 2>/dev/null || true
   wait "$WORKER_PID" 2>/dev/null || true
   echo "[entrypoint] *** web server exited with code $EXIT_CODE ***"
-  echo "[entrypoint] sleeping 1h so you can read logs in Coolify — then redeploy to restart"
-  sleep 3600
   exit "$EXIT_CODE"
 fi
 
 node "$SERVER"
 EXIT_CODE=$?
 echo "[entrypoint] *** node server.js exited with code $EXIT_CODE ***"
-echo "[entrypoint] sleeping 1h so you can read logs in Coolify — then redeploy to restart"
-sleep 3600
 exit "$EXIT_CODE"
