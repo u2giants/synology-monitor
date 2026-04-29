@@ -3,6 +3,7 @@ package collector
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -79,6 +80,10 @@ type DriveCollector struct {
 	// attributionCycle counts collect() calls so attribution runs every 10th cycle
 	// to avoid repeated heavy SQLite opens. At a 5-minute interval that is every ~50 min.
 	attributionCycle int
+	// shareSyncAPIUnavailableUntil is set when all known ShareSync API endpoints
+	// return 102 (no such API). We skip the API calls until this time to avoid
+	// flooding the Drive server log with "WebAPI not valid" errors.
+	shareSyncAPIUnavailableUntil time.Time
 }
 
 // NewDriveCollector creates a new Drive collector
@@ -231,7 +236,21 @@ func (c *DriveCollector) collectStats() {
 func (c *DriveCollector) collectShareSyncTasks() {
 	now := time.Now().UTC()
 
+	// Skip API calls while backed off — all known endpoints returned 102 last time.
+	if now.Before(c.shareSyncAPIUnavailableUntil) {
+		c.collectShareSyncFromLogs(now)
+		return
+	}
+
 	tasks, err := c.client.GetShareSyncTasks()
+	if errors.Is(err, dsm.ErrAPINotFound) {
+		// All ShareSync API endpoints are absent on this Drive version.
+		// Back off for 1 hour to stop flooding the Drive server log.
+		c.shareSyncAPIUnavailableUntil = now.Add(1 * time.Hour)
+		log.Printf("[drive] ShareSync API not available on this Drive version — backing off for 1h, using log fallback")
+		c.collectShareSyncFromLogs(now)
+		return
+	}
 	if err != nil {
 		log.Printf("[drive] ShareSync API error: %v", err)
 	}

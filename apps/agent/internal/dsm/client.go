@@ -13,6 +13,10 @@ import (
 	"time"
 )
 
+// ErrAPINotFound is returned when DSM responds with error code 102 (no such API).
+// Callers should treat this as a permanent unavailability signal and back off.
+var ErrAPINotFound = errors.New("DSM API not found (code 102)")
+
 // Client interfaces with the Synology DSM Web API
 type Client struct {
 	baseURL    string
@@ -179,6 +183,9 @@ func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
 		code := 0
 		if apiResp.Error != nil {
 			code = apiResp.Error.Code
+		}
+		if code == 102 {
+			return nil, ErrAPINotFound
 		}
 		return nil, fmt.Errorf("API error code: %d", code)
 	}
@@ -649,10 +656,10 @@ type ShareSyncTask struct {
 }
 
 // GetShareSyncTasks attempts to query ShareSync task list via DSM API.
-// Returns an empty slice (not an error) if the API is not available on this
-// DSM version, so the caller can fall back to log parsing.
+// Returns (nil, ErrAPINotFound) if none of the known endpoints exist on this
+// DSM/Drive version, so the caller can back off and use log parsing instead.
 func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
-	// Try the v1 admin endpoint first; fall back to v2 if it fails.
+	notFoundCount := 0
 	for _, apiSpec := range []struct {
 		api     string
 		version int
@@ -666,6 +673,10 @@ func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
 			"limit":  {"-1"},
 			"offset": {"0"},
 		})
+		if errors.Is(err, ErrAPINotFound) {
+			notFoundCount++
+			continue
+		}
 		if err != nil {
 			continue
 		}
@@ -689,7 +700,11 @@ func (c *Client) GetShareSyncTasks() ([]ShareSyncTask, error) {
 		return tasks, nil
 	}
 
-	// API not available on this DSM version – caller uses log-based fallback.
+	// All known endpoints returned 102 — this Drive version doesn't have the API.
+	if notFoundCount == 3 {
+		return nil, ErrAPINotFound
+	}
+	// Some failed for other reasons — caller uses log-based fallback.
 	return nil, nil
 }
 
