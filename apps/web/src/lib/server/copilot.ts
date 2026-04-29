@@ -1,6 +1,6 @@
-import OpenAI from "openai";
 import { buildBackendFindingsPromptContext } from "@/lib/server/backend-findings";
 import { collectNasDiagnostics, executeNasCommand } from "@/lib/server/nas-api-client";
+import { runOpenRouterResponse } from "@/lib/server/openrouter-client";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { callMinimax, callMinimaxJSON } from "./minimax";
 import { getRemediationModel } from "./ai-settings";
@@ -37,17 +37,6 @@ interface ToolProposal {
 }
 
 export interface ProposedAction extends StoredAction {}
-
-function getOpenAIClient() {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY or OPENAI_API_KEY is not configured.");
-  }
-  return new OpenAI({
-    apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
-  });
-}
 
 function sanitizeJson(text: string) {
   return text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "").trim();
@@ -383,7 +372,6 @@ export async function generateCopilotResponse(
   ]);
 
   // Step 3: Use GPT for detailed remediation response
-  const client = getOpenAIClient();
   const model = await getRemediationModel();
 
   const aiDiagnosisContext = `
@@ -469,16 +457,18 @@ export async function generateCopilotResponse(
     })),
   ];
 
-  const response = await client.responses.create({
+  const { response } = await runOpenRouterResponse({
     model,
-    reasoning: { effort: reasoningEffort },
-    input: input as never,
-    text: {
-      format: {
-        type: "json_schema",
-        name: "nas_copilot_response",
-        schema: buildSchema(),
-        strict: true,
+    reasoningEffort,
+    request: {
+      input: input as never,
+      text: {
+        format: {
+          type: "json_schema",
+          name: "nas_copilot_response",
+          schema: buildSchema(),
+          strict: true,
+        },
       },
     },
   });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { ensureIssueWorkingSession } from "@/lib/server/issue-investigation-store";
 import { appendIssueEvidence, appendIssueMessage, loadIssue, updateIssue } from "@/lib/server/issue-store";
 import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
 import { loadIssueViewState } from "@/lib/server/issue-view";
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
     }
 
     await appendIssueMessage(supabase, user.id, resolutionId, "user", trimmed);
+    await ensureIssueWorkingSession(supabase, user.id, resolutionId, "guided");
     await appendIssueEvidence(supabase, user.id, resolutionId, {
       source_kind: "user_statement",
       title: "Operator response",

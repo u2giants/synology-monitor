@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { buildBackendFindingsSnapshot } from "@/lib/server/backend-findings";
+import { ensureIssueWorkingSession } from "@/lib/server/issue-investigation-store";
 import { createIssue, loadIssue } from "@/lib/server/issue-store";
 import { seedIssueFromOrigin } from "@/lib/server/issue-agent";
 import { drainIssueQueue, queueIssueRun, shouldInlineDrain } from "@/lib/server/issue-workflow";
@@ -80,6 +81,7 @@ export async function POST(request: Request) {
       affectedNas,
       metadata,
     });
+    await ensureIssueWorkingSession(supabase, user.id, issueId, "guided");
 
     const existing = await loadIssue(supabase, user.id, issueId);
     if (existing && existing.messages.length === 0) {

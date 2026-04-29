@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { fetchOpenRouterModels } from "@/lib/server/openrouter-models";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,19 +17,7 @@ export async function GET() {
   }
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/models/user", {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-
-    if (!res.ok) {
-      throw new Error(`OpenRouter returned ${res.status}`);
-    }
-
-    const data = await res.json() as { data?: Array<{ id: string; name: string }> };
-    const models = (data.data ?? [])
-      .map((m) => ({ id: m.id, name: m.name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
+    const models = await fetchOpenRouterModels();
     return NextResponse.json({ models });
   } catch (err) {
     return NextResponse.json({

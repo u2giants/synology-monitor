@@ -1,6 +1,16 @@
 import type { SupabaseClient, IssueFull, IssueStateTransition } from "@/lib/server/issue-store";
 import { listIssueFacts, type FactRecord } from "@/lib/server/fact-store";
 import { listCapabilityState, type CapabilityRecord } from "@/lib/server/capability-store";
+import {
+  listIssueEscalationEvents,
+  listIssueInvestigationBriefs,
+  listIssueTokenUsage,
+  listIssueWorkingSessions,
+  type IssueEscalationEvent,
+  type IssueInvestigationBrief,
+  type IssueTokenUsage,
+  type IssueWorkingSession,
+} from "@/lib/server/issue-investigation-store";
 import type { IssueJob } from "@/lib/server/workflow-store";
 import { listIssueStageRuns, type IssueStageRun } from "@/lib/server/issue-stage-store";
 
@@ -10,6 +20,10 @@ export interface IssueViewState extends IssueFull {
   jobs: IssueJob[];
   transitions: IssueStateTransition[];
   stage_runs: IssueStageRun[];
+  working_sessions: IssueWorkingSession[];
+  investigation_briefs: IssueInvestigationBrief[];
+  escalation_events: IssueEscalationEvent[];
+  token_usage: IssueTokenUsage[];
 }
 
 async function resolveIssueNasIds(
@@ -37,7 +51,7 @@ export async function loadIssueViewState(
 ): Promise<IssueViewState> {
   const nasIds = await resolveIssueNasIds(supabase, state.issue.affected_nas);
 
-  const [facts, capabilities, jobsResult, transitionsResult, stageRuns] = await Promise.all([
+  const [facts, capabilities, jobsResult, transitionsResult, stageRuns, workingSessions, briefs, escalations, tokenUsage] = await Promise.all([
     listIssueFacts(supabase, userId, state.issue.id),
     listCapabilityState(supabase, nasIds),
     supabase
@@ -55,6 +69,10 @@ export async function loadIssueViewState(
       .order("created_at", { ascending: false })
       .limit(20),
     listIssueStageRuns(supabase, userId, state.issue.id),
+    listIssueWorkingSessions(supabase, userId, state.issue.id),
+    listIssueInvestigationBriefs(supabase, userId, state.issue.id),
+    listIssueEscalationEvents(supabase, userId, state.issue.id),
+    listIssueTokenUsage(supabase, userId, state.issue.id),
   ]);
 
   if (jobsResult.error) {
@@ -72,5 +90,9 @@ export async function loadIssueViewState(
     jobs: (jobsResult.data ?? []) as IssueJob[],
     transitions: (transitionsResult.data ?? []) as IssueStateTransition[],
     stage_runs: stageRuns,
+    working_sessions: workingSessions,
+    investigation_briefs: briefs,
+    escalation_events: escalations,
+    token_usage: tokenUsage,
   };
 }

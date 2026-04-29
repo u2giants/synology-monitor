@@ -17,12 +17,15 @@ import {
   Trash2,
   Wrench,
   XCircle,
+  Layers3,
+  Coins,
 } from "lucide-react";
 import { cn, formatETFull, timeAgoET } from "@/lib/utils";
 import {
   useResolution,
   type Resolution,
   type ResolutionCapability,
+  type ResolutionEscalationEvent,
   type ResolutionFact,
   type ResolutionFull,
   type ResolutionJob,
@@ -103,6 +106,9 @@ export default function AssistantPage() {
     approveSteps,
     sendMessage,
     continueResolution,
+    setResolutionMode,
+    rebaseResolutionContext,
+    approveResolutionEscalation,
     cancelResolution,
     deleteResolution,
   } = useResolution();
@@ -205,6 +211,70 @@ export default function AssistantPage() {
     router.replace(`/assistant?resolutionId=${id}`);
   }
 
+  async function handleExportTranscript() {
+    if (!current) return;
+    try {
+      const res = await fetch(`/api/resolution/${current.resolution.id}/transcript`);
+      if (!res.ok) throw new Error((await res.json()).error ?? "Failed to export transcript");
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `issue-${current.resolution.id}-transcript.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleExportTranscriptVariant(variant: "raw" | "llm" | "audit") {
+    if (!current) return;
+    try {
+      const res = await fetch(`/api/resolution/${current.resolution.id}/transcript?variant=${variant}`);
+      if (!res.ok) throw new Error("Failed to export transcript");
+      const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+      const blob = await res.blob();
+      const url = URL.createObjectURL(new Blob([blob], { type: contentType }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download =
+        variant === "audit"
+          ? `issue-${current.resolution.id}-audit.txt`
+          : variant === "llm"
+            ? `issue-${current.resolution.id}-llm-handoff.json`
+            : `issue-${current.resolution.id}-transcript.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleExportFixture() {
+    if (!current) return;
+    try {
+      const res = await fetch(`/api/resolution/${current.resolution.id}/transcript?variant=fixture`);
+      if (!res.ok) throw new Error("Failed to export eval fixture");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `issue-${current.resolution.id}-eval-fixture.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   async function handleSend() {
     const trimmed = draft.trim();
     if (!trimmed) return;
@@ -234,6 +304,28 @@ export default function AssistantPage() {
     () => current?.capabilities.filter((capability) => capability.state !== "supported") ?? [],
     [current]
   );
+  const pendingEscalations = useMemo(
+    () => current?.escalation_events.filter((event) => !event.approved_by_user) ?? [],
+    [current]
+  );
+  const primaryEscalation = pendingEscalations[0] ?? null;
+  const activeSession = useMemo(
+    () => current?.working_sessions.find((session) => session.status === "active") ?? null,
+    [current]
+  );
+  const activeSessionMetrics = useMemo(() => {
+    if (!current || !activeSession) return null;
+    const startedAt = new Date(activeSession.started_at).getTime();
+    const inSessionMessages = current.messages.filter((message) => new Date(message.created_at).getTime() >= startedAt).length;
+    const inSessionEvidence = current.log.filter((entry) => new Date(entry.created_at).getTime() >= startedAt).length;
+    const inSessionActions = current.steps.filter((action) => new Date(action.created_at).getTime() >= startedAt).length;
+    return {
+      messages: inSessionMessages,
+      evidence: inSessionEvidence,
+      actions: inSessionActions,
+      ageHours: Math.max((Date.now() - startedAt) / 3_600_000, 0),
+    };
+  }, [activeSession, current]);
 
   return (
     <div className="space-y-6">
@@ -335,13 +427,18 @@ export default function AssistantPage() {
           ) : (
             <>
               {/* Issue header */}
-              <IssueHeader
-                state={current}
-                loading={loading}
-                onContinue={continueResolution}
-                onCancel={cancelResolution}
-                resolutions={resolutions}
-              />
+            <IssueHeader
+              state={current}
+              loading={loading}
+              onContinue={continueResolution}
+              onSetMode={setResolutionMode}
+              onRebase={rebaseResolutionContext}
+              onExportTranscript={handleExportTranscript}
+              onExportTranscriptVariant={handleExportTranscriptVariant}
+              onExportFixture={handleExportFixture}
+              onCancel={cancelResolution}
+              resolutions={resolutions}
+            />
 
               {/* Agent actively running — slim ambient indicator */}
               {activeJobs.length > 0 && (
@@ -367,6 +464,23 @@ export default function AssistantPage() {
                   loading={loading}
                   onApprove={() => approveSteps([primaryPendingAction.id], "approve")}
                   onReject={() => approveSteps([primaryPendingAction.id], "reject")}
+                />
+              )}
+
+              {primaryEscalation && (
+                <EscalationBanner
+                  escalation={primaryEscalation}
+                  activeSessionMetrics={activeSessionMetrics}
+                  loading={loading}
+                  onApprove={() => {
+                    if (primaryEscalation.kind === "deep_mode_switch") {
+                      return setResolutionMode("deep");
+                    }
+                    if (primaryEscalation.kind === "expanded_context") {
+                      return rebaseResolutionContext("agent_requested_context_rebase");
+                    }
+                    return approveResolutionEscalation(primaryEscalation);
+                  }}
                 />
               )}
 
@@ -447,18 +561,48 @@ function IssueHeader({
   state,
   loading,
   onContinue,
+  onSetMode,
+  onRebase,
+  onExportTranscript,
+  onExportTranscriptVariant,
+  onExportFixture,
   onCancel,
   resolutions,
 }: {
   state: ResolutionFull;
   loading: boolean;
   onContinue: () => void;
+  onSetMode: (mode: "guided" | "deep") => void;
+  onRebase: (reason?: string) => void;
+  onExportTranscript: () => void;
+  onExportTranscriptVariant: (variant: "raw" | "llm" | "audit") => void;
+  onExportFixture: () => void;
   onCancel: () => void;
   resolutions: Resolution[];
 }) {
   const status = state.resolution.status;
   const dotConfig = statusDotConfig[status];
   const sevConfig = severityConfig[state.resolution.severity];
+  const activeSession = state.working_sessions.find((session) => session.status === "active") ?? state.working_sessions[0] ?? null;
+  const totalEstimatedCost = state.token_usage.reduce((sum, entry) => sum + (entry.estimated_cost ?? 0), 0);
+  const activeSessionStartedAt = activeSession ? new Date(activeSession.started_at).getTime() : null;
+  const sessionMessageCount = activeSessionStartedAt == null
+    ? 0
+    : state.messages.filter((message) => new Date(message.created_at).getTime() >= activeSessionStartedAt).length;
+  const sessionEvidenceCount = activeSessionStartedAt == null
+    ? 0
+    : state.log.filter((entry) => new Date(entry.created_at).getTime() >= activeSessionStartedAt).length;
+  const sessionActionCount = activeSessionStartedAt == null
+    ? 0
+    : state.steps.filter((action) => new Date(action.created_at).getTime() >= activeSessionStartedAt).length;
+  const sessionAgeHours = activeSessionStartedAt == null
+    ? 0
+    : Math.max((Date.now() - activeSessionStartedAt) / 3_600_000, 0);
+  const activeApprovedOverrides = activeSession
+    ? state.escalation_events.filter((event) => event.approved_by_user && event.session_id === activeSession.id)
+    : [];
+  const activeReasoningOverride = activeApprovedOverrides.find((event) => event.kind === "higher_reasoning" && event.to_reasoning)?.to_reasoning ?? null;
+  const activeModelOverride = activeApprovedOverrides.find((event) => event.kind === "stronger_model" && event.to_model)?.to_model ?? null;
 
   const isOpenOrStuck = status === "open" || status === "stuck";
   const isTerminal = status === "resolved" || status === "cancelled" || status === "waiting_on_issue";
@@ -480,7 +624,115 @@ function IssueHeader({
               <span className={cn("h-2 w-2 shrink-0 rounded-full", dotConfig.color, dotConfig.pulse && "animate-pulse")} />
               {dotConfig.label}
             </span>
+            {activeSession && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                <Layers3 className="h-3 w-3" />
+                {activeSession.mode === "deep" ? "Deep investigation" : "Guided resolution"}
+              </span>
+            )}
+            {totalEstimatedCost > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                <Coins className="h-3 w-3" />
+                ${totalEstimatedCost.toFixed(2)} est.
+              </span>
+            )}
           </div>
+          {activeSession && (
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => onSetMode("guided")}
+                disabled={loading || activeSession.mode === "guided"}
+                className={cn(
+                  "rounded-md border px-2.5 py-1 text-xs",
+                  activeSession.mode === "guided" ? "border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Guided
+              </button>
+              <button
+                onClick={() => onSetMode("deep")}
+                disabled={loading || activeSession.mode === "deep"}
+                className={cn(
+                  "rounded-md border px-2.5 py-1 text-xs",
+                  activeSession.mode === "deep" ? "border-primary text-primary" : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Deep
+              </button>
+              <button
+                onClick={() => onRebase("manual_context_rebase")}
+                disabled={loading}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Rebase context
+              </button>
+              <button
+                onClick={onExportTranscript}
+                disabled={loading}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Export raw
+              </button>
+              <button
+                onClick={() => onExportTranscriptVariant("llm")}
+                disabled={loading}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Export LLM
+              </button>
+              <button
+                onClick={() => onExportTranscriptVariant("audit")}
+                disabled={loading}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Export audit
+              </button>
+              <button
+                onClick={onExportFixture}
+                disabled={loading}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+              >
+                Export fixture
+              </button>
+            </div>
+          )}
+          {activeSession && (
+            <div className="grid gap-2 pt-1 sm:grid-cols-2">
+              <div className="rounded-lg border border-border bg-background px-3 py-2">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Session health
+                </div>
+                <div className="mt-1 text-sm">
+                  {sessionMessageCount} messages · {sessionEvidenceCount} evidence · {sessionActionCount} actions
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  Age {sessionAgeHours.toFixed(1)}h in {activeSession.mode === "deep" ? "Deep" : "Guided"} mode
+                </div>
+              </div>
+              <div className="rounded-lg border border-border bg-background px-3 py-2">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Active overrides
+                </div>
+                {(activeModelOverride || activeReasoningOverride) ? (
+                  <>
+                    <div className="mt-1 text-sm">
+                      {activeModelOverride ? `Model: ${activeModelOverride}` : "No model override"}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      {activeReasoningOverride ? `Reasoning: ${activeReasoningOverride}` : "No reasoning override"}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-1 text-sm">Stage defaults active</div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      No approved model or reasoning overrides are currently applied.
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           <h2 className="text-lg font-semibold leading-snug">{state.resolution.title}</h2>
           {state.resolution.summary && (
             <p className="text-sm text-muted-foreground">{state.resolution.summary}</p>
@@ -566,7 +818,82 @@ function IssueSidebar({
     capabilityGaps.length > 0 ||
     state.jobs.length > 0 ||
     state.stage_runs.length > 0 ||
-    state.transitions.length > 0;
+    state.transitions.length > 0 ||
+    state.working_sessions.length > 0 ||
+    state.escalation_events.length > 0 ||
+    state.token_usage.length > 0;
+  const escalationTriggerById = useMemo(() => {
+    const byId: Record<string, string> = {};
+    for (const event of state.escalation_events) {
+      const eventTs = new Date(event.created_at).getTime();
+      const relatedRuns = state.stage_runs
+        .filter((run) => new Date(run.created_at).getTime() <= eventTs)
+        .slice()
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      const failedRun = relatedRuns.find((run) => run.status === "failed");
+      const lowConfidenceRun = relatedRuns.find((run) => {
+        const inputConfidence = typeof run.input_summary?.hypothesis_confidence === "string" ? run.input_summary.hypothesis_confidence : null;
+        const outputConfidence = typeof run.output?.hypothesis_confidence === "string" ? run.output.hypothesis_confidence : null;
+        return inputConfidence === "low" || outputConfidence === "low";
+      });
+      const sourceRun = failedRun ?? lowConfidenceRun ?? relatedRuns[0] ?? null;
+      if (!sourceRun) continue;
+      const sourceLabel = stageKeyLabels[sourceRun.stage_key] ?? sourceRun.stage_key.replaceAll("_", " ");
+      if (failedRun) {
+        byId[event.id] = `Triggered after ${sourceLabel} failed.`;
+      } else if (lowConfidenceRun) {
+        byId[event.id] = `Triggered after ${sourceLabel} still reported low confidence.`;
+      } else {
+        byId[event.id] = `Triggered after ${sourceLabel}.`;
+      }
+    }
+    return byId;
+  }, [state.escalation_events, state.stage_runs]);
+  const sessionRollups = useMemo(() => {
+    return state.working_sessions.map((session) => {
+      const sessionCost = state.token_usage
+        .filter((usage) => usage.session_id === session.id)
+        .reduce((sum, usage) => sum + (usage.estimated_cost ?? 0), 0);
+      const approvedOverrides = state.escalation_events.filter((event) => event.approved_by_user && event.session_id === session.id);
+      const latestModelOverride = approvedOverrides.find((event) => event.kind === "stronger_model" && event.to_model)?.to_model ?? null;
+      const latestReasoningOverride = approvedOverrides.find((event) => event.kind === "higher_reasoning" && event.to_reasoning)?.to_reasoning ?? null;
+      return {
+        session,
+        sessionCost,
+        latestModelOverride,
+        latestReasoningOverride,
+      };
+    });
+  }, [state.escalation_events, state.token_usage, state.working_sessions]);
+  const costBreakdown = useMemo(() => {
+    const byStage: Array<{ key: string; cost: number }> = [];
+    const stageMap = new Map<string, number>();
+    for (const usage of state.token_usage) {
+      stageMap.set(usage.stage_key, (stageMap.get(usage.stage_key) ?? 0) + (usage.estimated_cost ?? 0));
+    }
+    for (const [key, cost] of stageMap.entries()) {
+      byStage.push({ key, cost });
+    }
+
+    const byModel: Array<{ key: string; cost: number }> = [];
+    const modelMap = new Map<string, number>();
+    for (const usage of state.token_usage) {
+      modelMap.set(usage.model_name, (modelMap.get(usage.model_name) ?? 0) + (usage.estimated_cost ?? 0));
+    }
+    for (const [key, cost] of modelMap.entries()) {
+      byModel.push({ key, cost });
+    }
+
+    return {
+      total: state.token_usage.reduce((sum, usage) => sum + (usage.estimated_cost ?? 0), 0),
+      byStage: byStage.sort((a, b) => b.cost - a.cost).slice(0, 6),
+      byModel: byModel.sort((a, b) => b.cost - a.cost).slice(0, 6),
+      bySession: sessionRollups
+        .map(({ session, sessionCost }) => ({ key: session.id.slice(0, 8), label: session.mode, cost: sessionCost }))
+        .sort((a, b) => b.cost - a.cost)
+        .slice(0, 6),
+    };
+  }, [sessionRollups, state.token_usage]);
 
   return (
     <div className="space-y-4">
@@ -695,6 +1022,171 @@ function IssueSidebar({
                 </div>
               )}
 
+              {state.token_usage.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Cost breakdown
+                  </h4>
+                  <div className="rounded-lg border border-border bg-background p-3">
+                    <div className="text-xs font-medium">Total estimated cost</div>
+                    <div className="mt-1 text-sm">${costBreakdown.total.toFixed(3)}</div>
+                    {costBreakdown.bySession.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">By session</div>
+                        <div className="mt-1 space-y-1">
+                          {costBreakdown.bySession.map((entry) => (
+                            <div key={entry.key} className="flex items-center justify-between text-[11px] text-muted-foreground">
+                              <span>{entry.key} · {entry.label}</span>
+                              <span>${entry.cost.toFixed(3)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {costBreakdown.byStage.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">By stage</div>
+                        <div className="mt-1 space-y-1">
+                          {costBreakdown.byStage.map((entry) => (
+                            <div key={entry.key} className="flex items-center justify-between text-[11px] text-muted-foreground">
+                              <span>{stageKeyLabels[entry.key] ?? entry.key}</span>
+                              <span>${entry.cost.toFixed(3)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {costBreakdown.byModel.length > 0 && (
+                      <div className="mt-3">
+                        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">By model</div>
+                        <div className="mt-1 space-y-1">
+                          {costBreakdown.byModel.map((entry) => (
+                            <div key={entry.key} className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                              <span className="truncate">{entry.key}</span>
+                              <span>${entry.cost.toFixed(3)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {state.working_sessions.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Working sessions
+                  </h4>
+                  <div className="space-y-1.5">
+                    {sessionRollups.slice(0, 6).map(({ session, sessionCost, latestModelOverride, latestReasoningOverride }) => (
+                      <div key={session.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="text-xs font-medium">
+                          {session.mode === "deep" ? "Deep investigation" : "Guided resolution"}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {session.status} · started {timeAgoET(session.started_at)}
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          Est. cost ${sessionCost.toFixed(3)}
+                        </div>
+                        {(latestModelOverride || latestReasoningOverride) && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {latestModelOverride ? `Model ${latestModelOverride}` : ""}
+                            {latestModelOverride && latestReasoningOverride ? " · " : ""}
+                            {latestReasoningOverride ? `Reasoning ${latestReasoningOverride}` : ""}
+                          </div>
+                        )}
+                        {session.rebase_from_session_id && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            Rebases from {session.rebase_from_session_id.slice(0, 8)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.investigation_briefs.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Investigation briefs
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.investigation_briefs.slice(0, 4).map((brief) => (
+                      <div key={brief.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="text-xs font-medium">{brief.trigger_reason}</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          {timeAgoET(brief.created_at)}
+                        </div>
+                        {brief.quality_score != null && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            Quality score: {brief.quality_score}/100
+                          </div>
+                        )}
+                        {typeof brief.content_json?.current_hypothesis === "string" && brief.content_json.current_hypothesis && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            Hypothesis: {String(brief.content_json.current_hypothesis).slice(0, 120)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.escalation_events.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Escalation history
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.escalation_events.slice(0, 6).map((event) => (
+                      <div key={event.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="text-xs font-medium">{event.kind.replaceAll("_", " ")}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {event.approved_by_user ? "Approved" : "Pending/denied"} · {timeAgoET(event.created_at)}
+                        </div>
+                        {escalationTriggerById[event.id] && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {escalationTriggerById[event.id]}
+                          </div>
+                        )}
+                        {(event.to_model || event.to_reasoning) && (
+                          <div className="mt-1 text-[11px] text-muted-foreground">
+                            {event.to_model ? `Model: ${event.to_model}` : ""}
+                            {event.to_model && event.to_reasoning ? " · " : ""}
+                            {event.to_reasoning ? `Reasoning: ${event.to_reasoning}` : ""}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {state.token_usage.length > 0 && (
+                <div>
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Token usage
+                  </h4>
+                  <div className="space-y-1.5">
+                    {state.token_usage.slice(0, 8).map((usage) => (
+                      <div key={usage.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="text-xs font-medium">{usage.stage_key}</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {usage.model_name}
+                        </div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">
+                          in {usage.input_tokens ?? 0} · out {usage.output_tokens ?? 0} · reasoning {usage.reasoning_tokens ?? 0}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {state.transitions.length > 0 && (
                 <div>
                   <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -793,6 +1285,7 @@ function JobCard({ job }: { job: ResolutionJob }) {
 }
 
 function StageRunCard({ run }: { run: ResolutionStageRun }) {
+  const [expanded, setExpanded] = useState(false);
   const stateClass =
     run.status === "failed"
       ? "border-critical/20 bg-critical/5"
@@ -800,17 +1293,89 @@ function StageRunCard({ run }: { run: ResolutionStageRun }) {
         ? "border-primary/20 bg-primary/5"
         : "border-border bg-background";
   const label = stageKeyLabels[run.stage_key] ?? run.stage_key.replaceAll("_", " ");
+  const effectiveReasoning =
+    typeof run.input_summary?.effective_reasoning === "string"
+      ? run.input_summary.effective_reasoning
+      : null;
+  const sessionMode =
+    typeof run.input_summary?.session_mode === "string"
+      ? run.input_summary.session_mode
+      : null;
+  const overrideModel =
+    typeof run.input_summary?.override_model === "string"
+      ? run.input_summary.override_model
+      : null;
+  const overrideReasoning =
+    typeof run.input_summary?.override_reasoning === "string"
+      ? run.input_summary.override_reasoning
+      : null;
+  const overrideModelActive = Boolean(run.input_summary?.override_model_active);
+  const overrideReasoningActive = Boolean(run.input_summary?.override_reasoning_active);
+  const inputEntries = Object.entries(run.input_summary ?? {}).slice(0, 8);
+  const outputEntries = Object.entries(run.output ?? {}).slice(0, 8);
 
   return (
     <div className={cn("rounded-lg border p-3", stateClass)}>
-      <div className="text-xs font-medium">{label}</div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-xs font-medium">{label}</div>
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="text-[11px] text-muted-foreground hover:text-foreground"
+        >
+          {expanded ? "Hide details" : "Show details"}
+        </button>
+      </div>
       <div className="mt-1 text-xs text-muted-foreground">
         {run.status}
         {run.model_tier ? ` · ${run.model_tier}` : ""}
         {run.model_name ? ` · ${run.model_name}` : ""}
       </div>
+      {(sessionMode || effectiveReasoning || overrideModelActive || overrideReasoningActive) && (
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          {sessionMode ? `mode ${sessionMode}` : ""}
+          {sessionMode && effectiveReasoning ? " · " : ""}
+          {effectiveReasoning ? `reasoning ${effectiveReasoning}` : ""}
+          {(sessionMode || effectiveReasoning) && (overrideModelActive || overrideReasoningActive) ? " · " : ""}
+          {overrideModelActive ? `model override ${overrideModel ?? "active"}` : ""}
+          {overrideModelActive && overrideReasoningActive ? " · " : ""}
+          {overrideReasoningActive ? `reasoning override ${overrideReasoning ?? "active"}` : ""}
+        </div>
+      )}
       {run.error_text && (
         <p className="mt-1 whitespace-pre-wrap text-xs text-critical">{run.error_text}</p>
+      )}
+      {expanded && (
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-md border border-border/70 bg-background p-2">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Input summary</div>
+            <div className="mt-2 space-y-1">
+              {inputEntries.length === 0 ? (
+                <div className="text-[11px] text-muted-foreground">No recorded summary.</div>
+              ) : (
+                inputEntries.map(([key, value]) => (
+                  <div key={key} className="text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground">{key}:</span> {typeof value === "string" ? value : JSON.stringify(value)}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+          <div className="rounded-md border border-border/70 bg-background p-2">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Output summary</div>
+            <div className="mt-2 space-y-1">
+              {outputEntries.length === 0 ? (
+                <div className="text-[11px] text-muted-foreground">No recorded output.</div>
+              ) : (
+                outputEntries.map(([key, value]) => (
+                  <div key={key} className="text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground">{key}:</span> {typeof value === "string" ? value : JSON.stringify(value)}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       )}
       <div className="mt-2 text-[11px] text-muted-foreground">{timeAgoET(run.created_at)}</div>
     </div>
@@ -959,6 +1524,92 @@ function NeedsInputPanel({
           <p className="whitespace-pre-wrap text-sm">{latestAgentMessage}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function EscalationBanner({
+  escalation,
+  activeSessionMetrics,
+  loading,
+  onApprove,
+}: {
+  escalation: ResolutionEscalationEvent;
+  activeSessionMetrics: {
+    messages: number;
+    evidence: number;
+    actions: number;
+    ageHours: number;
+  } | null;
+  loading: boolean;
+  onApprove: () => void;
+}) {
+  const title =
+    escalation.kind === "deep_mode_switch"
+      ? "Agent requests Deep investigation mode"
+      : escalation.kind === "expanded_context"
+        ? "Agent requests a context rebase"
+        : escalation.kind === "higher_reasoning"
+          ? "Agent requests higher reasoning effort"
+          : escalation.kind === "stronger_model"
+            ? "Agent requests a stronger model"
+        : "Agent requests escalation";
+
+  const description =
+    escalation.kind === "deep_mode_switch"
+      ? "This issue now looks ambiguous enough that a larger context and stronger reasoning budget should help."
+      : escalation.kind === "expanded_context"
+        ? "The active working context is crowded enough that a fresh session would likely improve accuracy."
+        : escalation.kind === "higher_reasoning"
+          ? `The current reasoning level looks too low for this ambiguity${escalation.estimated_cost != null ? ` and should cost about $${escalation.estimated_cost.toFixed(3)} extra for the next turn.` : "."}`
+          : escalation.kind === "stronger_model"
+            ? `The current model is probably the limiting factor now${escalation.estimated_cost != null ? ` and the proposed upgrade should cost about $${escalation.estimated_cost.toFixed(3)} extra for the next turn.` : "."}`
+        : escalation.decision_reason ?? "The agent requested a runtime escalation.";
+
+  const buttonLabel =
+    escalation.kind === "deep_mode_switch"
+      ? "Switch To Deep Mode"
+      : escalation.kind === "expanded_context"
+        ? "Rebase Context"
+        : escalation.kind === "higher_reasoning"
+          ? "Raise Reasoning"
+          : escalation.kind === "stronger_model"
+            ? "Approve Model Upgrade"
+        : "Approve Escalation";
+
+  return (
+    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            <h3 className="text-sm font-semibold">{title}</h3>
+          </div>
+          <p className="text-sm text-muted-foreground">{description}</p>
+          {escalation.decision_reason && (
+            <p className="mt-2 text-xs text-muted-foreground">{escalation.decision_reason}</p>
+          )}
+          {activeSessionMetrics && escalation.kind === "expanded_context" && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              Current session: {activeSessionMetrics.messages} messages, {activeSessionMetrics.evidence} evidence items, {activeSessionMetrics.actions} actions, age {activeSessionMetrics.ageHours.toFixed(1)}h.
+            </p>
+          )}
+          {(escalation.to_model || escalation.to_reasoning) && escalation.kind !== "expanded_context" && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {escalation.to_model ? `Target model: ${escalation.to_model}` : ""}
+              {escalation.to_model && escalation.to_reasoning ? " · " : ""}
+              {escalation.to_reasoning ? `Target reasoning: ${escalation.to_reasoning}` : ""}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={onApprove}
+          disabled={loading}
+          className="shrink-0 inline-flex items-center gap-2 rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+        >
+          {buttonLabel}
+        </button>
+      </div>
     </div>
   );
 }

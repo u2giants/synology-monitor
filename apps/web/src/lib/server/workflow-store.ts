@@ -71,6 +71,19 @@ export async function enqueueIssueJob(
   return data.id as string;
 }
 
+// Returns the set of issue_ids that currently have a job in "running" state.
+// Used by the claim functions below to skip candidates whose issue is
+// already being processed — without this, two queued jobs for the same
+// issue (e.g. a run_issue + an approval_decision) can run concurrently
+// and clobber each other's state writes.
+async function listInflightIssueIds(supabase: SupabaseClient): Promise<Set<string>> {
+  const { data } = await supabase
+    .from("issue_jobs")
+    .select("issue_id")
+    .eq("status", "running");
+  return new Set(((data ?? []) as Array<{ issue_id: string }>).map((row) => row.issue_id));
+}
+
 export async function claimNextIssueJob(
   supabase: SupabaseClient,
   userId: string,
@@ -91,7 +104,10 @@ export async function claimNextIssueJob(
     throw new Error(`Failed to list issue jobs: ${error.message}`);
   }
 
+  const inflight = await listInflightIssueIds(supabase);
+
   for (const candidate of (candidates ?? []) as IssueJob[]) {
+    if (inflight.has(candidate.issue_id)) continue;
     const { data: updated, error: updateError } = await supabase
       .from("issue_jobs")
       .update({
@@ -112,6 +128,24 @@ export async function claimNextIssueJob(
     }
 
     if (updated) {
+      // Defensive re-check: between the inflight scan and our CAS, another
+      // worker could have claimed a different job for the same issue.
+      // If so, release our claim back to queued and try the next candidate.
+      const { data: concurrent } = await supabase
+        .from("issue_jobs")
+        .select("id")
+        .eq("issue_id", candidate.issue_id)
+        .eq("status", "running")
+        .neq("id", candidate.id)
+        .limit(1);
+      if (concurrent && concurrent.length > 0) {
+        await supabase
+          .from("issue_jobs")
+          .update({ status: "queued", locked_at: null, locked_by: null, updated_at: now })
+          .eq("id", candidate.id);
+        inflight.add(candidate.issue_id);
+        continue;
+      }
       return updated as IssueJob;
     }
   }
@@ -137,7 +171,10 @@ export async function claimNextIssueJobGlobal(
     throw new Error(`Failed to list global issue jobs: ${error.message}`);
   }
 
+  const inflight = await listInflightIssueIds(supabase);
+
   for (const candidate of (candidates ?? []) as IssueJob[]) {
+    if (inflight.has(candidate.issue_id)) continue;
     const { data: updated, error: updateError } = await supabase
       .from("issue_jobs")
       .update({
@@ -157,6 +194,21 @@ export async function claimNextIssueJobGlobal(
     }
 
     if (updated) {
+      const { data: concurrent } = await supabase
+        .from("issue_jobs")
+        .select("id")
+        .eq("issue_id", candidate.issue_id)
+        .eq("status", "running")
+        .neq("id", candidate.id)
+        .limit(1);
+      if (concurrent && concurrent.length > 0) {
+        await supabase
+          .from("issue_jobs")
+          .update({ status: "queued", locked_at: null, locked_by: null, updated_at: now })
+          .eq("id", candidate.id);
+        inflight.add(candidate.issue_id);
+        continue;
+      }
       return updated as IssueJob;
     }
   }

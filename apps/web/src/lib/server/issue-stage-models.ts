@@ -1,16 +1,23 @@
-import OpenAI from "openai";
 import {
+  getDeepModeModelOverride,
+  getDeepModeReasoningOverride,
   getExtractorModel,
   getExplainerModel,
   getHypothesisModel,
+  getHypothesisReasoningEffort,
   getPlannerModel,
+  getPlannerReasoningEffort,
   getRemediationPlannerModel,
+  getRemediationPlannerReasoningEffort,
   getVerifierModel,
+  getVerifierReasoningEffort,
+  type ModelReasoningEffort,
 } from "@/lib/server/ai-settings";
 import { buildBackendFindingsPromptContext } from "@/lib/server/backend-findings";
 import { parseJsonObject } from "@/lib/server/model-json";
+import { runOpenRouterChatCompletion, type OpenRouterCallMetadata, type OpenRouterUsage } from "@/lib/server/openrouter-client";
 import type { IssueConfidence, IssueSeverity, IssueStatus } from "@/lib/server/issue-store";
-import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export type ToolActionPlan = {
   /** Raw shell command to run on the NAS. */
@@ -73,40 +80,49 @@ export type VerificationResult = {
   evidence_notes: Array<{ title: string; detail: string }>;
 };
 
-function getOpenAIClient() {
-  const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY or OPENAI_API_KEY is not configured.");
-  }
-
-  return new OpenAI({
-    apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
-  });
+export interface StageModelResult<T> {
+  model: string;
+  parsed: T;
+  usage: OpenRouterUsage;
+  metadata: OpenRouterCallMetadata;
 }
+
+type StageRuntimeOverride = {
+  model?: string | null;
+  reasoningEffort?: ModelReasoningEffort | null;
+};
 
 async function callStageModel<T>(
   model: string,
   prompt: string,
+  reasoningEffort: ModelReasoningEffort,
   maxTokens = 8192,
 ) {
-  const supabase = await createSupabaseServerClient();
+  // Use the service-role admin client so the findings preamble works in the
+  // background worker too (no user session → cookie-based client returns
+  // empty data under RLS, which silently makes every stage model run with
+  // a "no problems / no alerts / no NAS units" preamble).
+  const supabase = createAdminClient();
   const backendFindings = await buildBackendFindingsPromptContext(supabase);
-  const client = getOpenAIClient();
-  const response = await client.chat.completions.create({
+  const result = await runOpenRouterChatCompletion({
     model,
-    messages: [{ role: "user", content: `${backendFindings}\n\n${prompt}` }],
-    max_tokens: maxTokens,
+    prompt: `${backendFindings}\n\n${prompt}`,
+    maxTokens,
+    reasoningEffort,
   });
 
-  const choice = response.choices[0];
+  const choice = result.response.choices[0];
   const raw = choice?.message?.content;
   if (!raw) {
     throw new Error(
       `Stage model returned null content (finish_reason=${choice?.finish_reason ?? "unknown"}, model=${model})`,
     );
   }
-  return parseJsonObject<T>(raw);
+  return {
+    parsed: parseJsonObject<T>(raw),
+    usage: result.usage,
+    metadata: result.metadata,
+  };
 }
 
 export async function rankIssueHypothesis(input: {
@@ -115,8 +131,15 @@ export async function rankIssueHypothesis(input: {
   recent_evidence: Array<object>;
   recent_actions: Array<object>;
   telemetry: object;
+  mode?: "guided" | "deep";
+  runtimeOverride?: StageRuntimeOverride;
 }) {
-  const model = await getHypothesisModel();
+  const mode = input.mode ?? "guided";
+  const model = input.runtimeOverride?.model
+    || (mode === "deep" ? await getDeepModeModelOverride() : "")
+    || await getHypothesisModel();
+  const reasoningEffort = input.runtimeOverride?.reasoningEffort
+    || (mode === "deep" ? await getDeepModeReasoningOverride() : await getHypothesisReasoningEffort());
   const prompt = `You are ranking the most likely hypothesis for one Synology NAS issue.
 
 Return JSON only:
@@ -140,8 +163,8 @@ Rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<HypothesisRankResult>(model, prompt);
-  return { model, parsed };
+  const result = await callStageModel<HypothesisRankResult>(model, prompt, reasoningEffort);
+  return { model, ...result } satisfies StageModelResult<HypothesisRankResult>;
 }
 
 export async function planIssueNextStep(input: {
@@ -150,8 +173,15 @@ export async function planIssueNextStep(input: {
   telemetry: object;
   recent_actions: Array<{ command: string; status: string; summary: string; result_text: string }>;
   completed_diagnostic_count: number;
+  mode?: "guided" | "deep";
+  runtimeOverride?: StageRuntimeOverride;
 }) {
-  const model = await getPlannerModel();
+  const mode = input.mode ?? "guided";
+  const model = input.runtimeOverride?.model
+    || (mode === "deep" ? await getDeepModeModelOverride() : "")
+    || await getPlannerModel();
+  const reasoningEffort = input.runtimeOverride?.reasoningEffort
+    || (mode === "deep" ? await getDeepModeReasoningOverride() : await getPlannerReasoningEffort());
   const prompt = `You are a Synology NAS expert selecting the single best next step for one issue.
 
 You have full shell access to the affected NAS via a tiered execution API. Write the exact shell command you want to run.
@@ -232,8 +262,8 @@ Additional rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<NextStepPlanResult>(model, prompt, 16000);
-  return { model, parsed };
+  const result = await callStageModel<NextStepPlanResult>(model, prompt, reasoningEffort, 16000);
+  return { model, ...result } satisfies StageModelResult<NextStepPlanResult>;
 }
 
 export async function planIssueRemediation(input: {
@@ -241,8 +271,15 @@ export async function planIssueRemediation(input: {
   hypothesis: HypothesisRankResult;
   plan: NextStepPlanResult;
   telemetry: object;
+  mode?: "guided" | "deep";
+  runtimeOverride?: StageRuntimeOverride;
 }) {
-  const model = await getRemediationPlannerModel();
+  const mode = input.mode ?? "guided";
+  const model = input.runtimeOverride?.model
+    || (mode === "deep" ? await getDeepModeModelOverride() : "")
+    || await getRemediationPlannerModel();
+  const reasoningEffort = input.runtimeOverride?.reasoningEffort
+    || (mode === "deep" ? await getDeepModeReasoningOverride() : await getRemediationPlannerReasoningEffort());
   const prompt = `You are refining a single remediation candidate for one Synology NAS issue.
 
 Tier system for the command field:
@@ -279,8 +316,8 @@ Rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<NextStepPlanResult>(model, prompt);
-  return { model, parsed };
+  const result = await callStageModel<NextStepPlanResult>(model, prompt, reasoningEffort);
+  return { model, ...result } satisfies StageModelResult<NextStepPlanResult>;
 }
 
 export async function explainIssueState(input: {
@@ -307,16 +344,23 @@ Rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<OperatorExplanationResult>(model, prompt);
-  return { model, parsed };
+  const result = await callStageModel<OperatorExplanationResult>(model, prompt, "auto");
+  return { model, ...result } satisfies StageModelResult<OperatorExplanationResult>;
 }
 
 export async function verifyIssueAction(input: {
   issue: object;
   action: object;
   telemetry: object;
+  mode?: "guided" | "deep";
+  runtimeOverride?: StageRuntimeOverride;
 }) {
-  const model = await getVerifierModel();
+  const mode = input.mode ?? "guided";
+  const model = input.runtimeOverride?.model
+    || (mode === "deep" ? await getDeepModeModelOverride() : "")
+    || await getVerifierModel();
+  const reasoningEffort = input.runtimeOverride?.reasoningEffort
+    || (mode === "deep" ? await getDeepModeReasoningOverride() : await getVerifierReasoningEffort());
   const prompt = `You are verifying whether the latest remediation changed the issue.
 
 Return JSON only:
@@ -340,8 +384,8 @@ Rules:
 Context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<VerificationResult>(model, prompt);
-  return { model, parsed };
+  const result = await callStageModel<VerificationResult>(model, prompt, reasoningEffort);
+  return { model, ...result } satisfies StageModelResult<VerificationResult>;
 }
 
 export type LogCompressionFact = {
@@ -351,6 +395,13 @@ export type LogCompressionFact = {
   detail: string;
   is_anomaly: boolean;
 };
+
+export interface LogCompressionResult {
+  model: string;
+  facts: LogCompressionFact[];
+  usage: OpenRouterUsage;
+  metadata: OpenRouterCallMetadata;
+}
 
 /**
  * Runs the extractor model (cheap/fast) over raw log rows from high-volume
@@ -364,9 +415,16 @@ export async function compressLogsToFacts(input: {
   logs: Array<Record<string, unknown>>;
   audit_logs: Array<Record<string, unknown>>;
   nas_context: string;
-}): Promise<{ model: string; facts: LogCompressionFact[] }> {
+}): Promise<LogCompressionResult> {
   const allLogs = [...(input.logs ?? []), ...(input.audit_logs ?? [])];
-  if (allLogs.length === 0) return { model: "none", facts: [] };
+  if (allLogs.length === 0) {
+    return {
+      model: "none",
+      facts: [],
+      usage: {},
+      metadata: { model: "none", reasoning_effort: "auto" },
+    };
+  }
 
   const model = await getExtractorModel();
 
@@ -420,8 +478,13 @@ Rules:
 Log data:
 ${JSON.stringify(slimmed, null, 2)}`;
 
-  const parsed = await callStageModel<{ facts: LogCompressionFact[] }>(model, prompt);
-  return { model, facts: Array.isArray(parsed.facts) ? parsed.facts : [] };
+  const result = await callStageModel<{ facts: LogCompressionFact[] }>(model, prompt, "auto");
+  return {
+    model,
+    facts: Array.isArray(result.parsed.facts) ? result.parsed.facts : [],
+    usage: result.usage,
+    metadata: result.metadata,
+  };
 }
 
 // ─── Agent memory consolidation ──────────────────────────────────────────────
@@ -434,6 +497,13 @@ export type AgentMemoryEntry = {
   content: string;
   tags: string[];
 };
+
+export interface MemoryConsolidationResult {
+  model: string;
+  memories: AgentMemoryEntry[];
+  usage: OpenRouterUsage;
+  metadata: OpenRouterCallMetadata;
+}
 
 /**
  * Runs the extractor model over a resolved issue to extract durable memories.
@@ -452,7 +522,7 @@ export async function consolidateIssueMemory(input: {
   affected_nas: string[];
   evidence_highlights: Array<{ title: string; detail: string }>;
   completed_actions: Array<{ command: string; summary: string; result_excerpt: string; status: string }>;
-}): Promise<{ model: string; memories: AgentMemoryEntry[] }> {
+}): Promise<MemoryConsolidationResult> {
   const model = await getExtractorModel();
 
   const prompt = `You are extracting durable knowledge from a resolved Synology NAS issue.
@@ -497,7 +567,7 @@ Rules:
 Issue context:
 ${JSON.stringify(input, null, 2)}`;
 
-  const parsed = await callStageModel<{ memories: AgentMemoryEntry[] }>(model, prompt);
-  const memories = Array.isArray(parsed.memories) ? parsed.memories : [];
-  return { model, memories };
+  const result = await callStageModel<{ memories: AgentMemoryEntry[] }>(model, prompt, "auto");
+  const memories = Array.isArray(result.parsed.memories) ? result.parsed.memories : [];
+  return { model, memories, usage: result.usage, metadata: result.metadata };
 }
