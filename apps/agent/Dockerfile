@@ -11,6 +11,11 @@ COPY . .
 
 ARG BUILD_SHA=dev
 ARG BUILD_TIME=unknown
+
+# Run vet + tests before building. If the custom-metric validator or any
+# other package test fails, the image build fails and CI does not push.
+RUN go vet ./... && CGO_ENABLED=1 go test ./...
+
 RUN CGO_ENABLED=1 GOOS=linux go build \
   -ldflags="-s -w -X main.BuildSHA=${BUILD_SHA} -X main.BuildTime=${BUILD_TIME}" \
   -o /agent ./cmd/agent

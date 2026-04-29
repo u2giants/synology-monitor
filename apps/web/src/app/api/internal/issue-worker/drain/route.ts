@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { timingSafeEqual } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { drainIssueQueueGlobal } from "@/lib/server/issue-workflow";
 
@@ -12,7 +13,10 @@ function isAuthorized(request: Request) {
 
   const authHeader = request.headers.get("authorization") ?? "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
-  return token === expected;
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(expected);
+  if (tokenBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(tokenBuf, expectedBuf);
 }
 
 export async function POST(request: Request) {

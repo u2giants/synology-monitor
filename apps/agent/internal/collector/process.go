@@ -10,6 +10,7 @@ package collector
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -445,7 +446,11 @@ func newUUID() string {
 	}
 	defer f.Close()
 	b := make([]byte, 16)
-	f.Read(b) //nolint:errcheck
+	if _, err := io.ReadFull(f, b); err != nil {
+		// Extremely rare on Linux but possible under heavy cgroup pressure;
+		// fall back to a timestamp-based ID rather than emit a UUID of zeros.
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

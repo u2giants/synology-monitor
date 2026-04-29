@@ -51,7 +51,7 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\breboot\b`),
 	regexp.MustCompile(`(?i)\bpoweroff\b`),
 	regexp.MustCompile(`(?i)\bhalt\b`),
-	regexp.MustCompile(`(?i)\bsysteemctl\s+(poweroff|halt|reboot)\b`),
+	regexp.MustCompile(`(?i)\bsystemctl\s+(poweroff|halt|reboot)\b`),
 	// Package manager (apt/opkg/pip global installs)
 	regexp.MustCompile(`(?i)\bapt(-get)?\s+(install|remove|purge)\b`),
 	regexp.MustCompile(`(?i)\bopkg\s+(install|remove)\b`),
@@ -63,6 +63,23 @@ var hardBlocked = []*regexp.Regexp{
 	// Docker socket is effectively host-level control, so only a tiny allowlist
 	// of monitor-stack actions may use it. Everything else is blocked outright.
 	regexp.MustCompile(`(?i)\bdocker\s+(run|create|exec|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
+	// Pipe-to-shell — fetches/inputs that get re-executed as commands are
+	// the canonical RCE shape. Block at every tier.
+	regexp.MustCompile(`(?i)\|\s*(sh|bash|zsh|ksh|sudo|su)\b`),
+	// eval — unconstrained code execution from a string.
+	regexp.MustCompile(`(?i)\beval\b`),
+	// Writes / file-system mutation pointed at system directories. Even with an
+	// approval token, no tier may chmod/chown/cp/mv/tar/rm into /etc, /usr,
+	// /boot, /sys, /proc, /lib, /lib64. Reads (cat, ls, head, tail) are not
+	// in this list and continue to work.
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/etc(\b|/)`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/usr(\b|/)`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/boot(\b|/)`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/sys(\b|/)`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/proc(\b|/)`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chattr|setfacl|cp|mv|ln)\b[^\n]*\s/lib(64)?(\b|/)`),
+	regexp.MustCompile(`(?i)\btar\b[^\n]*\s-C\s+/(etc|usr|boot|sys|proc|lib)(\b|/)`),
+	regexp.MustCompile(`(?i)\bfind\b[^\n]*\s/(etc|usr|boot|sys|proc|lib)(\b|/)[^\n]*\s(-delete|-exec)\b`),
 }
 
 // safeRedirectRe strips redirect forms that are not writes:

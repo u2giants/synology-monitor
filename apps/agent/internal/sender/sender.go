@@ -48,6 +48,20 @@ func New(supabaseURL, serviceKey, dataDir string, batchSize int, flushEvery time
 		return nil, fmt.Errorf("creating WAL table: %w", err)
 	}
 
+	// Create checkpoints table for collector watermarks (DSM log cursor, etc.).
+	// Persisting these prevents the agent from re-emitting historical events
+	// every time the container restarts (e.g. after a deploy).
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS checkpoints (
+			name TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("creating checkpoints table: %w", err)
+	}
+
 	return &Sender{
 		supabaseURL: supabaseURL,
 		serviceKey:  serviceKey,
@@ -63,6 +77,33 @@ func New(supabaseURL, serviceKey, dataDir string, batchSize int, flushEvery time
 
 func (s *Sender) Close() error {
 	return s.db.Close()
+}
+
+// SaveCheckpoint persists a per-collector cursor (e.g. DSM log watermark)
+// to the local SQLite so it survives agent restarts. The value is stored
+// as a string; collectors that track timestamps should encode as RFC3339.
+func (s *Sender) SaveCheckpoint(name, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO checkpoints (name, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		name, value,
+	)
+	return err
+}
+
+// LoadCheckpoint reads a previously-saved checkpoint, or returns ("", nil)
+// if no value exists yet (first run after install / fresh deploy).
+func (s *Sender) LoadCheckpoint(name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM checkpoints WHERE name = ?`, name).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
 }
 
 // Queue methods write to local SQLite WAL
@@ -194,15 +235,15 @@ func (s *Sender) Run(stop <-chan struct{}) {
 }
 
 func (s *Sender) flush() {
+	// Hold the mutex only for the SQLite portions; release it around the
+	// HTTP POST so concurrent QueueLog/QueueAlert calls don't stall for the
+	// duration of a slow Supabase response (previously every collector
+	// blocked for up to the full 30 s HTTP timeout per table).
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Enforce WAL size limit
 	s.enforceWALLimit()
-
-	// Get distinct tables with pending entries
 	rows, err := s.db.Query("SELECT DISTINCT table_name FROM wal_entries WHERE attempts < 5 ORDER BY table_name")
 	if err != nil {
+		s.mu.Unlock()
 		log.Printf("[sender] error querying tables: %v", err)
 		return
 	}
@@ -220,6 +261,7 @@ func (s *Sender) flush() {
 		log.Printf("[sender] error iterating tables: %v", err)
 	}
 	rows.Close()
+	s.mu.Unlock()
 
 	for _, table := range tables {
 		s.flushTable(table)
@@ -227,12 +269,14 @@ func (s *Sender) flush() {
 }
 
 func (s *Sender) flushTable(table string) {
-	// Get batch of entries
+	// 1. Gather the batch under the mutex.
+	s.mu.Lock()
 	rows, err := s.db.Query(
 		"SELECT id, payload FROM wal_entries WHERE table_name = ? AND attempts < 5 ORDER BY id LIMIT ?",
 		table, s.batchSize,
 	)
 	if err != nil {
+		s.mu.Unlock()
 		log.Printf("[sender] error querying %s entries: %v", table, err)
 		return
 	}
@@ -254,6 +298,7 @@ func (s *Sender) flushTable(table string) {
 		log.Printf("[sender] error iterating rows in %s: %v", table, err)
 	}
 	rows.Close()
+	s.mu.Unlock()
 
 	if len(payloads) == 0 {
 		return
@@ -282,23 +327,30 @@ func (s *Sender) flushTable(table string) {
 	req.Header.Set("Authorization", "Bearer "+s.serviceKey)
 	req.Header.Set("Prefer", preferHeader)
 
+	// 2. HTTP POST without holding the mutex.
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		log.Printf("[sender] error sending to %s: %v", table, err)
+		s.mu.Lock()
 		s.incrementAttempts(ids, err.Error())
+		s.mu.Unlock()
 		return
 	}
 	defer resp.Body.Close()
 
+	// 3. Re-acquire the mutex for the SQLite update.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// Success — delete from WAL
+		s.mu.Lock()
 		s.deleteEntries(ids)
+		s.mu.Unlock()
 		log.Printf("[sender] flushed %d entries to %s", len(ids), table)
 	} else {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
 		log.Printf("[sender] error from Supabase for %s: %s", table, errMsg)
+		s.mu.Lock()
 		s.incrementAttempts(ids, errMsg)
+		s.mu.Unlock()
 	}
 }
 

@@ -3,6 +3,7 @@ package dsm
 import (
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -143,11 +144,24 @@ func (c *Client) request(api string, version int, method string, extra url.Value
 }
 
 func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
-	reqURL := fmt.Sprintf("%s/webapi/entry.cgi?%s", c.baseURL, params.Encode())
+	// Send parameters in the POST form body so the DSM password (passwd=)
+	// never appears in the request URL. Go's net/http includes the full URL
+	// in *url.Error returned from Get on transport failures (DNS, connection
+	// reset, TLS) — that error then propagates through wrapping log.Printf
+	// calls, into nas_logs, and into Supabase rows. A POST body is not
+	// echoed back in those error strings.
+	reqURL := fmt.Sprintf("%s/webapi/entry.cgi", c.baseURL)
+	body := params.Encode()
 
-	resp, err := c.httpClient.Get(reqURL)
+	req, err := http.NewRequest(http.MethodPost, reqURL, strings.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request build failed: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", redactURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -468,6 +482,31 @@ func parseContainerState(raw json.RawMessage) (string, error) {
 	}
 
 	return "", nil
+}
+
+// redactURLError strips a passwd= query parameter from the URL embedded in a
+// *url.Error so legacy callers / logs can't leak the DSM password if a stray
+// query-string form ever resurfaces. Defense in depth alongside the POST move.
+func redactURLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		return err
+	}
+	parsed, perr := url.Parse(ue.URL)
+	if perr != nil {
+		return err
+	}
+	q := parsed.Query()
+	if q.Get("passwd") == "" {
+		return err
+	}
+	q.Set("passwd", "REDACTED")
+	parsed.RawQuery = q.Encode()
+	ue.URL = parsed.String()
+	return ue
 }
 
 func firstNonEmpty(values ...string) string {

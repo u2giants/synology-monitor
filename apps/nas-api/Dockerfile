@@ -7,6 +7,12 @@ COPY . .
 
 ARG BUILD_SHA=dev
 ARG BUILD_TIME=unknown
+
+# Run tests before building. If validator or auth tests fail, the image
+# build fails and CI does not push — production stays on the previous
+# known-good image.
+RUN go vet ./... && go test ./...
+
 RUN CGO_ENABLED=0 GOOS=linux go build \
   -ldflags="-s -w -X main.BuildSHA=${BUILD_SHA} -X main.BuildTime=${BUILD_TIME}" \
   -o /nas-api ./cmd/server

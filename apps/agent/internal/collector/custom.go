@@ -96,7 +96,9 @@ func (c *CustomCollector) runDue() {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	// Cap the response size so a misbehaving Supabase endpoint cannot stream
+	// unbounded data into agent memory within the 15 s HTTP timeout.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[custom-collector] fetch HTTP %d: %s", resp.StatusCode, string(body))
 		return
@@ -152,7 +154,7 @@ func (c *CustomCollector) claim(sched customSchedule) bool {
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1*1024*1024))
 	var claimed []map[string]interface{}
 	_ = json.Unmarshal(respBody, &claimed)
 	return len(claimed) > 0
@@ -160,6 +162,23 @@ func (c *CustomCollector) claim(sched customSchedule) bool {
 
 // execute runs the shell command and queues the output via the sender WAL.
 func (c *CustomCollector) execute(sched customSchedule) {
+	// Reject commands that fail the inline validator. custom_metric_schedules
+	// is otherwise a backdoor: anyone with the Supabase service-role key can
+	// queue a row whose CollectionCommand becomes root-shell on every NAS,
+	// completely bypassing the Tier 1/2/3 validator the rest of the system
+	// runs through.
+	if err := validateCustomCommand(sched.CollectionCommand); err != nil {
+		log.Printf("[custom-collector] REJECTED %q: %v", sched.Name, err)
+		c.sender.QueueCustomMetricData(sender.CustomMetricDataPayload{
+			ScheduleID: sched.ID,
+			NasID:      c.nasName,
+			RawOutput:  "",
+			Error:      "rejected by custom-metric validator: " + err.Error(),
+			CapturedAt: time.Now().UTC(),
+		})
+		return
+	}
+
 	log.Printf("[custom-collector] running %q: %s", sched.Name, sched.CollectionCommand)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

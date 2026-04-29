@@ -44,6 +44,24 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+// banner builds a shell `echo '=== LABEL ==='` line that is safe to interpolate
+// user-controlled values into. The value is single-quote escaped via quote()
+// so a `'` in the input cannot terminate the quoted string.
+function banner(label: string, value?: string): string {
+  const text = value === undefined ? `=== ${label} ===` : `=== ${label}: ${value} ===`;
+  return `echo ${quote(text)}`;
+}
+
+// isSafeVolumePath returns true only for absolute paths under /volume* or
+// /btrfs/volume* with no shell metacharacters and no `..` traversal.
+function isSafeVolumePath(p: string): boolean {
+  if (!p.startsWith("/volume") && !p.startsWith("/btrfs/volume")) return false;
+  if (p.includes("/../") || p.endsWith("/..") || p === "..") return false;
+  // Disallow shell metacharacters that have special meaning even inside double quotes.
+  if (/[`$;|&<>\n\r"'\\]/.test(p)) return false;
+  return true;
+}
+
 /**
  * Builds a shell command that makes a single authenticated DSM WebAPI call.
  * Handles login, the API call, result check, and logout.
@@ -727,7 +745,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const f = (input.filter as string | undefined)?.trim() || "error";
       return [
-        `echo '=== SEARCHING ALL LOGS FOR: ${f} ==='`,
+        `echo ${quote(`=== SEARCHING ALL LOGS FOR: ${f} ===`)}`,
         `for logf in /host/log/synolog/*.log /host/log/messages /host/log/kern.log /host/log/synologydrive.log /host/log/samba/*.log; do`,
         `  [ -f "$logf" ] || continue`,
         `  matches=$(grep -ciE ${quote(f)} "$logf" 2>/dev/null || true)`,
@@ -744,15 +762,19 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target, filter },
     buildCommand: (input) => {
       const folder = (input.filter as string | undefined)?.trim() || "/volume1";
+      if (!isSafeVolumePath(folder)) {
+        return `echo 'ERROR: find_problematic_files filter must be an absolute path under /volume* or /btrfs/volume* with no shell metacharacters or .. traversal.'`;
+      }
+      const q = quote(folder);
       return [
-        `echo '=== FILES WITH SYNC-BREAKING CHARACTERS IN ${folder} ==='`,
-        `find ${folder} -maxdepth 8 \\( -name '*:*' -o -name '*\\**' -o -name '*?*' -o -name '*"*' -o -name '*<*' -o -name '*>*' -o -name '*|*' \\) 2>/dev/null | grep -v '@eaDir' | grep -v '.SynologyWorkingDirectory' | head -50 || echo 'No files with special characters found'`,
+        banner(`FILES WITH SYNC-BREAKING CHARACTERS IN`, folder),
+        `find ${q} -maxdepth 8 \\( -name '*:*' -o -name '*\\**' -o -name '*?*' -o -name '*"*' -o -name '*<*' -o -name '*>*' -o -name '*|*' \\) 2>/dev/null | grep -v '@eaDir' | grep -v '.SynologyWorkingDirectory' | head -50 || echo 'No files with special characters found'`,
         `echo ''`,
         `echo '=== CONFLICT FILES ==='`,
-        `find ${folder} -maxdepth 8 \\( -name '*conflicted*' -o -name '*.conflict' -o -name '*~conflict*' \\) 2>/dev/null | grep -v '@eaDir' | head -30 || echo 'No conflict files found'`,
+        `find ${q} -maxdepth 8 \\( -name '*conflicted*' -o -name '*.conflict' -o -name '*~conflict*' \\) 2>/dev/null | grep -v '@eaDir' | head -30 || echo 'No conflict files found'`,
         `echo ''`,
         `echo '=== VERY LONG FILENAMES (>200 chars) ==='`,
-        `find ${folder} -maxdepth 8 2>/dev/null | awk 'length($0)>200' | head -20 || echo 'No extremely long filenames'`,
+        `find ${q} -maxdepth 8 2>/dev/null | awk 'length($0)>200' | head -20 || echo 'No extremely long filenames'`,
       ].join("\n");
     },
   },
@@ -860,7 +882,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const pkg = (input.package_name as string).trim();
       return [
-        `echo '=== PACKAGE STATUS: ${pkg} ==='`,
+        `echo ${quote(`=== PACKAGE STATUS: ${pkg} ===`)}`,
         `ver=$(grep -m1 '^version=' /var/packages/${quote(pkg)}/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/${quote(pkg)}/enabled ] && echo enabled || echo disabled); echo "${pkg}: \${ver:-not found} [\$enabled]"`,
         "echo ''",
         "echo '=== ENABLED STATE ==='",
@@ -957,7 +979,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 2) * 40, 40, 400);
       const pkgLower = pkg.toLowerCase();
       return [
-        `echo '=== PACKAGE LOGS: ${pkg} ==='`,
+        `echo ${quote(`=== PACKAGE LOGS: ${pkg} ===`)}`,
         "echo ''",
         "echo '--- /host/log/packages/ (primary DSM 7 package log location) ---'",
         `for f in /host/log/packages/${quote(pkg)}.log /host/log/packages/${pkgLower}.log; do`,
@@ -971,7 +993,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `  [ -f "$f" ] || continue`,
         `  echo "=== $f ==="`,
         `  tail -n ${lines} "$f"`,
-        `done 2>/dev/null || echo 'No logs in /host/var/packages/${pkg}/var/log/'`,
+        `done 2>/dev/null || echo ${quote(`No logs in /host/var/packages/${pkg}/var/log/`)}`,
         "echo ''",
         "echo '--- /var/log/synolog ---'",
         `for f in /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log; do`,
@@ -981,7 +1003,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `done 2>/dev/null || true`,
         "echo ''",
         "echo '--- synopkg.log (package install/start/stop events) ---'",
-        `grep -i ${quote(pkg)} /host/log/synolog/synopkg.log 2>/dev/null | tail -${lines} || echo 'No entries in synopkg.log for ${pkg}'`,
+        `grep -i ${quote(pkg)} /host/log/synolog/synopkg.log 2>/dev/null | tail -${lines} || echo ${quote(`No entries in synopkg.log for ${pkg}`)}`,
       ].join("\n");
     },
   },
@@ -997,7 +1019,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 400);
       const pkgLower = pkg.toLowerCase();
       return [
-        `echo '=== SEARCHING ${pkg} LOGS FOR: ${f} ==='`,
+        `echo ${quote(`=== SEARCHING ${pkg} LOGS FOR: ${f} ===`)}`,
         `for logf in /host/log/packages/${quote(pkg)}.log /host/log/packages/${pkgLower}.log /host/var/packages/${quote(pkg)}/var/log/*.log /host/log/synolog/syno${pkgLower}.log /host/log/synolog/${pkgLower}.log /host/log/${pkgLower}.log /host/log/synolog/synopkg.log; do`,
         `  [ -f "$logf" ] || continue`,
         `  matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
@@ -1005,7 +1027,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `  echo "=== $logf ($matches matches) ==="`,
         `  grep -i ${quote(f)} "$logf" 2>/dev/null | tail -${lines}`,
         `  echo ''`,
-        `done || echo 'No matching log files found for ${pkg}'`,
+        `done || echo ${quote(`No matching log files found for ${pkg}`)}`,
       ].join("\n");
     },
   },
@@ -1073,10 +1095,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (username) {
         lines.push(
           "echo ''",
-          `echo '=== USER ${username} GROUP MEMBERSHIPS ==='`,
+          `echo ${quote(`=== USER ${username} GROUP MEMBERSHIPS ===`)}`,
           `id ${quote(username)} 2>&1 || echo 'User not found'`,
           "echo ''",
-          `echo '=== SHARE-LEVEL ACCESS FOR ${username} ==='`,
+          `echo ${quote(`=== SHARE-LEVEL ACCESS FOR ${username} ===`)}`,
           `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/sbin/synoshare --list-user-access ${quote(username)} 2>/dev/null || echo 'synoshare --list-user-access not available on this DSM version'`,
         );
       }
@@ -1100,11 +1122,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const p = (input.exact_path as string).trim();
       const depth = Math.min(Math.max(1, Math.round((input.max_depth as number) ?? 1)), 3);
-      if (!p.startsWith("/volume") && !p.startsWith("/btrfs/volume")) {
-        return `echo 'ERROR: list_directory_contents is restricted to /volume* and /btrfs/volume* paths. Use run_command for other paths if needed.'`;
+      if (!isSafeVolumePath(p)) {
+        return `echo 'ERROR: list_directory_contents requires an absolute path under /volume* or /btrfs/volume* with no .. traversal or shell metacharacters.'`;
       }
       return [
-        `echo '=== DIRECTORY LISTING: ${p} (max_depth=${depth}) ==='`,
+        banner(`DIRECTORY LISTING`, `${p} (max_depth=${depth})`),
         `if [ ! -e ${quote(p)} ]; then echo 'Path does not exist'; exit 0; fi`,
         `find ${quote(p)} -maxdepth ${depth} 2>/dev/null | head -200 | while IFS= read -r entry; do`,
         `  stat -c '%F %A %U:%G %8s %y %n' "$entry" 2>/dev/null`,
@@ -1128,7 +1150,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const device = (input.filter as string | undefined)?.trim();
       if (device) {
         return [
-          `echo '=== SMART DETAIL: ${device} ==='`,
+          `echo ${quote(`=== SMART DETAIL: ${device} ===`)}`,
           `smartctl -a ${quote(device)} 2>&1`,
           "echo ''",
           "echo '=== SMART ERROR LOG ==='",
@@ -1375,7 +1397,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       if (spec) {
         const dev = quote(spec.startsWith("/") ? spec : `/dev/${spec}`);
         return [
-          `echo '=== EXTENDED SMART: ${dev} ==='`,
+          `echo ${quote(`=== EXTENDED SMART: ${dev} ===`)}`,
           "echo 'Attr 199 UDMA_CRC_Error_Count > 0  →  interface/cable/slot error (not disk media)'",
           "echo 'Attr   5 Reallocated_Sector_Ct  > 0  →  bad sectors remapped by the drive internally'",
           "echo 'Attr 197 Current_Pending_Sector  > 0  →  sectors unreadable, awaiting remap'",
@@ -1628,7 +1650,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const hours = input.lookback_hours as number ?? 2;
       const minutes = Math.ceil(hours * 60);
       return [
-        `echo '=== FILES MODIFIED IN LAST ${hours}h UNDER: ${p} ==='`,
+        `echo ${quote(`=== FILES MODIFIED IN LAST ${hours}h UNDER: ${p} ===`)}`,
         `find ${quote(p)} -maxdepth 8 -mmin -${minutes} -type f 2>/dev/null | while read -r f; do`,
         `  stat -c '%y %U:%G %n' "$f" 2>/dev/null`,
         `done | sort -r | head -50 || echo 'No recently modified files found or path does not exist'`,
@@ -1713,7 +1735,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const f = (input.filter as string | undefined)?.trim() || "access";
       const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 300);
       return [
-        `echo '=== SMB LOG SEARCH: ${f} ==='`,
+        `echo ${quote(`=== SMB LOG SEARCH: ${f} ===`)}`,
         `for logf in /host/log/samba/log.smbd /host/log/smbd.log /host/log/samba/smbd.log; do`,
         `  [ -f "$logf" ] || continue`,
         `  matches=$(grep -ci ${quote(f)} "$logf" 2>/dev/null || true)`,
@@ -1741,7 +1763,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const f = (input.filter as string | undefined)?.trim() || "error";
       const lines = clamp((input.lookback_hours as number ?? 4) * 40, 60, 400);
       return [
-        `echo '=== SYNOLOGY DRIVE LOG SEARCH: ${f} ==='`,
+        `echo ${quote(`=== SYNOLOGY DRIVE LOG SEARCH: ${f} ===`)}`,
         `grep -i ${quote(f)} /host/log/synologydrive.log 2>/dev/null | tail -${lines} || echo 'Drive server log not found'`,
         `echo ''`,
         `echo '=== SHARESYNC LOG SEARCH ==='`,
@@ -1791,11 +1813,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         return `echo 'compare_file_versions requires exact_path (first file) and filter (second file path).'`;
       }
       return [
-        `echo '=== FILE 1: ${p1} ==='`,
+        `echo ${quote(`=== FILE 1: ${p1} ===`)}`,
         `stat -c 'size=%s mtime=%y owner=%U:%G mode=%A' ${quote(p1)} 2>&1`,
         `sha256sum ${quote(p1)} 2>&1`,
         `echo ''`,
-        `echo '=== FILE 2: ${p2} ==='`,
+        `echo ${quote(`=== FILE 2: ${p2} ===`)}`,
         `stat -c 'size=%s mtime=%y owner=%U:%G mode=%A' ${quote(p2)} 2>&1`,
         `sha256sum ${quote(p2)} 2>&1`,
         `echo ''`,
@@ -1820,7 +1842,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const incidentType = (input.filter as string | undefined)?.trim()?.toLowerCase() || "general";
       const sections: string[] = [
-        `echo '=== INCIDENT BUNDLE: ${incidentType.toUpperCase()} ==='`,
+        `echo ${quote(`=== INCIDENT BUNDLE: ${incidentType.toUpperCase()} ===`)}`,
         `echo "Collected: $(date)"`,
         "echo ''",
         "echo '=== SYSTEM BASELINE ==='",
@@ -1923,13 +1945,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       }
       const lines = clamp((input.lookback_hours as number ?? 2) * 60, 100, 2000);
       return [
-        `echo '=== LOG FILE: ${logPath} ==='`,
+        `echo ${quote(`=== LOG FILE: ${logPath} ===`)}`,
         `if [ -f ${quote(logPath)} ]; then`,
         `  wc -l ${quote(logPath)} 2>/dev/null`,
         `  echo "--- last ${lines} lines ---"`,
         `  tail -n ${lines} ${quote(logPath)} 2>&1`,
         `else`,
-        `  echo 'File not found: ${logPath}'`,
+        `  echo ${quote(`File not found: ${logPath}`)}`,
         `  echo ''`,
         `  echo 'Nearby files:'`,
         `  ls -lh "$(dirname ${quote(logPath)})" 2>/dev/null | head -20`,
@@ -1949,7 +1971,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const pkgLower = pkg.toLowerCase();
       const findCmd = `find /volume[0-9]*/@${pkgLower}/ /volume[0-9]*/@syno${pkgLower}/ /host/var/packages/${quote(pkg)}/var/ -maxdepth 5 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null`;
       const lines: string[] = [
-        `echo '=== PACKAGE DB: ${pkg} ==='`,
+        `echo ${quote(`=== PACKAGE DB: ${pkg} ===`)}`,
         `echo ''`,
         `echo '=== DATABASE FILES ==='`,
         `${findCmd} | head -10`,
@@ -1957,7 +1979,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       ];
       if (query) {
         lines.push(
-          `echo '=== QUERY: ${query} ==='`,
+          `echo ${quote(`=== QUERY: ${query} ===`)}`,
           `dbfile=$(${findCmd} | head -1)`,
           `[ -n "$dbfile" ] && echo "Using: $dbfile" && timeout 15 sqlite3 "$dbfile" ${quote(query)} 2>&1 | head -100 || echo 'No DB file found'`,
         );
@@ -1968,7 +1990,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
           `  echo "--- $dbfile ---"`,
           `  timeout 10 sqlite3 "$dbfile" '.tables' 2>&1 | head -10`,
           `  echo ''`,
-          `done || echo 'No DB files found for ${pkg}'`,
+          `done || echo ${quote(`No DB files found for ${pkg}`)}`,
         );
       }
       return lines.join("\n");
@@ -2061,7 +2083,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       // Escape single quotes for SQL LIKE — double them
       const sqlSafeName = p.replace(/'/g, "''");
       return [
-        `echo '=== DRIVE VERSION HISTORY FOR: ${p} ==='`,
+        `echo ${quote(`=== DRIVE VERSION HISTORY FOR: ${p} ===`)}`,
         `maindb=$(find /volume[0-9]*/@synologydrive/ -maxdepth 5 \\( -name 'synodrive.db' -o -name 'sync.db' -o -name 'metadata.db' \\) 2>/dev/null | head -1)`,
         `if [ -z "$maindb" ]; then echo 'Drive database not found on any volume'; exit 0; fi`,
         `echo "DB: $maindb"`,
@@ -2132,7 +2154,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const device = (input.filter as string | undefined)?.trim();
       if (device) {
         return [
-          `echo '=== SMART TEST PROGRESS: ${device} ==='`,
+          `echo ${quote(`=== SMART TEST PROGRESS: ${device} ===`)}`,
           `smartctl -a ${quote(device)} 2>&1 | grep -E 'Self-test execution|remaining|progress|completed|# 1|LBA'`,
           `echo ''`,
           `echo '=== SELF-TEST LOG ==='`,
@@ -2345,7 +2367,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       };
       const mappedSvc = serviceMap[svc.toLowerCase()] || svc;
       return [
-        `echo '=== RESTARTING NETWORK SERVICE: ${svc} ==='`,
+        `echo ${quote(`=== RESTARTING NETWORK SERVICE: ${svc} ===`)}`,
         `echo ''`,
         `echo '--- trying synopkg restart ---'`,
         `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart ${quote(svc)} 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'`,
@@ -2371,7 +2393,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         const vol = volumeFilter.replace(/^\//, "").replace(/^btrfs\//, "");
         const btrfsPath = `/btrfs/${vol}`;
         return [
-          `echo '=== STARTING BTRFS SCRUB: ${btrfsPath} ==='`,
+          `echo ${quote(`=== STARTING BTRFS SCRUB: ${btrfsPath} ===`)}`,
           `btrfs scrub start ${quote(btrfsPath)} 2>&1`,
           `echo ''`,
           `echo '=== SCRUB STATUS ==='`,
@@ -2409,7 +2431,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         throw new Error("start_smart_test: test type must be 'short', 'long', or 'conveyance'.");
       }
       return [
-        `echo '=== STARTING SMART ${testType.toUpperCase()} TEST: ${device} ==='`,
+        `echo ${quote(`=== STARTING SMART ${testType.toUpperCase()} TEST: ${device} ===`)}`,
         `smartctl -t ${quote(testType)} ${quote(device)} 2>&1`,
         `echo ''`,
         `echo '=== CURRENT SELF-TEST LOG ==='`,
@@ -2430,7 +2452,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         const btrfsPath = `/btrfs/${volName}`;
         const qb = quote(btrfsPath);
         return [
-          `echo '=== CREATING PRECHANGE SNAPSHOT: ${btrfsPath} ==='`,
+          `echo ${quote(`=== CREATING PRECHANGE SNAPSHOT: ${btrfsPath} ===`)}`,
           `ts=$(date +%Y%m%d_%H%M%S)`,
           `snap="${btrfsPath}/@prechange_\${ts}"`,
           `btrfs subvolume snapshot -r ${qb} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.agent.yml)'`,
@@ -2464,7 +2486,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo '=== CURRENT vm.overcommit_memory ==='`,
         `sysctl vm.overcommit_memory 2>&1`,
         `echo ''`,
-        `echo '=== SETTING vm.overcommit_memory=${value} ==='`,
+        `echo ${quote(`=== SETTING vm.overcommit_memory=${value} ===`)}`,
         `sysctl -w vm.overcommit_memory=${value} 2>&1`,
         `echo ''`,
         `echo '=== VERIFY ==='`,
@@ -2575,7 +2597,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       return [
         `echo '=== CURRENT OWNERSHIP ==='`,
         `ls -la ${qp} 2>&1`,
-        `echo '=== APPLYING chown ${flag}${ownerGroup} ==='`,
+        `echo ${quote(`=== APPLYING chown ${flag}${ownerGroup} ===`)}`,
         `chown ${flag}${qo} ${qp} 2>&1 && echo OK || echo FAILED`,
         `echo '=== VERIFY ==='`,
         `ls -la ${qp} 2>&1`,
@@ -2599,7 +2621,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       return [
         `echo '=== CURRENT ACL ==='`,
         `getfacl ${qp} 2>&1`,
-        `echo '=== APPLYING setfacl -m ${aclSpec} ==='`,
+        `echo ${quote(`=== APPLYING setfacl -m ${aclSpec} ===`)}`,
         `setfacl -m ${qs} ${qp} 2>&1 && echo OK || echo FAILED`,
         `echo '=== VERIFY ==='`,
         `getfacl ${qp} 2>&1`,

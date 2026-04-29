@@ -26,12 +26,28 @@ type ShareHealthCollector struct {
 }
 
 func NewShareHealthCollector(dsmClient *dsm.Client, s *sender.Sender, nasID string, interval time.Duration) *ShareHealthCollector {
-	return &ShareHealthCollector{
+	c := &ShareHealthCollector{
 		dsmClient: dsmClient,
 		sender:    s,
 		nasID:     nasID,
 		interval:  interval,
 	}
+	// Restore the DSM log cursor from the local SQLite checkpoint so an
+	// agent restart does not re-emit the last 200 DSM events as fresh
+	// alerts. First boot (no prior checkpoint) leaves the watermark zero
+	// and emits everything once, which is the correct behavior.
+	if v, err := s.LoadCheckpoint(c.checkpointName()); err != nil {
+		log.Printf("[share-health] could not load DSM log checkpoint: %v", err)
+	} else if v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			c.logWatermark = t
+		}
+	}
+	return c
+}
+
+func (c *ShareHealthCollector) checkpointName() string {
+	return "dsm_log_watermark:" + c.nasID
 }
 
 func (c *ShareHealthCollector) Run(stop <-chan struct{}) {
@@ -248,10 +264,24 @@ func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
 	var newest time.Time
 
 	for _, entry := range logs {
-		// Parse the entry timestamp
+		// Parse the entry timestamp. DSM emits log timestamps in the NAS's
+		// local timezone; parsing with time.Parse (UTC default) caused the
+		// watermark to drift forward when the NAS was behind UTC (skipping
+		// real new entries) and backward when the NAS was ahead of UTC
+		// (re-emitting the same logs forever). RFC3339 carries its own
+		// offset, so it stays UTC-anchored via time.Parse.
 		var entryTime time.Time
 		for _, fmt2 := range logTimeFormats {
-			if t, err2 := time.Parse(fmt2, entry.Time); err2 == nil {
+			var (
+				t    time.Time
+				err2 error
+			)
+			if fmt2 == time.RFC3339 {
+				t, err2 = time.Parse(fmt2, entry.Time)
+			} else {
+				t, err2 = time.ParseInLocation(fmt2, entry.Time, time.Local)
+			}
+			if err2 == nil {
 				entryTime = t
 				break
 			}
@@ -339,5 +369,9 @@ func (c *ShareHealthCollector) collectSystemLogs(now time.Time) {
 	// Advance watermark to avoid reprocessing the same entries
 	if newest.After(c.logWatermark) {
 		c.logWatermark = newest
+		// Persist so the watermark survives agent restarts.
+		if err := c.sender.SaveCheckpoint(c.checkpointName(), c.logWatermark.UTC().Format(time.RFC3339)); err != nil {
+			log.Printf("[share-health] could not save DSM log checkpoint: %v", err)
+		}
 	}
 }

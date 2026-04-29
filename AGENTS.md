@@ -58,7 +58,7 @@ Next.js app deployed on Coolify at `https://mon.designflow.app`.
 - Runs the AI issue agent loop (diagnosis → evidence → hypothesis → next step)
 - Exposes operator-visible surfaces: issue threads, `/metrics`, `/docker` controls
 - `GET /api/health` — Docker/Coolify health probe; returns `{"ok":true}`, no auth required
-- `GET /api/analysis/cron?secret=<CRON_SECRET>` — triggered every 15 minutes by a Coolify scheduled task; uses the service-role Supabase client to run `runIssueDetection` for every user (20-minute lookback window) and queues detected issues for the worker
+- `GET /api/analysis/cron` with `Authorization: Bearer <CRON_SECRET>` — triggered every 15 minutes by a Coolify scheduled task; uses the service-role Supabase client to run `runIssueDetection` for every user (20-minute lookback window) and queues detected issues for the worker. The legacy `?secret=<CRON_SECRET>` form is still accepted but logs a deprecation warning — secrets in URL strings get captured in proxy / Coolify access logs.
 
 ### Relay (`apps/relay/`)
 

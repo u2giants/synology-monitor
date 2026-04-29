@@ -141,7 +141,9 @@ See `apps/web/.env.example` for placeholder values and descriptions.
 
 | Task | Frequency | Command |
 |------|-----------|---------|
-| `smon-analysis-cron` | `*/15 * * * *` | `node -e "fetch('http://localhost:3000/api/analysis/cron?secret=<CRON_SECRET>').then(...)"` |
+| `smon-analysis-cron` | `*/15 * * * *` | `node -e "fetch('http://localhost:3000/api/analysis/cron', { headers: { Authorization: 'Bearer <CRON_SECRET>' } }).then(r=>r.text()).then(console.log)"` |
+
+**Migration note:** the older form `fetch('…/api/analysis/cron?secret=…')` still works but logs a deprecation warning each call. Update the Coolify scheduled task to the header form so the secret stops appearing in proxy / Coolify access logs.
 
 The command runs inside the web container (Coolify execs into it using the application UUID, not the container name). It hits port 3000 directly — `node` is always present in the web image. `localhost:3000` works because it runs inside the container network, not from the host.
 

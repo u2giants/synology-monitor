@@ -197,13 +197,20 @@ func (w *Watcher) handleFileEvent(event fsnotify.Event) {
 		}
 	}
 
-	// Check entropy on modified files - use semaphore to limit concurrent goroutines
+	// Check entropy on modified files. Acquire the semaphore BEFORE spawning
+	// the goroutine so a burst of fsnotify events doesn't queue thousands
+	// of goroutines all blocked on the channel; if the semaphore is full,
+	// drop this entropy check (the next write to the same file will retry).
 	if event.Op&fsnotify.Write != 0 {
-		go func(path string, t time.Time) {
-			w.entropySemaphore <- struct{}{}        // Acquire semaphore
-			defer func() { <-w.entropySemaphore }() // Release semaphore
-			w.checkFileEntropy(path, t)
-		}(event.Name, now)
+		select {
+		case w.entropySemaphore <- struct{}{}:
+			go func(path string, t time.Time) {
+				defer func() { <-w.entropySemaphore }()
+				w.checkFileEntropy(path, t)
+			}(event.Name, now)
+		default:
+			// Pool saturated; skip this entropy check rather than queue a goroutine.
+		}
 	}
 }
 

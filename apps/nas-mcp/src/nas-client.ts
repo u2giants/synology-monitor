@@ -107,8 +107,14 @@ export async function nasExec(
     signal: AbortSignal.timeout(timeoutMs + 15_000),
   });
   if (!res.ok) {
+    // Log the full response body server-side, but only surface the status
+    // code to the caller. The body sometimes contains echoed headers /
+    // approval tokens / DSM credentials when nas-api errors at the wrong
+    // layer; surfacing that to the LLM context (and any logs that capture
+    // model context) leaks secrets.
     const text = await res.text().catch(() => "");
-    throw new Error(`NAS exec failed (${config.name}): HTTP ${res.status} — ${text}`);
+    if (text) console.error(`[nas-client] exec failure body for ${config.name}:`, text);
+    throw new Error(`NAS exec failed (${config.name}): HTTP ${res.status}`);
   }
   return res.json() as Promise<NasExecResult>;
 }

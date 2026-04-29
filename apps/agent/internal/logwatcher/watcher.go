@@ -353,10 +353,19 @@ func parseLine(line, source string) parsedEntry {
 			entry.message = strings.TrimSpace(match[2])
 		}
 	} else if len(line) > 15 {
-		// Try to parse syslog-style timestamp (e.g. "Mar 30 12:34:56")
-		ts, err := time.Parse("Jan  2 15:04:05", line[:15])
+		// Try to parse syslog-style timestamp (e.g. "Mar 30 12:34:56").
+		// Syslog has no year and no timezone, so parse in NAS-local time
+		// (matching what /var/log/messages actually emits) and pick the
+		// year heuristically: a future-dated entry is almost certainly
+		// from the previous year (Dec entries seen in early Jan).
+		ts, err := time.ParseInLocation("Jan  2 15:04:05", line[:15], time.Local)
 		if err == nil {
-			ts = ts.AddDate(time.Now().Year(), 0, 0)
+			now := time.Now()
+			year := now.Year()
+			ts = time.Date(year, ts.Month(), ts.Day(), ts.Hour(), ts.Minute(), ts.Second(), 0, time.Local)
+			if ts.After(now.Add(24 * time.Hour)) {
+				ts = ts.AddDate(-1, 0, 0)
+			}
 			entry.timestamp = ts
 			entry.message = strings.TrimSpace(line[15:])
 		}

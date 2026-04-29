@@ -1,8 +1,8 @@
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -13,6 +13,14 @@ import { ALL_TOOL_DEFS } from "./tool-definitions.js";
 
 const PORT = parseInt(process.env.MCP_PORT ?? "3001", 10);
 const BEARER_TOKEN = process.env.MCP_BEARER_TOKEN ?? "";
+
+if (!BEARER_TOKEN) {
+  console.error("MCP_BEARER_TOKEN is required; refusing to start an unauthenticated MCP server.");
+  process.exit(1);
+}
+
+const EXPECTED_AUTH_HEADER = `Bearer ${BEARER_TOKEN}`;
+const EXPECTED_AUTH_BUFFER = Buffer.from(EXPECTED_AUTH_HEADER);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = resolve(__dirname, "../tools-config.json");
@@ -236,14 +244,62 @@ function createMcpServer(): McpServer {
 // ─── Session management ───────────────────────────────────────────────────────
 
 // Each MCP session gets its own transport + server pair.
-const sessions = new Map<string, StreamableHTTPServerTransport>();
+type SessionEntry = {
+  transport: StreamableHTTPServerTransport;
+  lastActivity: number;
+};
+const sessions = new Map<string, SessionEntry>();
+
+const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_SESSIONS = 200;
+const SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+
+function touchSession(sessionId: string) {
+  const entry = sessions.get(sessionId);
+  if (entry) entry.lastActivity = Date.now();
+}
+
+function evictSession(sessionId: string, reason: string) {
+  const entry = sessions.get(sessionId);
+  if (!entry) return;
+  sessions.delete(sessionId);
+  try {
+    void entry.transport.close?.();
+  } catch (err) {
+    console.error(`[mcp] error closing session ${sessionId} (${reason}):`, err);
+  }
+}
+
+// Periodic sweep: drop sessions that have been idle too long, and if we
+// somehow still exceed MAX_SESSIONS evict the least-recently-active.
+// Without this, transport.onclose alone leaks transports + their per-session
+// 92-tool McpServer instances when a TCP client disconnects without a clean
+// SSE close (NAT timeout, client crash, reverse-proxy cutoff).
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of sessions) {
+    if (now - entry.lastActivity > SESSION_IDLE_TIMEOUT_MS) {
+      evictSession(id, "idle timeout");
+    }
+  }
+  if (sessions.size > MAX_SESSIONS) {
+    const sorted = [...sessions.entries()].sort((a, b) => a[1].lastActivity - b[1].lastActivity);
+    const toEvict = sessions.size - MAX_SESSIONS;
+    for (let i = 0; i < toEvict; i++) {
+      evictSession(sorted[i][0], "LRU cap");
+    }
+  }
+}, SESSION_SWEEP_INTERVAL_MS).unref();
 
 async function getOrCreateSession(
   sessionId: string | undefined,
 ): Promise<{ transport: StreamableHTTPServerTransport; isStale: boolean }> {
   if (sessionId) {
     const existing = sessions.get(sessionId);
-    if (existing) return { transport: existing, isStale: false };
+    if (existing) {
+      existing.lastActivity = Date.now();
+      return { transport: existing.transport, isStale: false };
+    }
     // Unknown session ID — server was restarted and lost in-memory state.
     // Fall through and create a fresh session rather than returning 404.
   }
@@ -258,18 +314,38 @@ async function getOrCreateSession(
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
   transport.onclose = () => sessions.delete(newSessionId);
-  sessions.set(newSessionId, transport);
+  sessions.set(newSessionId, { transport, lastActivity: Date.now() });
   return { transport, isStale: sessionId !== undefined };
 }
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
 function isAuthorized(req: { headers: { authorization?: string } }): boolean {
-  if (!BEARER_TOKEN) return true;
-  return req.headers.authorization === `Bearer ${BEARER_TOKEN}`;
+  const presented = req.headers.authorization;
+  if (!presented) return false;
+  const presentedBuf = Buffer.from(presented);
+  if (presentedBuf.length !== EXPECTED_AUTH_BUFFER.length) return false;
+  return timingSafeEqual(presentedBuf, EXPECTED_AUTH_BUFFER);
 }
 
 const httpServer = createServer(async (req, res) => {
+  // Wrap the entire async request handler in try/catch so an unhandled
+  // rejection deep inside transport.handleRequest cannot crash the SSE
+  // process (Node 20+ exits the process on unhandledRejection by default).
+  try {
+    await handleHttpRequest(req, res);
+  } catch (err) {
+    console.error("[mcp] unhandled request error:", err);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Internal server error" }));
+    } else if (!res.writableEnded) {
+      res.end();
+    }
+  }
+});
+
+async function handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id");
@@ -357,10 +433,21 @@ const httpServer = createServer(async (req, res) => {
 
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Not found" }));
-});
+}
 
 httpServer.listen(PORT, () => {
   console.log(`NAS MCP server listening on port ${PORT}`);
   console.log(`Read tools: ${[...enabledRead].join(", ")}`);
   console.log(`Write tools: ${[...enabledWrite].join(", ") || "(none)"}`);
+});
+
+// Last-resort guards. The request handler is already wrapped in try/catch,
+// but a stray rejection from the MCP SDK or node:http internals can still
+// surface here — log and continue rather than letting Node exit the
+// process and lose every active SSE session.
+process.on("unhandledRejection", (reason) => {
+  console.error("[mcp] unhandledRejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[mcp] uncaughtException:", err);
 });

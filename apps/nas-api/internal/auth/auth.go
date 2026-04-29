@@ -32,16 +32,22 @@ func NewVerifier(apiKey, signingKey string) *Verifier {
 }
 
 // VerifyAPIKey validates the Authorization: Bearer <key> header value.
+// Both sides are hashed with HMAC-SHA256 before comparison so the
+// comparison itself sees equal-length inputs regardless of whether the
+// caller supplied a token of a different length. This avoids leaking
+// the expected token's length via timing.
 func (v *Verifier) VerifyAPIKey(bearer string) bool {
-	if len(bearer) < 8 {
+	if v.apiKey == "" {
 		return false
 	}
-	expected := []byte(v.apiKey)
-	actual := []byte(bearer)
-	if len(expected) != len(actual) {
-		// constant-time length comparison workaround
-		return subtle.ConstantTimeCompare(expected, actual) == 1
-	}
+	mac := hmac.New(sha256.New, []byte(v.apiKey))
+	mac.Write([]byte(v.apiKey))
+	expected := mac.Sum(nil)
+
+	mac2 := hmac.New(sha256.New, []byte(v.apiKey))
+	mac2.Write([]byte(bearer))
+	actual := mac2.Sum(nil)
+
 	return subtle.ConstantTimeCompare(expected, actual) == 1
 }
 
