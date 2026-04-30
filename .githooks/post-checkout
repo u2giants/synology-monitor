@@ -1,0 +1,17 @@
+#!/bin/sh
+# Block creation of any branch other than the primary branch.
+# $3 is 1 when this is a branch checkout (vs file checkout).
+if [ "$3" = "1" ]; then
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+  primary=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed "s|origin/||")
+  # fallback if origin/HEAD not set
+  if [ -z "$primary" ]; then
+    primary="main"
+  fi
+  if [ "$branch" != "$primary" ] && [ "$branch" != "upstream" ]; then
+    echo "ERROR: Branch creation is not allowed in this repo. Work on ${primary} only." >&2
+    git checkout "$primary" 2>/dev/null
+    git branch -D "$branch" 2>/dev/null
+    exit 1
+  fi
+fi
