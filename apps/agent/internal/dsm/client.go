@@ -1021,7 +1021,6 @@ func (c *Client) GetSnapshotReplicationTasks() ([]SnapshotReplicaTask, error) {
 		{"SYNO.DR.Plan", 1, "list"},
 		{"SYNO.DR.Plan.Site", 1, "list"},
 		{"SYNO.Core.Share.Snapshot.ReplicaTask", 1, "list"},
-		{"SYNO.SynologyDrive.SnapshotReplication", 1, "list"},
 		{"SYNO.Replica.Share", 1, "list"},
 		{"SYNO.Replica.Volume", 1, "list"},
 		{"SYNO.Btrfs.Replica", 1, "list"},
