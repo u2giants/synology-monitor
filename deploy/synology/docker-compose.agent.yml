@@ -115,7 +115,9 @@ services:
   watchtower:
     image: containrrr/watchtower
     container_name: synology-monitor-watchtower
-    restart: unless-stopped
+    restart: always   # must be always, not unless-stopped: Container Manager uses docker stop
+                      # and unless-stopped interprets that as "do not restart", leaving the
+                      # stack unmonitored indefinitely until someone notices.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:

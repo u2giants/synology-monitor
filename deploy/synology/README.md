@@ -22,7 +22,7 @@ The file is named `compose.yaml` on the NAS. The authoritative source in the rep
 
 NAS API listens on port 7734 (configurable via `NAS_API_PORT` in `.env`).
 
-Docker binary on Synology: `/var/packages/ContainerManager/target/usr/bin/docker`
+Docker binary on Synology: `/usr/local/bin/docker` (symlinked by Container Manager at install time). The full package path `/var/packages/ContainerManager/target/usr/bin/docker` also works but is longer — prefer `/usr/local/bin/docker` in scripts.
 
 ## Normal update flow (code changes only)
 
@@ -39,7 +39,7 @@ Watchtower restarts containers from their **original creation parameters** — i
 **After pushing to `main` and waiting for Watchtower to pull the new image:**
 
 ```sh
-DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+DOCKER=/usr/local/bin/docker
 cd /volume1/docker/synology-monitor-agent
 
 # Update compose.yaml with the new content from the repo
@@ -114,13 +114,13 @@ If `AGENT_IMAGE_TAG` is pinned to a SHA, Watchtower will not pick up `latest` on
 ## Verification commands
 
 ```sh
-DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+DOCKER=/usr/local/bin/docker
 
 # Check all three containers are running
 $DOCKER ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
 
 # Check the deployed revision
-$DOCKER ps --format 'table {{.Names}}\t{{.Label "org.opencontainers.image.revision"}}'
+$DOCKER logs --tail 1 synology-monitor-agent 2>&1 | grep sha=
 
 # NAS API health check
 curl http://localhost:7734/health
@@ -150,10 +150,14 @@ The agent is designed to be low-I/O. If NAS disk pressure becomes a concern, inc
 
 **Scheduled tasks:** `SYNO.Core.TaskScheduler` v4 returns error 103 on current NAS builds. The agent falls back through v3/v2/v1 automatically. Warning logs appear in `smon_logs` if all versions fail.
 
-**Snapshot replication:** Uses `SYNO.DR.Plan` API. `edgesynology2` has the package; `edgesynology1` does not. No DR plans are currently configured on either NAS.
+**Snapshot replication:** Uses the `SYNO.DR.Plan` API family. `SYNO.SynologyDrive.SnapshotReplication` (a Drive 4.x API) was removed from the probe list because it does not exist on current DSM builds and generated error 102 on every poll. `edgesynology2` has the Snapshot Replication package; `edgesynology1` does not. No DR plans are currently configured on either NAS.
+
+**Drive ShareSync APIs:** `SYNO.SynologyDrive.ShareSync` and `SYNO.SynologyDrive.Admin.ShareSync` return error 102 on Drive 4.x. The collector applies exponential backoff (up to 1 hour) when these fail, so the Drive server log (`synologydrive.log`) is no longer flooded with failed API calls.
 
 **Hyper Backup:** DSM API task listing may be unreliable. The agent falls back to reading from `/volume1/@appdata/HyperBackup/` — this path must be mounted (it is, in the canonical compose file).
 
 **DSM Log Center entries:** The parser handles both int and string log level formats. Live ingestion is not yet verified.
+
+**Watchtower and Container Manager:** Watchtower uses `restart: always`. If you see it in "Created" state for a few seconds after a code deploy, that is normal — Watchtower logs "Creating /container-name" before the `docker start` call, so there is a brief window between container creation and start. Synology Container Manager uses `docker stop` internally; `restart: always` ensures Watchtower restarts even after CM stops it. The old `restart: unless-stopped` policy would have treated that as a permanent stop.
 
 An empty telemetry table does not mean a subsystem is healthy. Check `smon_logs` for `API unavailable` or similar warning entries.

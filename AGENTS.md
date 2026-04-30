@@ -130,7 +130,11 @@ All three containers live at `/volume1/docker/synology-monitor-agent/` on each N
 
 **Synology binary execution:** The nas-api image is Debian-based (not Alpine) because Synology's glibc binaries (`synopkg`, `synoacltool`, `synoshare`) link against glibc symbols absent in musl. The `entrypoint.sh` creates symlinks so those binaries find expected DSM paths (`/usr/syno`, `/var/packages`, `/etc/synoinfo.conf`). It also emulates `get_key_value`, which DSM package scripts call but which isn't a standalone binary.
 
+**Watchtower restart policy:** Watchtower uses `restart: always` (not `unless-stopped`). `unless-stopped` treats `docker stop` as a permanent stop signal — which is exactly what Synology Container Manager sends when it manages containers. With `unless-stopped`, Container Manager opening and stopping the stack would permanently disable auto-updates until someone manually restarted Watchtower. `restart: always` ensures Watchtower comes back regardless of how it was stopped.
+
 **Watchtower vs. compose config changes:** Watchtower pulls a new image and restarts the container from its original creation parameters. It does **not** re-read `docker-compose.agent.yml`. If compose config changes (volumes, `privileged`, etc.), the container must be recreated with `docker compose up -d` for the changes to take effect. The `restart_nas_api` write tool now runs `docker compose up -d nas-api` precisely for this reason.
+
+**Watchtower "Creating" log / transient Created state:** When Watchtower recreates a container, it logs `Creating /container-name` right before calling `docker start`. There is a 1–3 second window where `docker ps` shows the container in "Created" state. This is normal — Watchtower reports `Updated=N Failed=0` in its session summary once the start call has been issued. Do not manually `docker start` during this window.
 
 ---
 
@@ -160,7 +164,8 @@ All three containers live at `/volume1/docker/synology-monitor-agent/` on each N
 
 - `schedtasks`: `SYNO.Core.TaskScheduler` v4 returns error 103 on current NAS builds. The DSM client falls back through v3/v2/v1. Warning logs are emitted when all versions fail.
 - `hyperbackup`: DSM API task rows may be absent on some builds. The collector falls back to reading task state from `/volume1/@appdata/HyperBackup/config/task_state.conf` and adjacent logs.
-- `storagepool`: Snapshot replication uses the `SYNO.DR.Plan` API family (not older guessed APIs). `edgesynology2` has the package installed; `edgesynology1` does not expose the same API surface. No DR plans are currently configured.
+- `storagepool`: Snapshot replication uses the `SYNO.DR.Plan` API family. `SYNO.SynologyDrive.SnapshotReplication` (a Drive 4.x API) was removed from the probe list — it does not exist on current DSM builds and returned error 102 on every poll. `edgesynology2` has the Snapshot Replication package; `edgesynology1` does not. No DR plans are currently configured on either NAS.
+- `drive`: `SYNO.SynologyDrive.ShareSync` and `SYNO.SynologyDrive.Admin.ShareSync` return DSM error 102 on Drive 4.x (deprecated APIs). The collector applies exponential backoff with a 1-hour cap when these APIs fail — warning logs will be absent for up to 1 hour after an error, then retry. On earlier Drive versions these APIs are available and polled normally.
 - `sharehealth`: DSM structured Log Center event ingestion is implemented but not yet verified live on current NAS builds.
 
 An empty table does not mean a subsystem is healthy. Collectors emit explicit warning logs to `smon_logs` when APIs are unavailable. Check `smon_logs.source` values like `scheduled_task`, `hyperbackup`, `dsm_system_log`, and messages beginning with `Snapshot replication API unavailable:`.
