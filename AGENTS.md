@@ -41,13 +41,13 @@ Entry point: `apps/nas-api/cmd/server/main.go`
 
 ### NAS MCP (`apps/nas-mcp/`)
 
-TypeScript MCP server deployed on Coolify. Exposes ~109 named NAS diagnostic and remediation tools to AI agents over the Model Context Protocol.
+TypeScript MCP server deployed on Coolify. Exposes 111 named NAS diagnostic and remediation tools to AI agents over the Model Context Protocol (76 read + 35 write as of the current `tools-config.json`; confirmed by `GET /health`).
 
 - Talks to the NAS API on behalf of the AI agent
 - Handles tier-2/3 preview-and-confirm workflow (first call returns preview; pass `confirmed: true` to execute)
 - All tools defined in `tool-definitions.ts`; enabled/disabled by `tools-config.json` (baked into image at build)
 
-Endpoint: `https://nas-mcp.designflow.app/sse`
+Endpoints: `https://nas-mcp.designflow.app/mcp` (primary) · `/sse` (preserved for backwards compatibility) · `/health` (no auth) · `/tools` (no auth — machine-readable tool catalog)
 
 ### Web App (`apps/web/`)
 
@@ -226,9 +226,12 @@ The entrypoint monitors both processes but only exits when Next.js dies. If the 
 
 ## NAS MCP session behavior
 
-- Transport: Streamable HTTP (not SSE, despite the `/sse` URL being preserved for client backwards compatibility)
-- Session IDs are pre-generated before `handleRequest` is called, then registered in the session map. This prevents a race condition where `mcp-remote` sends `notifications/initialized` before the session is stored.
-- Write tools show a command preview on the first call. Pass `confirmed: true` on the second call to execute. If the operator waits more than 15 minutes, the HMAC approval token expires and the flow must restart.
+- **Transport:** Streamable HTTP (not SSE, despite the `/sse` URL being preserved for client backwards compatibility). Each MCP session gets its own `StreamableHTTPServerTransport` + `McpServer` pair.
+- **Session pre-registration:** Session IDs are generated and registered in the map *before* `handleRequest` is called. This prevents a race where `mcp-remote` sends `notifications/initialized` while the session is still unregistered, causing an HTTP 400.
+- **Idle eviction:** Sessions idle for 30 minutes are automatically closed and removed. A sweep runs every 5 minutes. This force-disconnects zombie `mcp-remote` proxy processes left behind when Claude Desktop or Codex restarts without cleanly terminating its previous connection.
+- **LRU cap:** A maximum of 200 concurrent sessions are kept. If exceeded, the least-recently-used are evicted first.
+- **Stale session recovery:** If a reconnecting client presents an evicted session ID, the server creates a fresh session transparently (strips the old ID from request headers) instead of returning 404. Tool calls resume without a client restart.
+- **Write tool approval flow:** The first call to a write tool returns a command preview. Pass `confirmed: true` on the second call to execute. If more than 15 minutes pass between preview and confirm, the HMAC approval token expires and the flow must restart from the preview call.
 
 ---
 

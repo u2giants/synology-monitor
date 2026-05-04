@@ -18,8 +18,8 @@ Examples:
 
 Then do this:
 
-1. Read [AI_CONTEXT.md](/worksp/monitor/app/AI_CONTEXT.md)
-2. Read [AI_CONTEXT_QUERIES.md](/worksp/monitor/app/AI_CONTEXT_QUERIES.md)
+1. Read [AI_CONTEXT.md](./AI_CONTEXT.md)
+2. Read [AI_CONTEXT_QUERIES.md](./AI_CONTEXT_QUERIES.md)
 3. Query Supabase using MCP / SQL access
 4. Answer from live backend data, not from guesswork
 
@@ -32,11 +32,11 @@ Do not imply that the repo itself contains the live monitor history.
 ## Canonical technical overview
 
 After the AI context docs, read:
-- [AGENTS.md](/worksp/monitor/app/AGENTS.md)
+- [AGENTS.md](./AGENTS.md)
 
 ## Minimal repo reading order
 
-1. [AI_CONTEXT.md](/worksp/monitor/app/AI_CONTEXT.md)
-2. [AI_CONTEXT_QUERIES.md](/worksp/monitor/app/AI_CONTEXT_QUERIES.md)
-3. [AGENTS.md](/worksp/monitor/app/AGENTS.md)
-4. [README.md](/worksp/monitor/app/README.md)
+1. [AI_CONTEXT.md](./AI_CONTEXT.md)
+2. [AI_CONTEXT_QUERIES.md](./AI_CONTEXT_QUERIES.md)
+3. [AGENTS.md](./AGENTS.md)
+4. [README.md](./README.md)

@@ -6,24 +6,40 @@ Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protoco
 
 | | |
 |---|---|
-| **URL** | `https://nas-mcp.designflow.app/sse` |
-| **Transport** | Streamable HTTP (the `/sse` URL is preserved for client backwards compatibility) |
-| **Auth** | `Authorization: Bearer <token>` |
+| **Primary URL** | `https://nas-mcp.designflow.app/mcp` |
+| **Legacy URL** | `https://nas-mcp.designflow.app/sse` (identical behavior, kept for backwards compatibility) |
+| **Transport** | Streamable HTTP (not SSE — the name is historical) |
+| **Auth** | `Authorization: Bearer <token>` on every request |
 
-Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment for this service.
+Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment.
 
-**MCP client config:**
+**Claude Desktop / mcp-remote** (`claude_desktop_config.json`):
 ```json
 {
-  "nas-mcp": {
-    "url": "https://nas-mcp.designflow.app/sse",
-    "type": "sse",
-    "headers": {
-      "Authorization": "Bearer <MCP_BEARER_TOKEN>"
-    }
+  "synology-monitor": {
+    "command": "npx",
+    "args": [
+      "-y", "mcp-remote@latest",
+      "https://nas-mcp.designflow.app/mcp",
+      "--transport", "http-first",
+      "--header", "Authorization: Bearer <MCP_BEARER_TOKEN>"
+    ]
   }
 }
 ```
+
+**Native URL transport** (Codex `config.toml` or any client that speaks Streamable HTTP directly):
+```toml
+[mcp_servers."synology-monitor"]
+url = "https://nas-mcp.designflow.app/mcp"
+headers = { Authorization = "Bearer <MCP_BEARER_TOKEN>" }
+```
+
+**Tool discovery (no auth required):**
+```
+GET https://nas-mcp.designflow.app/tools
+```
+Returns a JSON catalog of all enabled read and write tools. Useful for AI agents that need to discover the tool surface without an active MCP session.
 
 ## Session management
 
@@ -255,7 +271,7 @@ To enable: copy the name into `enabled_write_tools` in `tools-config.json` and p
 
 ## Deployment
 
-Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-operating-rules.md)):
+Follows the standard CI/CD path (see [AI_OPERATING_RULES.md](../../AI_OPERATING_RULES.md)):
 
 - Push to `main` with changes under `apps/nas-mcp/**`
 - GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`

@@ -22,7 +22,7 @@ AI-powered monitoring and incident management for two Synology NAS devices. The 
                  │ (AI agents / Claude Desktop)
 ┌────────────────▼─────────────────────────────────────────┐
 │  NAS MCP — nas-mcp.designflow.app  (TypeScript on Coolify)│
-│  74 read tools + 35 write tools exposed over MCP/SSE      │
+│  76 read tools + 35 write tools exposed over MCP           │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -48,10 +48,11 @@ synology-monitor/
 | Doc | What it covers |
 |-----|----------------|
 | [AGENTS.md](AGENTS.md) | Architecture, components, data flow, collector inventory, known behaviors |
+| [docs/development.md](docs/development.md) | Local setup, build, test, debug, contributor workflow |
 | [AI_OPERATING_RULES.md](AI_OPERATING_RULES.md) | Rules for AI tools working in this repo — read before making any change |
 | [AI_INFRASTRUCTURE_GUIDE.md](AI_INFRASTRUCTURE_GUIDE.md) | Live infrastructure: URLs, env vars, credentials, Coolify, Supabase |
 | [apps/nas-mcp/README.md](apps/nas-mcp/README.md) | MCP server — tool catalog, tiers, enabling/disabling tools, troubleshooting |
-| [apps/nas-api/](apps/nas-api/) | NAS API — tier system, validator, auth |
+| [apps/nas-api/README.md](apps/nas-api/README.md) | NAS API — tier system, validator, auth |
 | [apps/relay/README.md](apps/relay/README.md) | Relay service — endpoints, auth, supported actions |
 | [deploy/synology/README.md](deploy/synology/README.md) | NAS deployment — compose layout, required mounts, update sequence |
 
