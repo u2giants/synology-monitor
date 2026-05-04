@@ -25,6 +25,15 @@ Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment fo
 }
 ```
 
+## Session management
+
+The server uses Streamable HTTP with per-request session routing. Key behaviors:
+
+- **Idle eviction:** Sessions inactive for 30 minutes are automatically closed and removed. This disconnects any zombie `mcp-remote` proxy processes left behind when Claude Desktop or Codex restarts without cleanly shutting down its previous connection.
+- **Stale session recovery:** If a client reconnects with an evicted session ID, the server creates a fresh session transparently instead of returning a 404. Tool calls resume without the user needing to restart their MCP client.
+- **Session cap:** A maximum of 200 concurrent sessions are kept. If exceeded, the least-recently-used sessions are evicted first.
+- **After idle periods:** Returning after 30+ minutes away requires no manual action — the next tool call re-establishes the session automatically.
+
 ## NAS targets
 
 Every tool accepts a `target` parameter:
