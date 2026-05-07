@@ -213,6 +213,10 @@ func main() {
 		customCollector.Run(stop)
 	}()
 
+	// Start ShareSync health collector (queue jams, basis corruption, transport flaps)
+	shareSyncCollector := collector.NewShareSyncCollector(s, cfg.NasID, 5*time.Minute)
+	go shareSyncCollector.Run(stop)
+
 	// Start security watcher
 	secW, err := security.NewWatcher(s, cfg.NasID, cfg.WatchPaths, cfg.MaxInotifyDirs, cfg.DataDir)
 	if err != nil {

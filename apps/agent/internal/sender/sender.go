@@ -48,6 +48,17 @@ func New(supabaseURL, serviceKey, dataDir string, batchSize int, flushEvery time
 		return nil, fmt.Errorf("creating WAL table: %w", err)
 	}
 
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS checkpoints (
+			name TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("creating checkpoints table: %w", err)
+	}
+
 	return &Sender{
 		supabaseURL: supabaseURL,
 		serviceKey:  serviceKey,
@@ -152,6 +163,31 @@ func (s *Sender) QueueDSMError(p DSMErrorPayload) {
 // constraint on its natural key for this to take effect.
 var upsertTables = map[string]bool{
 	"package_status": true,
+}
+
+// SaveCheckpoint persists a named cursor value (e.g. a log file byte offset)
+// so it survives agent restarts.
+func (s *Sender) SaveCheckpoint(name, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO checkpoints (name, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		 ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP`,
+		name, value,
+	)
+	return err
+}
+
+// LoadCheckpoint reads a previously saved checkpoint. Returns ("", nil) if not found.
+func (s *Sender) LoadCheckpoint(name string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var value string
+	err := s.db.QueryRow("SELECT value FROM checkpoints WHERE name = ?", name).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
 }
 
 func (s *Sender) queue(table string, payload interface{}) {
