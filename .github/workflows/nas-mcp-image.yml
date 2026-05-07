@@ -3,7 +3,7 @@ name: Publish NAS MCP Image
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - ".github/workflows/nas-mcp-image.yml"
       - "apps/nas-mcp/**"

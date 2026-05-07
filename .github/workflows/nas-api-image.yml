@@ -3,7 +3,7 @@ name: Publish NAS API Image
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - ".github/workflows/nas-api-image.yml"
       - "apps/nas-api/**"
