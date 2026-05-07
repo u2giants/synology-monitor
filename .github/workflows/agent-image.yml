@@ -3,7 +3,7 @@ name: Publish Agent Image
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - ".github/workflows/agent-image.yml"
       - "apps/agent/**"
