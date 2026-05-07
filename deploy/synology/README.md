@@ -54,7 +54,7 @@ All of them run from:
 
 ## Deployment model
 
-1. Push to `master`
+1. Push to `main`
 2. GitHub Actions builds and publishes:
    - `ghcr.io/u2giants/synology-monitor-agent:latest`
 3. Each NAS must pull and recreate the container

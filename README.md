@@ -1,31 +1,39 @@
 # Synology Monitor
 
-Read this first:
-- [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
-- [AI_START_HERE.md](/worksp/monitor/app/AI_START_HERE.md)
-- [AI_LIVE_DATA_NOTE.md](/worksp/monitor/app/AI_LIVE_DATA_NOTE.md)
+AI-powered monitoring dashboard for Synology NAS. The system collects telemetry from two NAS boxes, groups it into issues, and runs an LLM-driven issue agent that diagnoses problems and proposes fixes with an operator approval gate.
 
-Authoritative markdown in this repo:
-- [AI_START_HERE.md](/worksp/monitor/app/AI_START_HERE.md)
-- [AI_LIVE_DATA_NOTE.md](/worksp/monitor/app/AI_LIVE_DATA_NOTE.md)
-- [AGENTS.md](/worksp/monitor/app/AGENTS.md)
-- [AI_CONTEXT.md](/worksp/monitor/app/AI_CONTEXT.md)
-- [AI_CONTEXT_QUERIES.md](/worksp/monitor/app/AI_CONTEXT_QUERIES.md)
-- [PLAN.md](/worksp/monitor/app/PLAN.md)
-- [HANDOFF.md](/worksp/monitor/app/HANDOFF.md)
-- [deploy/synology/README.md](/worksp/monitor/app/deploy/synology/README.md)
+Live at **[mon.designflow.app](https://mon.designflow.app)**.
 
-Historical-only markdown:
-- [deploy/synology/HANDOFF_PROMPT.md](/worksp/monitor/app/deploy/synology/HANDOFF_PROMPT.md)
+## Repository layout
 
-Operational tracker:
-- [INGESTION_BACKLOG.md](/worksp/monitor/app/INGESTION_BACKLOG.md)
+```
+apps/
+  agent/       Go monitoring agent — runs on each NAS, pushes telemetry to Supabase
+  nas-api/     Go REST API — runs on each NAS, executes approved shell commands
+  nas-mcp/     Node.js MCP server — exposes NAS tools to AI agents over SSE
+  web/         Next.js dashboard — issues, telemetry, operator UI
+  relay/       Relay service for external clients
+deploy/
+  synology/    NAS compose files, env examples, deployment scripts
+.github/
+  workflows/   One build+push workflow per app, all trigger on main
+```
 
-Non-authoritative owner reference:
-- [rebuild_plan.md](/worksp/monitor/app/rebuild_plan.md)
-- [MODEL_MATRIX.md](/worksp/monitor/app/MODEL_MATRIX.md)
-- [MODEL_SELECTION_GUIDE.md](/worksp/monitor/app/MODEL_SELECTION_GUIDE.md)
+## Docs
 
-Do not treat the owner-reference docs above as required reading for a new agent or developer session.
+| | |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | System design, components, data flow, constraints |
+| [docs/development.md](docs/development.md) | Build, run, test, debug |
+| [docs/configuration.md](docs/configuration.md) | Environment variables and config |
+| [docs/deployment.md](docs/deployment.md) | Deploy and release workflow |
+| [deploy/synology/README.md](deploy/synology/README.md) | NAS-side agent deployment detail |
+| [apps/nas-mcp/README.md](apps/nas-mcp/README.md) | MCP server tool catalog |
 
-If a markdown file is not one of the authoritative docs above, treat it as non-source-of-truth unless it explicitly says otherwise.
+## Quick orientation
+
+**Push to `main`** triggers GitHub Actions builds for whichever apps have changed. The web app workflow calls the Coolify webhook at the end to redeploy automatically. The agent and nas-api images are pulled and recreated manually on each NAS (Watchtower handles image pulls, but recreating containers requires the sequence in [deploy/synology/README.md](deploy/synology/README.md)).
+
+**Supabase** is the shared data layer. The agent writes to it; the web app reads from it. The NAS API does not touch Supabase directly.
+
+**NAS API** is a three-tier command executor — read-only (auto-approved), reversible writes (require `confirmed: true`), destructive writes (require HMAC token). It is not an SSH bridge; every allowed command is statically declared in the validator.

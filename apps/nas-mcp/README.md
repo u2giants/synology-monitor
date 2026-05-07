@@ -51,7 +51,7 @@ Write tools always show a preview of the exact command before executing. Set `co
 
 ## Enabling/disabling tools
 
-`tools-config.json` controls which tools are active. Changes take effect after a push to `master` (GitHub Actions rebuilds the image, Coolify redeploys).
+`tools-config.json` controls which tools are active. Changes take effect after a push to `main` (GitHub Actions rebuilds the image, Coolify redeploys).
 
 ```json
 {
@@ -248,7 +248,7 @@ To enable: copy the name into `enabled_write_tools` in `tools-config.json` and p
 
 Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-operating-rules.md)):
 
-- Push to `master` with changes under `apps/nas-mcp/**`
+- Push to `main` with changes under `apps/nas-mcp/**`
 - GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
 - Coolify auto-deploys (app UUID: `efl17f5iocnz94840pexre9d`, project: Synology Monitor → production)
 
