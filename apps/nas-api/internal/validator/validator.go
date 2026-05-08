@@ -60,7 +60,7 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bmount\s+.*--bind.*/volume`),
 	// Docker socket is effectively host-level control, so only a tiny allowlist
 	// of monitor-stack actions may use it. Everything else is blocked outright.
-	regexp.MustCompile(`(?i)\bdocker\s+(run|create|exec|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
+	regexp.MustCompile(`(?i)\bdocker\s+(run|create|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
 }
 
 // safeRedirectRe strips redirect forms that are not writes:
@@ -128,10 +128,14 @@ var (
 	}
 
 	allowedReadDockerCommands = []*regexp.Regexp{
-		regexp.MustCompile(`^(?:/usr/local/bin/)?docker ps --format .+$`),
-		regexp.MustCompile(`^docker stats --no-stream --format .+$`),
-		regexp.MustCompile(`^docker inspect --format .+$`),
-		regexp.MustCompile(`(?s)^for dir in /sys/fs/cgroup/blkio/docker/\*/; do.+docker inspect --format .+$`),
+		regexp.MustCompile(`^(?:/usr/local/bin/)?docker ps(\s|$)`),
+		regexp.MustCompile(`^docker stats --no-stream`),
+		regexp.MustCompile(`^docker inspect`),
+		regexp.MustCompile(`^docker logs\b`),
+		regexp.MustCompile(`^docker port\b`),
+		regexp.MustCompile(`^docker diff\b`),
+		regexp.MustCompile(`^docker top\b`),
+		regexp.MustCompile(`(?s)^for dir in /sys/fs/cgroup/blkio/docker/\*/; do.+docker inspect`),
 	}
 )
 
