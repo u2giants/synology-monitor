@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -26,6 +27,10 @@ type Result struct {
 
 // Run executes cmd via bash with a timeout and returns the result.
 // The command is passed as a shell string to /bin/bash -c.
+//
+// Process-group kill: bash is placed in its own process group (Setpgid).
+// When the context deadline fires, the entire group is sent SIGKILL so
+// child processes (grep, find, etc.) cannot orphan and run indefinitely.
 func Run(command string, timeout time.Duration) Result {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -36,6 +41,18 @@ func Run(command string, timeout time.Duration) Result {
 
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-c", command)
+
+	// Place the child in its own process group so SIGKILL reaches the whole tree.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// Override the default single-process kill with a process-group kill.
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

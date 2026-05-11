@@ -55,6 +55,12 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bopkg\s+(install|remove)\b`),
 	regexp.MustCompile(`(?i)\bpip\s+install\b`),
 	regexp.MustCompile(`(?i)\bnpm\s+install\s+-g\b`),
+	// Recursive grep/find on Synology internal data stores.
+	// These directories contain millions of opaque file objects; a recursive
+	// grep never returns useful results and will thrash disk I/O for days.
+	// Use targeted find -maxdepth or a database query instead.
+	regexp.MustCompile(`(?i)\bgrep\b.*-[a-zA-Z]*[rR][a-zA-Z]*\s.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive)`),
+	regexp.MustCompile(`(?i)\bgrep\b.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive).*-[a-zA-Z]*[rR]`),
 	// Mount destructive operations
 	regexp.MustCompile(`(?i)\bumount\s+/volume`),
 	regexp.MustCompile(`(?i)\bmount\s+.*--bind.*/volume`),
