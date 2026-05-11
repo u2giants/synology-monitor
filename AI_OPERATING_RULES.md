@@ -24,9 +24,17 @@ The only normal deployment path is:
 
 1. change files in this repo
 2. commit to `main`
-3. GitHub Actions builds and pushes the image
-4. GitHub Actions triggers Coolify
-5. Coolify deploys the new image
+3. GitHub Actions builds and pushes the image to GHCR
+
+For `apps/web` and `apps/nas-mcp`:
+
+4. GitHub Actions calls the Coolify webhook
+5. Coolify redeploys automatically
+
+For `apps/agent` and `apps/nas-api`:
+
+4. Watchtower on each NAS pulls the new image automatically (every 5 min)
+5. **A manual container recreate is required** — Watchtower pulls but does not recreate; see `deploy/synology/README.md`
 
 Do not propose alternate routine deployment methods.
 

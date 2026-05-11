@@ -152,6 +152,32 @@ Three-tier command executor running on each NAS at port 7734. Commands are class
 
 **Non-obvious:** The nas-api container needs `pid: host` for commands that reference running process PIDs. Without it, `pkill`-based restarts fail silently.
 
+### Hard-block list
+
+`validator.go` maintains a `hardBlocked` list of regex patterns that are rejected at any tier, before any approval flow. These protect against commands that could brick the NAS, destroy data, or lock out admins: disk erasure (`mkfs`, `dd if=`, `wipefs`), root filesystem deletion, DSM binary modification, firmware/kernel manipulation, user account changes, shutdown/reboot, global package manager invocations, and Docker socket misuse.
+
+**Critical entry — recursive grep on Synology internal stores is hard-blocked:**
+
+```
+grep -r/-R on @synologydrive, @SynologyDriveShareSync, /var/packages/SynologyDrive
+```
+
+These directories contain millions of opaque file objects. A recursive grep never returns diagnostically useful results and will thrash disk I/O for days without completing. This pattern is blocked regardless of tier or confirmation. Use targeted `find -maxdepth`, timestamp-bounded log reads, or Supabase telemetry instead.
+
+### Executor process-group kill guarantee
+
+`executor.go` places every bash subprocess in its own process group (`Setpgid: true`) and overrides the default context-cancel behavior to send `SIGKILL` to the entire process group:
+
+```go
+cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+cmd.Cancel = func() error {
+    return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+}
+cmd.WaitDelay = 2 * time.Second
+```
+
+This is required because `exec.CommandContext` only kills the direct bash child — it does not kill the process tree. Without process-group kill, a command like `grep ... | head -50` will orphan the `grep` when the timeout fires (head exits, bash exits, but grep keeps running). In May 2026 this caused a runaway `grep -R` to run for 4 days 11 hours on a production NAS. The process-group kill + hard-block together prevent recurrence.
+
 ## NAS MCP server
 
 Node.js MCP server at `nas-mcp.designflow.app/sse`. Exposes ~92 tools (70 read + 22 write enabled, 9 write disabled). Tool availability is controlled by `tools-config.json` — add a tool name to `enabled_write_tools` and push to `main` to activate it.

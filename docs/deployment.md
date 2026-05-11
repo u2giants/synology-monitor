@@ -14,9 +14,7 @@ push to main
 
 Each workflow has a `paths:` filter — it only runs when files in its app directory (or the workflow file itself) change.
 
-## Web app, NAS API, NAS MCP
-
-These three deploy automatically end-to-end:
+## Web app and NAS MCP (fully automatic)
 
 1. Push to `main` with relevant file changes
 2. GitHub Actions builds and pushes image to GHCR
@@ -24,6 +22,12 @@ These three deploy automatically end-to-end:
 4. Coolify pulls the new image and recreates the container
 
 No manual steps needed. The Coolify webhook URL and token are in GitHub Secrets (`COOLIFY_WEBHOOK_UUID`, `COOLIFY_TOKEN`).
+
+## NAS API (image automatic, container recreate manual)
+
+The `nas-api-image.yml` workflow builds and pushes the image to GHCR. **There is no Coolify webhook for the NAS API** — it runs on the NAS itself, not on the VPS.
+
+Watchtower on each NAS pulls the new image within 5 minutes. But Watchtower only pulls — it does not recreate containers. You must run the manual recreate sequence (see below) after any change to `apps/nas-api`.
 
 **Non-obvious:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` for the web app are build-time secrets — they are baked into the Next.js bundle during `docker build`. They must be set as GitHub Secrets (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) so the workflow can pass them as build args. Changing them in Coolify's runtime env after the image is already built has no effect.
 
