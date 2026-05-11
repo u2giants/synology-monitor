@@ -23,17 +23,19 @@ Each workflow has a `paths:` filter — it only runs when files in its app direc
 
 No manual steps needed. The Coolify webhook URL and token are in GitHub Secrets (`COOLIFY_WEBHOOK_UUID`, `COOLIFY_TOKEN`).
 
-## NAS API (image automatic, container recreate manual)
+## NAS API (fully automatic via Watchtower)
 
 The `nas-api-image.yml` workflow builds and pushes the image to GHCR. **There is no Coolify webhook for the NAS API** — it runs on the NAS itself, not on the VPS.
 
-Watchtower on each NAS pulls the new image within 5 minutes. But Watchtower only pulls — it does not recreate containers. You must run the manual recreate sequence (see below) after any change to `apps/nas-api`.
+Watchtower on each NAS polls GHCR every 5 minutes. When it detects a new image it stops the old container, removes it, and starts a new one automatically. No manual steps are needed after pushing changes to `apps/nas-api` or `apps/agent`.
 
 **Non-obvious:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` for the web app are build-time secrets — they are baked into the Next.js bundle during `docker build`. They must be set as GitHub Secrets (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) so the workflow can pass them as build args. Changing them in Coolify's runtime env after the image is already built has no effect.
 
 ## Agent and NAS API (NAS-side containers)
 
-Watchtower on each NAS polls GHCR and pulls new image layers automatically. However, **Synology Container Manager reuses the existing container definition on `compose up -d`** — pulling a new image does not guarantee the running container uses it. You must explicitly recreate:
+Watchtower on each NAS polls GHCR every 5 minutes. When it detects a new image for `synology-monitor-agent` or `synology-monitor-nas-api`, it stops the old container, removes it, and starts a new one automatically. Push to `main` → image builds → Watchtower picks it up within 5 minutes on both NASes.
+
+**Manual recreate** is only needed if Watchtower itself is down, or if you need to force an immediate update before the next poll cycle:
 
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
@@ -44,8 +46,6 @@ $DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER compose -f compose.yaml up -d
 ```
-
-Run this on both NASes after pushing changes to the agent or nas-api.
 
 ## Compose file on NAS
 

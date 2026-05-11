@@ -33,8 +33,7 @@ For `apps/web` and `apps/nas-mcp`:
 
 For `apps/agent` and `apps/nas-api`:
 
-4. Watchtower on each NAS pulls the new image automatically (every 5 min)
-5. **A manual container recreate is required** — Watchtower pulls but does not recreate; see `deploy/synology/README.md`
+4. Watchtower on each NAS detects the new image and automatically recreates the containers (every 5 min poll)
 
 Do not propose alternate routine deployment methods.
 
