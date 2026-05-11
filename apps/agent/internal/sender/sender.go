@@ -383,12 +383,17 @@ func (s *Sender) enforceWALLimit() {
 	if estimatedSize > s.maxWALSize {
 		// Delete oldest entries that exceed the limit
 		excess := (estimatedSize - s.maxWALSize) / 500
-		s.db.Exec("DELETE FROM wal_entries WHERE id IN (SELECT id FROM wal_entries ORDER BY id LIMIT ?)", excess)
-		log.Printf("[sender] WAL limit enforced: deleted %d oldest entries", excess)
+		if _, err := s.db.Exec("DELETE FROM wal_entries WHERE id IN (SELECT id FROM wal_entries ORDER BY id LIMIT ?)", excess); err != nil {
+			log.Printf("[sender] WAL limit enforcement failed: %v", err)
+		} else {
+			log.Printf("[sender] WAL limit enforced: deleted %d oldest entries", excess)
+		}
 	}
 
 	// Also clean up entries with too many failed attempts
-	s.db.Exec("DELETE FROM wal_entries WHERE attempts >= 5")
+	if _, err := s.db.Exec("DELETE FROM wal_entries WHERE attempts >= 5"); err != nil {
+		log.Printf("[sender] WAL failed-attempts cleanup failed: %v", err)
+	}
 }
 
 func normalizeBatchPayloads(payloads []json.RawMessage) ([]byte, error) {

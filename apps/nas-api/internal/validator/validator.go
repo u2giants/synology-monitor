@@ -49,7 +49,7 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\breboot\b`),
 	regexp.MustCompile(`(?i)\bpoweroff\b`),
 	regexp.MustCompile(`(?i)\bhalt\b`),
-	regexp.MustCompile(`(?i)\bsysteemctl\s+(poweroff|halt|reboot)\b`),
+	regexp.MustCompile(`(?i)\bsystemctl\s+(poweroff|halt|reboot)\b`),
 	// Package manager (apt/opkg/pip global installs)
 	regexp.MustCompile(`(?i)\bapt(-get)?\s+(install|remove|purge)\b`),
 	regexp.MustCompile(`(?i)\bopkg\s+(install|remove)\b`),
