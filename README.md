@@ -32,8 +32,8 @@ deploy/
 
 ## Quick orientation
 
-**Push to `main`** triggers GitHub Actions builds for whichever apps have changed. The web app workflow calls the Coolify webhook at the end to redeploy automatically. The agent and nas-api images are pulled and recreated manually on each NAS (Watchtower handles image pulls, but recreating containers requires the sequence in [deploy/synology/README.md](deploy/synology/README.md)).
+**Push to `main`** triggers GitHub Actions builds for whichever apps have changed. The web app and nas-mcp workflows call the Coolify webhook at the end to redeploy automatically. The agent and nas-api images are picked up by Watchtower on each NAS within 5 minutes and the containers are automatically recreated — no manual steps required.
 
 **Supabase** is the shared data layer. The agent writes to it; the web app reads from it. The NAS API does not touch Supabase directly.
 
-**NAS API** is a three-tier command executor — read-only (auto-approved), reversible writes (require `confirmed: true`), destructive writes (require HMAC token). It is not an SSH bridge; every allowed command is statically declared in the validator.
+**NAS API** is a three-tier command executor — read-only (auto-approved), reversible writes (require `confirmed: true`), destructive writes (require HMAC token). It is not an SSH bridge; every allowed command is statically declared in `apps/nas-api/internal/validator/validator.go`. Recursive grep against Synology internal stores (`@synologydrive`, `@SynologyDriveShareSync`) is permanently hard-blocked regardless of tier — see `docs/architecture.md` for why.

@@ -34,7 +34,15 @@ The agent exits immediately if `DSM_USERNAME`, `DSM_PASSWORD`, `SUPABASE_URL`, `
 ### Adding a collector
 
 1. Create `apps/agent/internal/collector/yourname.go` with a struct that has a `Run(stop <-chan struct{})` method.
-2. Wire it in `apps/agent/cmd/agent/main.go` alongside the other collectors.
+2. Wire it in `apps/agent/cmd/agent/main.go` alongside the other collectors. **You must use the WaitGroup pattern — no exceptions:**
+   ```go
+   wg.Add(1)
+   go func() {
+       defer wg.Done()
+       yourCollector.Run(stop)
+   }()
+   ```
+   Doing `go yourCollector.Run(stop)` without `wg.Add(1)` means graceful shutdown does not wait for the collector to finish, silently dropping in-flight WAL writes. This exact bug existed for the ShareSync collector until 2026 (see `AGENTS.md` safety rules).
 3. If the collector needs to persist a cursor between restarts, use `sender.SaveCheckpoint` / `sender.LoadCheckpoint` — these write to the `checkpoints` table in the local WAL SQLite file.
 4. To send data to Supabase, add a payload type to `sender/types.go` and a `Queue*` method to `sender/sender.go`. Add the target table name to `upsertTables` in `sender.go` only if the table has a unique constraint and you want merge-on-conflict semantics.
 
@@ -43,6 +51,8 @@ The agent exits immediately if `DSM_USERNAME`, `DSM_PASSWORD`, `SUPABASE_URL`, `
 The agent buffers writes in `/app/data/wal.db` (configurable via `DATA_DIR`). A `checkpoints` table in the same SQLite file stores named string values — used by collectors to persist log file byte offsets and similar cursors across restarts.
 
 Entries that fail to flush 5 times are abandoned (logged, not retried forever). WAL size is capped at `MAX_WAL_SIZE_MB` (default 100 MB); oldest entries are dropped when the cap is hit.
+
+**When adding WAL cleanup code:** every `s.db.Exec(...)` call must check its error return. Silent discard means cleanup failures go unreported and the WAL can grow without bound with no log evidence. See `AGENTS.md` safety rules.
 
 ## NAS API (Go)
 

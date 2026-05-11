@@ -55,15 +55,14 @@ All of them run from:
 ## Deployment model
 
 1. Push to `main`
-2. GitHub Actions builds and publishes:
-   - `ghcr.io/u2giants/synology-monitor-agent:latest`
-3. Each NAS must pull and recreate the container
+2. GitHub Actions builds and publishes `ghcr.io/u2giants/synology-monitor-agent:latest` (and `synology-monitor-nas-api:latest`)
+3. Watchtower on each NAS polls GHCR every 5 minutes, detects the new image, stops the old container, removes it, and starts a new one automatically
 
-The agent does not auto-update itself.
+No manual steps are required for routine deploys.
 
-## Required update sequence
+## Manual update sequence (for recovery only)
 
-Run this on the NAS:
+Only needed if Watchtower is down or you need to force an immediate update before the next poll cycle:
 
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
@@ -74,10 +73,6 @@ $DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
 $DOCKER compose -f compose.yaml up -d
 ```
-
-Why `stop` and `rm` matter:
-- Synology Docker/Container Manager often reuses the existing container definition
-- `compose up -d` alone is not reliable for switching to the newly pulled image
 
 ## Coolify web app environment variables
 
