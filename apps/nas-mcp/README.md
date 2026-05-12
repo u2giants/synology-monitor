@@ -1,13 +1,13 @@
 # NAS MCP Server
 
-Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protocol (MCP) over SSE.
+Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protocol (MCP) over Streamable HTTP at `/mcp`. Legacy SSE remains available at `/sse`.
 
 ## Connection
 
 | | |
 |---|---|
-| **URL** | `https://nas-mcp.designflow.app/sse` |
-| **Transport** | SSE (Server-Sent Events) |
+| **URL** | `https://nas-mcp.designflow.app/mcp` |
+| **Transport** | Streamable HTTP |
 | **Auth** | `Authorization: Bearer <token>` |
 
 Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment for this service.
@@ -16,8 +16,8 @@ Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment fo
 ```json
 {
   "nas-mcp": {
-    "url": "https://nas-mcp.designflow.app/sse",
-    "type": "sse",
+    "url": "https://nas-mcp.designflow.app/mcp",
+    "type": "http",
     "headers": {
       "Authorization": "Bearer <MCP_BEARER_TOKEN>"
     }

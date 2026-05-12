@@ -10,7 +10,7 @@ Live at **[mon.designflow.app](https://mon.designflow.app)**.
 apps/
   agent/       Go monitoring agent — runs on each NAS, pushes telemetry to Supabase
   nas-api/     Go REST API — runs on each NAS, executes approved shell commands
-  nas-mcp/     Node.js MCP server — exposes NAS tools to AI agents over SSE
+  nas-mcp/     Node.js MCP server — exposes NAS tools to AI agents over Streamable HTTP/SSE
   web/         Next.js dashboard — issues, telemetry, operator UI
   relay/       Relay service for external clients
 deploy/

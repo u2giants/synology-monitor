@@ -60,6 +60,57 @@ async function withToolDeadline(toolName: string, fn: () => Promise<ToolResult>)
   }
 }
 
+async function executePredefinedToolOnNas(
+  tool: (typeof ALL_TOOL_DEFS)[number],
+  input: Record<string, unknown>,
+  config: ReturnType<typeof getNasConfigs>[number],
+): Promise<string> {
+  let command: string;
+  try {
+    command = tool.buildCommand(input);
+  } catch (err) {
+    return `[${config.name}] Cannot build command: ${err instanceof Error ? err.message : String(err)}`;
+  }
+
+  try {
+    if (!tool.write) {
+      const result = await nasExec(config, command, 1);
+      const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+      return `[${config.name}]\n${output || "(no output)"}`;
+    }
+
+    const preview = await nasPreview(config, command);
+
+    if (preview.blocked) {
+      return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
+    }
+
+    if (preview.tier >= 2 && !input.confirmed) {
+      return [
+        `[${config.name}] This action requires your approval before it runs.`,
+        ``,
+        `Command that will execute:`,
+        `\`\`\``,
+        command,
+        `\`\`\``,
+        ``,
+        `Call this tool again with confirmed: true to approve and execute.`,
+        `If you do not want to proceed, do nothing — no changes have been made.`,
+      ].join("\n");
+    }
+
+    let approvalToken: string | undefined;
+    if (preview.tier >= 2) {
+      approvalToken = buildApprovalToken(config, command, preview.tier);
+    }
+
+    const result = await nasExec(config, command, preview.tier, approvalToken);
+    const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+    return `[${config.name}]\n${output || "(no output)"}`;
+  } catch (err) {
+    return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
 // ─── MCP server factory ───────────────────────────────────────────────────────
 
 function createMcpServer(): McpServer {
@@ -94,50 +145,7 @@ function createMcpServer(): McpServer {
           };
         }
 
-        const results = await Promise.all(
-          configs.map(async (config) => {
-            try {
-              let command: string;
-              try {
-                command = tool.buildCommand(input);
-              } catch (err) {
-                return `[${config.name}] Cannot build command: ${err instanceof Error ? err.message : String(err)}`;
-              }
-
-              const preview = await nasPreview(config, command);
-
-              if (preview.blocked) {
-                return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
-              }
-
-              if (tool.write && preview.tier >= 2 && !input.confirmed) {
-                return [
-                  `[${config.name}] This action requires your approval before it runs.`,
-                  ``,
-                  `Command that will execute:`,
-                  `\`\`\``,
-                  command,
-                  `\`\`\``,
-                  ``,
-                  `Call this tool again with confirmed: true to approve and execute.`,
-                  `If you do not want to proceed, do nothing — no changes have been made.`,
-                ].join("\n");
-              }
-
-              let approvalToken: string | undefined;
-              if (preview.tier >= 2) {
-                approvalToken = buildApprovalToken(config, command, preview.tier);
-              }
-
-              const result = await nasExec(config, command, preview.tier, approvalToken);
-              const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-              return `[${config.name}]\n${output || "(no output)"}`;
-            } catch (err) {
-              return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
-            }
-          }),
-        );
-
+        const results = await Promise.all(configs.map((config) => executePredefinedToolOnNas(tool, input, config)));
         return {
           content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
         };

@@ -10,7 +10,7 @@ Five components:
 |---|---|---|---|
 | `apps/agent` | Go | Each NAS (Docker) | Collects telemetry, pushes to Supabase |
 | `apps/nas-api` | Go | Each NAS (Docker) | Executes approved shell commands for the issue agent |
-| `apps/nas-mcp` | Node.js | VPS (Docker) | MCP server — exposes NAS tools to AI agents over SSE |
+| `apps/nas-mcp` | Node.js | VPS (Docker) | MCP server — exposes NAS tools to AI agents over Streamable HTTP/SSE |
 | `apps/web` | Next.js | VPS (Docker via Coolify) | Dashboard, issue agent loop, operator UI |
 | `apps/relay` | Node.js | VPS (Docker) | Relay for external clients |
 

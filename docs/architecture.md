@@ -34,11 +34,11 @@ Focus is Synology Drive / ShareSync reliability, file operation visibility, sync
                                 │  - operator UI        │
                                 └──────────────────────┘
                                           ▲
-                                          │ MCP over SSE
+                                          │ MCP over Streamable HTTP
                                ┌──────────────────────┐
                                │ nas-mcp (Node.js)    │
                                │ nas-mcp.designflow   │
-                               │ .app/sse             │
+                               │ .app/mcp             │
                                └──────────────────────┘
 ```
 
@@ -180,7 +180,7 @@ This is required because `exec.CommandContext` only kills the direct bash child 
 
 ## NAS MCP server
 
-Node.js MCP server at `nas-mcp.designflow.app/sse`. Exposes ~92 tools (70 read + 22 write enabled, 9 write disabled). Tool availability is controlled by `tools-config.json` — add a tool name to `enabled_write_tools` and push to `main` to activate it.
+Node.js MCP server at `nas-mcp.designflow.app/mcp` (legacy SSE also available at `/sse`). Exposes ~92 tools (70 read + 22 write enabled, 9 write disabled). Tool availability is controlled by `tools-config.json` — add a tool name to `enabled_write_tools` and push to `main` to activate it.
 
 See [apps/nas-mcp/README.md](../apps/nas-mcp/README.md) for the full tool catalog.
 

@@ -333,7 +333,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo '=== DISK IO (diskstats) ==='",
       "awk '{if (($4+$8)>0) print $3, \"reads:\", $4, \"writes:\", $8, \"inprog:\", $12}' /proc/diskstats | grep -E 'sd|md'",
       "echo '=== OPEN FILES ON VOLUMES ==='",
-      "for v in /volume[0-9]*; do [ -d \"$v\" ] || continue; timeout 10 lsof -n +D \"$v\" 2>/dev/null | awk 'NR>1{print $1,$3,$9}' | sort | uniq -c | sort -rn | head -15 && break; done || true",
+      "timeout 8 lsof -nP 2>/dev/null | awk 'NR>1 && $9 ~ /^\\/volume[0-9]+\\// {print $1,$3,$9}' | sort | uniq -c | sort -rn | head -15 || true",
       "echo '=== SMB SESSIONS ==='",
       "timeout 8 smbstatus -S 2>/dev/null | head -30 || ss -tnp 'sport = :445' 2>/dev/null | head -20 || echo 'SMB status unavailable'",
       "echo '=== NETWORK TOP PEERS ==='",
@@ -2625,22 +2625,16 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   {
     name: "run_privileged_command",
     description:
-      "WRITE — Runs a single privileged shell command on the NAS that requires root access. Strictly whitelisted: insmod, mknod, mkdir (under /dev only), chmod (on /dev/net/tun only), synopkg restart/start/stop, docker stop/start/rm, synoservice restart. Pass the full command in filter. Always shows preview and asks approval before running.",
+      "WRITE — Runs a single privileged shell command on the NAS. Strictly whitelisted to: synopkg restart/start/stop <package> and docker stop/start <container>. Pass the full command in filter. Always shows a preview and asks for your approval before running.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const cmd = (input.filter as string | undefined)?.trim();
       if (!cmd) throw new Error("run_privileged_command: pass the command to run in filter.");
       const allowed = [
-        /^insmod \/lib\/modules\/[a-zA-Z0-9_]+\.ko$/,
-        /^mknod \/dev\/net\/tun c 10 200$/,
-        /^mkdir -p \/dev\/net$/,
-        /^chmod 0?666 \/dev\/net\/tun$/,
         /^synopkg (restart|start|stop) [a-zA-Z0-9_-]+$/,
         /^docker stop [a-zA-Z0-9_-]+$/,
         /^docker start [a-zA-Z0-9_-]+$/,
-        /^docker rm [a-zA-Z0-9_-]+$/,
-        /^synoservice (restart|start|stop) [a-zA-Z0-9_-]+$/,
       ];
       if (!allowed.some((re) => re.test(cmd))) {
         throw new Error(`run_privileged_command: command not in allowlist: "${cmd}". Allowed: insmod, mknod, mkdir /dev/net, chmod /dev/net/tun, synopkg, docker stop/start/rm, synoservice.`);
