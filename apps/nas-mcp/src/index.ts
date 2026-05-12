@@ -14,6 +14,13 @@ import { ALL_TOOL_DEFS } from "./tool-definitions.js";
 const PORT = parseInt(process.env.MCP_PORT ?? "3001", 10);
 const BEARER_TOKEN = process.env.MCP_BEARER_TOKEN ?? "";
 
+/**
+ * Hard ceiling on any single tool invocation. Fires an MCP error rather than
+ * letting the call hang until Claude Desktop's own 4-minute client timeout.
+ * Must be comfortably less than Claude Desktop's 4-minute limit.
+ */
+const TOOL_DEADLINE_MS = 45_000;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = resolve(__dirname, "../tools-config.json");
 const toolsConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
@@ -23,6 +30,35 @@ const toolsConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
 
 const enabledRead = new Set<string>(toolsConfig.enabled_read_tools ?? []);
 const enabledWrite = new Set<string>(toolsConfig.enabled_write_tools ?? []);
+
+// ─── Tool deadline wrapper ────────────────────────────────────────────────────
+
+type ToolResult = { content: { type: "text"; text: string }[] };
+
+/**
+ * Wraps a tool handler with a hard deadline. If the inner handler doesn't
+ * resolve within TOOL_DEADLINE_MS, this resolves with a clear error message
+ * instead of hanging until Claude Desktop's own 4-minute client timeout fires.
+ */
+async function withToolDeadline(toolName: string, fn: () => Promise<ToolResult>): Promise<ToolResult> {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<ToolResult>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[nas-mcp] Tool "${toolName}" deadline reached after ${TOOL_DEADLINE_MS}ms`);
+      resolve({
+        content: [{
+          type: "text" as const,
+          text: `Tool "${toolName}" timed out after ${TOOL_DEADLINE_MS / 1000}s. The NAS may be under heavy load or unreachable. Try again in a moment, or target a single NAS instead of "both".`,
+        }],
+      });
+    }, TOOL_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([fn(), deadline]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 
 // ─── MCP server factory ───────────────────────────────────────────────────────
 
@@ -48,62 +84,64 @@ function createMcpServer(): McpServer {
       : tool.params;
 
     server.tool(tool.name, tool.description, params, async (input: Record<string, unknown>) => {
-      const target = (input.target as string) ?? "both";
-      const configs = getNasConfigs(target);
+      return withToolDeadline(tool.name, async () => {
+        const target = (input.target as string) ?? "both";
+        const configs = getNasConfigs(target);
 
-      if (configs.length === 0) {
-        return {
-          content: [{ type: "text" as const, text: `No NAS configured for target "${target}". Valid targets: edgesynology1, edgesynology2, both.` }],
-        };
-      }
+        if (configs.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `No NAS configured for target "${target}". Valid targets: edgesynology1, edgesynology2, both.` }],
+          };
+        }
 
-      const results = await Promise.all(
-        configs.map(async (config) => {
-          try {
-            let command: string;
+        const results = await Promise.all(
+          configs.map(async (config) => {
             try {
-              command = tool.buildCommand(input);
+              let command: string;
+              try {
+                command = tool.buildCommand(input);
+              } catch (err) {
+                return `[${config.name}] Cannot build command: ${err instanceof Error ? err.message : String(err)}`;
+              }
+
+              const preview = await nasPreview(config, command);
+
+              if (preview.blocked) {
+                return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
+              }
+
+              if (tool.write && preview.tier >= 2 && !input.confirmed) {
+                return [
+                  `[${config.name}] This action requires your approval before it runs.`,
+                  ``,
+                  `Command that will execute:`,
+                  `\`\`\``,
+                  command,
+                  `\`\`\``,
+                  ``,
+                  `Call this tool again with confirmed: true to approve and execute.`,
+                  `If you do not want to proceed, do nothing — no changes have been made.`,
+                ].join("\n");
+              }
+
+              let approvalToken: string | undefined;
+              if (preview.tier >= 2) {
+                approvalToken = buildApprovalToken(config, command, preview.tier);
+              }
+
+              const result = await nasExec(config, command, preview.tier, approvalToken);
+              const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+              return `[${config.name}]\n${output || "(no output)"}`;
             } catch (err) {
-              return `[${config.name}] Cannot build command: ${err instanceof Error ? err.message : String(err)}`;
+              return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
             }
+          }),
+        );
 
-            const preview = await nasPreview(config, command);
-
-            if (preview.blocked) {
-              return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
-            }
-
-            if (tool.write && preview.tier >= 2 && !input.confirmed) {
-              return [
-                `[${config.name}] This action requires your approval before it runs.`,
-                ``,
-                `Command that will execute:`,
-                `\`\`\``,
-                command,
-                `\`\`\``,
-                ``,
-                `Call this tool again with confirmed: true to approve and execute.`,
-                `If you do not want to proceed, do nothing — no changes have been made.`,
-              ].join("\n");
-            }
-
-            let approvalToken: string | undefined;
-            if (preview.tier >= 2) {
-              approvalToken = buildApprovalToken(config, command, preview.tier);
-            }
-
-            const result = await nasExec(config, command, preview.tier, approvalToken, 90_000);
-            const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-            return `[${config.name}]\n${output || "(no output)"}`;
-          } catch (err) {
-            return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
-          }
-        }),
-      );
-
-      return {
-        content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
-      };
+        return {
+          content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
+        };
+      });
     });
   }
 
@@ -119,36 +157,38 @@ function createMcpServer(): McpServer {
         command: z.string().describe("The shell command to execute"),
       },
       async ({ target, command }: { target: string; command: string }) => {
-        const configs = getNasConfigs(target);
+        return withToolDeadline("run_command", async () => {
+          const configs = getNasConfigs(target);
 
-        if (configs.length === 0) {
+          if (configs.length === 0) {
+            return {
+              content: [{ type: "text" as const, text: `No NAS configured for target "${target}".` }],
+            };
+          }
+
+          const results = await Promise.all(
+            configs.map(async (config) => {
+              try {
+                const preview = await nasPreview(config, command);
+                if (preview.blocked) {
+                  return `[${config.name}] Blocked: ${preview.summary}`;
+                }
+                if (preview.tier >= 2) {
+                  return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use a specific write tool.`;
+                }
+                const result = await nasExec(config, command, 1);
+                const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+                return `[${config.name}]\n${output || "(no output)"}`;
+              } catch (err) {
+                return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }),
+          );
+
           return {
-            content: [{ type: "text" as const, text: `No NAS configured for target "${target}".` }],
+            content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
           };
-        }
-
-        const results = await Promise.all(
-          configs.map(async (config) => {
-            try {
-              const preview = await nasPreview(config, command);
-              if (preview.blocked) {
-                return `[${config.name}] Blocked: ${preview.summary}`;
-              }
-              if (preview.tier >= 2) {
-                return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use a specific write tool.`;
-              }
-              const result = await nasExec(config, command, 1, undefined, 90_000);
-              const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-              return `[${config.name}]\n${output || "(no output)"}`;
-            } catch (err) {
-              return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
-            }
-          }),
-        );
-
-        return {
-          content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
-        };
+        });
       },
     );
   }

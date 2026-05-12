@@ -20,6 +20,27 @@ export interface NasExecResult {
   timed_out?: boolean;
 }
 
+// Hard cap on exec timeout sent to nas-api. Callers can request less but never more.
+const MAX_EXEC_TIMEOUT_MS = 25_000;
+const PREVIEW_TIMEOUT_MS = 8_000;
+// Extra buffer between the body timeout_ms and the AbortController deadline.
+const ABORT_BUFFER_MS = 5_000;
+
+/**
+ * Returns an AbortSignal that fires after `ms` milliseconds.
+ * Uses AbortController + setTimeout instead of AbortSignal.timeout() to avoid
+ * undici connection-pool issues where AbortSignal.timeout() fails to cancel
+ * stalled TCP connections in some undici versions.
+ */
+function makeTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error(`NAS API request timed out after ${ms}ms`)),
+    ms,
+  );
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 /** Returns NAS configs matching the target. "both" returns all configured NASes. */
 export function getNasConfigs(target: string): NasConfig[] {
   const configs: NasConfig[] = [];
@@ -71,44 +92,72 @@ export function buildApprovalToken(config: NasConfig, command: string, tier: num
 
 /** Asks the NAS API to classify a command's tier without running it. */
 export async function nasPreview(config: NasConfig, command: string): Promise<NasPreviewResult> {
-  const res = await fetch(`${config.url}/preview`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiSecret}`,
-    },
-    body: JSON.stringify({ command }),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) {
-    throw new Error(`NAS preview failed (${config.name}): HTTP ${res.status}`);
+  const { signal, clear } = makeTimeoutSignal(PREVIEW_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${config.url}/preview`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiSecret}`,
+        Connection: "close",
+      },
+      body: JSON.stringify({ command }),
+      signal,
+    });
+    if (!res.ok) {
+      throw new Error(`NAS preview failed (${config.name}): HTTP ${res.status}`);
+    }
+    return res.json() as Promise<NasPreviewResult>;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`NAS preview timed out after ${PREVIEW_TIMEOUT_MS}ms (${config.name}) — NAS may be under load`);
+    }
+    throw err;
+  } finally {
+    clear();
   }
-  return res.json() as Promise<NasPreviewResult>;
 }
 
-/** Executes a command on the NAS via the NAS API. */
+/**
+ * Executes a command on the NAS via the NAS API.
+ * `timeoutMs` controls how long nas-api is given to run the command (capped at MAX_EXEC_TIMEOUT_MS).
+ * The HTTP abort fires ABORT_BUFFER_MS after that deadline.
+ */
 export async function nasExec(
   config: NasConfig,
   command: string,
   tier: number,
   approvalToken?: string,
-  timeoutMs = 90_000,
+  timeoutMs = MAX_EXEC_TIMEOUT_MS,
 ): Promise<NasExecResult> {
-  const body: Record<string, unknown> = { command, tier, timeout_ms: timeoutMs };
+  const clampedTimeout = Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS);
+  const body: Record<string, unknown> = { command, tier, timeout_ms: clampedTimeout };
   if (approvalToken) body.approval_token = approvalToken;
 
-  const res = await fetch(`${config.url}/exec`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiSecret}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs + 15_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`NAS exec failed (${config.name}): HTTP ${res.status} — ${text}`);
+  const abortMs = clampedTimeout + ABORT_BUFFER_MS;
+  const { signal, clear } = makeTimeoutSignal(abortMs);
+  try {
+    const res = await fetch(`${config.url}/exec`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiSecret}`,
+        Connection: "close",
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`NAS exec failed (${config.name}): HTTP ${res.status} — ${text}`);
+    }
+    return res.json() as Promise<NasExecResult>;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`NAS exec timed out after ${abortMs}ms (${config.name}) — NAS may be under load`);
+    }
+    throw err;
+  } finally {
+    clear();
   }
-  return res.json() as Promise<NasExecResult>;
 }
