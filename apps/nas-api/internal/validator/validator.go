@@ -91,7 +91,7 @@ func hasRealOutputRedirect(command string) bool {
 // Used to prevent Tier 1 execution of write operations.
 var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b`),
-	regexp.MustCompile(`(?i)\b(echo|printf|tee|cat)\b.*(>)`),   // redirections
+	regexp.MustCompile(`(?i)\b(echo|printf|tee)\b.*(>)`),       // redirections
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
 	regexp.MustCompile(`(?i)\bsync\b`),
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),

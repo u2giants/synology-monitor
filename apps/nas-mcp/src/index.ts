@@ -204,6 +204,19 @@ function createMcpServer(): McpServer {
   return server;
 }
 
+async function createStatelessTransport(): Promise<StreamableHTTPServerTransport> {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+  const mcpServer = createMcpServer();
+  await mcpServer.connect(transport);
+  transport.onerror = (error) => {
+    console.error("[nas-mcp] stateless transport error", error);
+  };
+  return transport;
+}
+
 // ─── Session management ───────────────────────────────────────────────────────
 
 // Each MCP session gets its own transport + server pair.
@@ -278,6 +291,13 @@ const httpServer = createServer(async (req, res) => {
   // MCP endpoint — handles both Streamable HTTP (POST/GET) and session routing
   if (url.pathname === "/sse" || url.pathname === "/mcp") {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    if (url.pathname === "/mcp" && req.method === "GET" && !sessionId) {
+      const transport = await createStatelessTransport();
+      await transport.handleRequest(req, res);
+      return;
+    }
+
     const transport = await getOrCreateSession(sessionId);
 
     if (!transport) {
