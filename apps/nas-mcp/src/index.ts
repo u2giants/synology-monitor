@@ -286,6 +286,13 @@ const httpServer = createServer(async (req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 
+// Traefik (Coolify's proxy) keeps connections alive longer than Node's default
+// 5s keepAliveTimeout. When Node closes the socket first, Traefik gets a reset
+// and claude.ai shows "connection interrupted". Setting these above Traefik's
+// idle timeout (90s) prevents that race.
+httpServer.keepAliveTimeout = 120_000;
+httpServer.headersTimeout = 125_000;
+
 httpServer.listen(PORT, () => {
   console.log(`NAS MCP server listening on port ${PORT}`);
   console.log(`Read tools: ${[...enabledRead].join(", ")}`);
