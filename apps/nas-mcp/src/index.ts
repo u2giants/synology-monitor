@@ -218,9 +218,13 @@ async function getOrCreateSession(
   // New session
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
+    enableJsonResponse: true,
   });
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
+  transport.onerror = (error) => {
+    console.error("[nas-mcp] transport error", error);
+  };
   transport.onclose = () => {
     if (transport.sessionId) sessions.delete(transport.sessionId);
   };
