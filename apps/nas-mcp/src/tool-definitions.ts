@@ -2598,4 +2598,61 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       ].join("\n");
     },
   },
+
+
+  {
+    name: "kill_process",
+    description:
+      "WRITE — Kills one or more processes by PID using SIGKILL (-9). Pass a space-separated list of PIDs in filter (e.g. '32459 9223'). Always shows what will be killed and asks for approval before acting.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("kill_process: pass one or more PIDs in filter (space-separated).");
+      const pids = raw.split(/\s+/).filter(Boolean);
+      if (pids.some((p) => !/^\d+$/.test(p))) throw new Error("kill_process: filter must contain only numeric PIDs separated by spaces.");
+      return [
+        `echo '=== PROCESSES BEFORE KILL ==='`,
+        `ps -p ${pids.join(",")} -o pid,ppid,etime,cmd 2>/dev/null || echo '(some PIDs may not exist)'`,
+        `echo '=== SENDING SIGKILL ==='`,
+        ...pids.map((pid) => `kill -9 ${pid} 2>&1 && echo "killed ${pid}" || echo "failed or already gone: ${pid}"`),
+        `echo '=== VERIFY ==='`,
+        `ps -p ${pids.join(",")} -o pid,cmd 2>/dev/null || echo 'all target processes gone'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "run_privileged_command",
+    description:
+      "WRITE — Runs a single privileged shell command on the NAS that requires root access. Strictly whitelisted: insmod, mknod, mkdir (under /dev only), chmod (on /dev/net/tun only), synopkg restart/start/stop, docker stop/start/rm, synoservice restart. Pass the full command in filter. Always shows preview and asks approval before running.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const cmd = (input.filter as string | undefined)?.trim();
+      if (!cmd) throw new Error("run_privileged_command: pass the command to run in filter.");
+      const allowed = [
+        /^insmod \/lib\/modules\/[a-zA-Z0-9_]+\.ko$/,
+        /^mknod \/dev\/net\/tun c 10 200$/,
+        /^mkdir -p \/dev\/net$/,
+        /^chmod 0?666 \/dev\/net\/tun$/,
+        /^synopkg (restart|start|stop) [a-zA-Z0-9_-]+$/,
+        /^docker stop [a-zA-Z0-9_-]+$/,
+        /^docker start [a-zA-Z0-9_-]+$/,
+        /^docker rm [a-zA-Z0-9_-]+$/,
+        /^synoservice (restart|start|stop) [a-zA-Z0-9_-]+$/,
+      ];
+      if (!allowed.some((re) => re.test(cmd))) {
+        throw new Error(`run_privileged_command: command not in allowlist: "${cmd}". Allowed: insmod, mknod, mkdir /dev/net, chmod /dev/net/tun, synopkg, docker stop/start/rm, synoservice.`);
+      }
+      return [
+        `echo '=== COMMAND PREVIEW ==='`,
+        `echo ${JSON.stringify(cmd)}`,
+        `echo '=== EXECUTING ==='`,
+        cmd,
+        `echo "exit_code=$?"`,
+      ].join("\n");
+    },
+  },
+
 ];
