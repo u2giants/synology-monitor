@@ -180,7 +180,19 @@ This is required because `exec.CommandContext` only kills the direct bash child 
 
 ## NAS MCP server
 
-Node.js MCP server at `nas-mcp.designflow.app/mcp` (legacy SSE also available at `/sse`). Exposes ~92 tools (70 read + 22 write enabled, 9 write disabled). Tool availability is controlled by `tools-config.json` — add a tool name to `enabled_write_tools` and push to `main` to activate it.
+Node.js MCP server at `nas-mcp.designflow.app/mcp` (StreamableHTTP). Also serves the legacy SSE transport at `/sse`. Exposes 71 read tools and 37 write tools (all enabled). Tool availability is controlled by `tools-config.json` — changes require a push to `main`.
+
+### Timeout architecture
+
+Three layers prevent NAS-side slowness from hanging claude.ai tool calls indefinitely:
+
+1. **`/preview` HTTP abort** — 8 seconds. Classifies command tier; if the NAS doesn't respond, fail fast.
+2. **`/exec` HTTP abort** — 30 seconds (25s command timeout sent in request body + 5s abort buffer). Uses `AbortController` + `setTimeout` rather than `AbortSignal.timeout()` because undici's implementation of the latter fails to cancel stalled TCP connections under load.
+3. **Tool deadline** — 45 seconds. A `Promise.race` in the MCP tool handler fires a user-visible error message if both NAS calls somehow stall past the HTTP abort layer.
+
+`Connection: close` is set on all outbound requests to nas-api to prevent keep-alive pool exhaustion across a long session (the root cause of the "works early, fails later" session-degradation pattern).
+
+The Node.js HTTP server runs with `keepAliveTimeout: 120s` and `headersTimeout: 125s` — above Traefik's 90s idle timeout — so Traefik never tries to reuse a connection that Node has already closed.
 
 See [apps/nas-mcp/README.md](../apps/nas-mcp/README.md) for the full tool catalog.
 

@@ -86,12 +86,17 @@ Model assignments are stored in Supabase (`smon_ai_settings`) and read at runtim
 
 ## NAS MCP server (`apps/nas-mcp`)
 
-| Variable | Required | Notes |
-|---|---|---|
-| `MCP_BEARER_TOKEN` | Yes | Auth token for incoming SSE connections |
-| `NAS_EDGE1_API_URL` | Yes | NAS 1 API base URL |
-| `NAS_EDGE1_API_SECRET` | Yes | NAS 1 API secret |
-| `NAS_EDGE2_API_URL` | Yes | NAS 2 API base URL |
-| `NAS_EDGE2_API_SECRET` | Yes | NAS 2 API secret |
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `MCP_BEARER_TOKEN` | Yes | — | Auth token for all MCP client connections |
+| `MCP_PORT` | No | `3001` | Port the server listens on |
+| `NAS_EDGE1_NAME` | No | `edgesynology1` | Logical name used in tool `target` parameter |
+| `NAS_EDGE1_API_URL` | Yes | — | NAS 1 API base URL (`http://100.107.131.35:7734`) |
+| `NAS_EDGE1_API_SECRET` | Yes | — | Bearer secret for NAS 1 API |
+| `NAS_EDGE1_API_SIGNING_KEY` | Yes | — | HMAC key for tier 2/3 approval tokens; must match `NAS_API_APPROVAL_SIGNING_KEY` on NAS 1 |
+| `NAS_EDGE2_NAME` | No | `edgesynology2` | Logical name used in tool `target` parameter |
+| `NAS_EDGE2_API_URL` | Yes | — | NAS 2 API base URL (`http://100.107.131.36:7734`) |
+| `NAS_EDGE2_API_SECRET` | Yes | — | Bearer secret for NAS 2 API |
+| `NAS_EDGE2_API_SIGNING_KEY` | Yes | — | HMAC key for tier 2/3 approval tokens; must match `NAS_API_APPROVAL_SIGNING_KEY` on NAS 2 |
 
 Tool availability is controlled by `apps/nas-mcp/tools-config.json`, not env vars. Changes require a push to `main`.

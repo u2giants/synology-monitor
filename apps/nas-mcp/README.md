@@ -8,22 +8,40 @@ Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protoco
 |---|---|
 | **URL** | `https://nas-mcp.designflow.app/mcp` |
 | **Transport** | Streamable HTTP |
+| **Legacy URL** | `https://nas-mcp.designflow.app/sse` |
+| **Legacy transport** | SSE (still served, but prefer `/mcp`) |
 | **Auth** | `Authorization: Bearer <token>` |
 
 Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment for this service.
 
-**MCP client config:**
+**Claude Desktop / claude.ai MCP client config (StreamableHTTP):**
 ```json
 {
   "nas-mcp": {
     "url": "https://nas-mcp.designflow.app/mcp",
-    "type": "http",
+    "type": "streamable-http",
     "headers": {
       "Authorization": "Bearer <MCP_BEARER_TOKEN>"
     }
   }
 }
 ```
+
+**Important:** After any server redeploy (Coolify restarts the container), all in-memory MCP sessions are lost. Existing conversations that hold a `mcp-session-id` will get a 404 and show "connection interrupted." Start a new conversation to get a fresh session.
+
+## Timeout architecture
+
+Three layers protect against NAS-side hangs:
+
+| Layer | Timeout | What it does |
+|---|---|---|
+| `/preview` HTTP abort | 8s | Aborts the tier-classification call |
+| `/exec` HTTP abort | 25s command + 5s buffer = 30s | Aborts the execution call; sends `timeout_ms: 25000` to nas-api so it kills the subprocess first |
+| Tool deadline | 45s | If the NAS-side calls never resolve (e.g. both NASes stall simultaneously), the MCP tool returns a clear error message at 45s rather than holding the connection until Claude's 4-minute client timeout |
+
+The HTTP client uses `AbortController` + `setTimeout` (not `AbortSignal.timeout()`) and sets `Connection: close` on all requests to prevent keep-alive pool exhaustion across many tool calls in a session.
+
+The Node.js HTTP server has `keepAliveTimeout: 120s` and `headersTimeout: 125s` — above Traefik's idle timeout — to prevent Traefik from reusing connections that Node has already closed (which surfaces as "connection interrupted" in claude.ai).
 
 ## NAS targets
 
@@ -35,7 +53,7 @@ Every tool accepts a `target` parameter:
 | `edgesynology2` | Run on NAS 2 only |
 | `both` | Run on both NAS boxes in parallel (default) |
 
-When `both` is used, results are returned labeled `[edgesynology1]` and `[edgesynology2]`.
+When `both` is used, results are returned labeled `[edgesynology1]` and `[edgesynology2]`. On a loaded NAS, prefer targeting a single NAS to avoid the 45s deadline being reached while waiting for both.
 
 ## Tool tiers and approval
 
@@ -56,11 +74,11 @@ Write tools always show a preview of the exact command before executing. Set `co
 ```json
 {
   "enabled_read_tools": ["check_disk_space", "..."],
-  "enabled_write_tools": []
+  "enabled_write_tools": ["restart_monitor_agent", "..."]
 }
 ```
 
-To enable a write tool: add its name to `enabled_write_tools` and push.
+Tools not listed in either array are compiled into the image but invisible to clients. This lets you ship a tool dark and enable it without a code deploy — just edit the JSON and push.
 
 ## Available read tools
 
@@ -201,7 +219,7 @@ Recommended starting sequence for path-sensitive incidents:
 
 Write tools always require `confirmed: true` — the MCP server shows a preview of the exact command before executing anything.
 
-### Enabled write tools
+All 37 write tools listed in `tools-config.json` are currently enabled. To disable one: remove it from `enabled_write_tools` and push to `main`.
 
 | Tool | What it does |
 |---|---|
@@ -227,26 +245,21 @@ Write tools always require `confirmed: true` — the MCP server shows a preview 
 | `generate_support_bundle` | Generate a DSM support bundle and save it to /tmp |
 | `cancel_smart_test` | Cancel an in-progress SMART self-test on a specific disk |
 | `cancel_btrfs_scrub` | Cancel an in-progress Btrfs scrub on a volume |
-
-### Available but disabled write tools
-
-To enable: copy the name into `enabled_write_tools` in `tools-config.json` and push.
-
-| Tool | What it does |
-|---|---|
-| `set_vm_overcommit_memory` | Set vm.overcommit_memory live via sysctl (pass value 0/1/2 in filter) |
-| `persist_vm_overcommit_memory` | Persist vm.overcommit_memory to sysctl.conf for reboot survival |
+| `set_vm_overcommit_memory` | Set vm.overcommit_memory live via sysctl |
+| `persist_vm_overcommit_memory` | Persist vm.overcommit_memory to sysctl.conf |
 | `clear_package_lockfiles` | Remove stale lock files for a named package |
 | `repair_drive_db_permissions` | Fix ownership and permissions on @synologydrive directories |
 | `quarantine_path` | Rename an exact path to .quarantine.{timestamp} |
-| `repair_path_ownership` | chown on an exact path (pass owner:group or recursive:owner:group in filter) |
-| `repair_path_acl` | setfacl ACL modification on an exact path (pass ACL spec in filter) |
-| `restore_path_from_snapshot` | Restore a file/dir from a Btrfs snapshot to a new destination (snapshot_path\|dest_path in filter) |
-| `restore_from_recycle_bin` | Restore a file from a share recycle bin to a new destination (recycle_path\|dest_path in filter) |
+| `repair_path_ownership` | chown on an exact path |
+| `repair_path_acl` | setfacl ACL modification on an exact path |
+| `restore_path_from_snapshot` | Restore a file/dir from a Btrfs snapshot to a new destination |
+| `restore_from_recycle_bin` | Restore a file from a share recycle bin to a new destination |
+| `run_privileged_command` | Run a privileged shell command requiring elevated access |
+| `kill_process` | Kill a process by PID |
 
 ## Deployment
 
-Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-operating-rules.md)):
+Follows the standard CI/CD path (see [AI_OPERATING_RULES.md](../../AI_OPERATING_RULES.md)):
 
 - Push to `main` with changes under `apps/nas-mcp/**`
 - GitHub Actions builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
@@ -256,13 +269,13 @@ Follows the standard CI/CD path (see [docs/ai-operating-rules.md](../../docs/ai-
 
 | Variable | Purpose |
 |---|---|
-| `MCP_PORT` | Port the server listens on (3001) |
+| `MCP_PORT` | Port the server listens on (default: 3001) |
 | `MCP_BEARER_TOKEN` | Auth token required by all MCP clients |
-| `NAS_EDGE1_NAME` | Logical name for NAS 1 (`edgesynology1`) |
-| `NAS_EDGE1_API_URL` | HTTP URL of the NAS 1 API |
+| `NAS_EDGE1_NAME` | Logical name for NAS 1 (default: `edgesynology1`) |
+| `NAS_EDGE1_API_URL` | HTTP URL of the NAS 1 API (`http://100.107.131.35:7734`) |
 | `NAS_EDGE1_API_SECRET` | Bearer secret for NAS 1 API |
 | `NAS_EDGE1_API_SIGNING_KEY` | HMAC key for tier 2/3 approval tokens on NAS 1 |
-| `NAS_EDGE2_NAME` | Logical name for NAS 2 (`edgesynology2`) |
-| `NAS_EDGE2_API_URL` | HTTP URL of the NAS 2 API |
+| `NAS_EDGE2_NAME` | Logical name for NAS 2 (default: `edgesynology2`) |
+| `NAS_EDGE2_API_URL` | HTTP URL of the NAS 2 API (`http://100.107.131.36:7734`) |
 | `NAS_EDGE2_API_SECRET` | Bearer secret for NAS 2 API |
 | `NAS_EDGE2_API_SIGNING_KEY` | HMAC key for tier 2/3 approval tokens on NAS 2 |

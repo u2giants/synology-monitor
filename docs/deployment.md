@@ -21,7 +21,7 @@ Each workflow has a `paths:` filter — it only runs when files in its app direc
 3. Workflow's final step calls the Coolify redeploy webhook
 4. Coolify pulls the new image and recreates the container
 
-No manual steps needed. The Coolify webhook URL and token are in GitHub Secrets (`COOLIFY_WEBHOOK_UUID`, `COOLIFY_TOKEN`).
+No manual steps needed. The Coolify redeploy webhook is called at the end of the workflow using `secrets.COOLIFY_TOKEN`. The deployment UUID (`efl17f5iocnz94840pexre9d`) is hardcoded in the workflow file, not a secret.
 
 ## NAS API (fully automatic via Watchtower)
 
