@@ -278,6 +278,24 @@ const httpServer = createServer(async (req, res) => {
   // MCP endpoint — handles both Streamable HTTP (POST/GET) and session routing
   if (url.pathname === "/sse" || url.pathname === "/mcp") {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    // GET without session ID: the claude.ai proxy opens a standalone SSE notification
+    // stream before sending any tool calls. Using stateless mode (sessionIdGenerator:
+    // undefined) skips the validateSession check that would otherwise fire "Server not
+    // initialized", allowing the stream to open cleanly with 200 OK. The stream stays
+    // alive until the client disconnects; we never push events since this server only
+    // does request/response, not server-initiated notifications.
+    if (req.method === "GET" && !sessionId) {
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const mcpServer = createMcpServer();
+      await mcpServer.connect(transport);
+      transport.onerror = (err) => {
+        console.warn("[nas-mcp] standalone SSE:", err instanceof Error ? err.message : String(err));
+      };
+      await transport.handleRequest(req, res);
+      return;
+    }
+
     const transport = await getOrCreateSession(sessionId);
 
     if (!transport) {

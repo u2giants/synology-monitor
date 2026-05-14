@@ -14,6 +14,8 @@ Exposes Synology NAS diagnostic tools to AI agents via the Model Context Protoco
 
 Bearer token is stored as `MCP_BEARER_TOKEN` in Coolify's runtime environment for this service.
 
+**GET without session ID:** Some MCP proxies (including the claude.ai remote MCP integration) open a standalone SSE notification stream via `GET /mcp` without a session ID before sending any tool calls. The server handles this correctly: it returns `200 OK text/event-stream` using a stateless transport. The stream stays open until the client disconnects; no events are pushed since this server is purely request/response. Tool calls continue to use the standard session-based POST path.
+
 **Claude Desktop / claude.ai MCP client config (StreamableHTTP):**
 ```json
 {
