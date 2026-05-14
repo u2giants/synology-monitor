@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -204,35 +203,6 @@ function createMcpServer(): McpServer {
   return server;
 }
 
-// ─── Session management ───────────────────────────────────────────────────────
-
-// Each MCP session gets its own transport + server pair.
-const sessions = new Map<string, StreamableHTTPServerTransport>();
-
-async function getOrCreateSession(
-  sessionId: string | undefined,
-): Promise<StreamableHTTPServerTransport | null> {
-  if (sessionId) {
-    return sessions.get(sessionId) ?? null;
-  }
-  // New session
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-    enableJsonResponse: true,
-  });
-  const mcpServer = createMcpServer();
-  await mcpServer.connect(transport);
-  transport.onerror = (error) => {
-    console.error("[nas-mcp] transport error", error);
-  };
-  transport.onclose = () => {
-    if (transport.sessionId) sessions.delete(transport.sessionId);
-  };
-  if (transport.sessionId) {
-    sessions.set(transport.sessionId, transport);
-  }
-  return transport;
-}
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
@@ -261,7 +231,6 @@ const httpServer = createServer(async (req, res) => {
       JSON.stringify({
         status: "ok",
         service: "nas-mcp",
-        sessions: sessions.size,
         read_tools: enabledRead.size,
         write_tools: enabledWrite.size,
       }),
@@ -275,40 +244,21 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  // MCP endpoint — handles both Streamable HTTP (POST/GET) and session routing
+  // MCP endpoint — fully stateless: each request gets its own transport+server.
+  // No session Map means no stale-session failures after container restarts.
+  // GET without session ID: the claude.ai proxy opens a standalone SSE notification
+  // stream before sending any tool calls; stateless mode handles it cleanly.
   if (url.pathname === "/sse" || url.pathname === "/mcp") {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    // GET without session ID: the claude.ai proxy opens a standalone SSE notification
-    // stream before sending any tool calls. Using stateless mode (sessionIdGenerator:
-    // undefined) skips the validateSession check that would otherwise fire "Server not
-    // initialized", allowing the stream to open cleanly with 200 OK. The stream stays
-    // alive until the client disconnects; we never push events since this server only
-    // does request/response, not server-initiated notifications.
-    if (req.method === "GET" && !sessionId) {
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const mcpServer = createMcpServer();
-      await mcpServer.connect(transport);
-      transport.onerror = (err) => {
-        console.warn("[nas-mcp] standalone SSE:", err instanceof Error ? err.message : String(err));
-      };
-      await transport.handleRequest(req, res);
-      return;
-    }
-
-    const transport = await getOrCreateSession(sessionId);
-
-    if (!transport) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Session not found" }));
-      return;
-    }
-
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    const mcpServer = createMcpServer();
+    await mcpServer.connect(transport);
+    transport.onerror = (err) => {
+      console.warn("[nas-mcp] transport error:", err instanceof Error ? err.message : String(err));
+    };
     await transport.handleRequest(req, res);
-    // Store new session after first request sets the session ID
-    if (!sessionId && transport.sessionId) {
-      sessions.set(transport.sessionId, transport);
-    }
     return;
   }
 
