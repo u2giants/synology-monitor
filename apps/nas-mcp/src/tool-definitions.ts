@@ -808,23 +808,74 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_backup_status",
-    description: "Checks Hyper Backup package status, lists backup tasks, and shows recent backup log entries — especially errors, failures, and destination connectivity issues. Searches across all volumes.",
+    description: "Checks Hyper Backup package status, lists backup tasks, and shows recent backup log entries — especially errors, failures, and destination connectivity issues. Discovers backup log files across every known candidate path (DSM 6, DSM 7, per-task dirs) and tails the freshest one, so it works even when the standard log path is stale or empty.",
     write: false,
     params: { target, lookback_hours: lookbackHours },
     buildCommand: (input) => {
       const lines = clamp((input.lookback_hours as number ?? 6) * 20, 40, 200);
+      const hours = clamp(input.lookback_hours as number ?? 6, 1, 168);
       return [
         "echo '=== HYPER BACKUP STATUS ==='",
-        "ver=$(grep -m1 '^version=' /var/packages/HyperBackup/INFO 2>/dev/null | cut -d= -f2-); enabled=$([ -f /var/packages/HyperBackup/enabled ] && echo enabled || echo disabled); echo \"HyperBackup: ${ver:-not found} [$enabled]\"",
+        "ver=$(grep -m1 '^version=' /host/var/packages/HyperBackup/INFO 2>/dev/null || grep -m1 '^version=' /var/packages/HyperBackup/INFO 2>/dev/null); ver=${ver#version=}",
+        "if [ -f /host/var/packages/HyperBackup/enabled ] || [ -f /var/packages/HyperBackup/enabled ]; then enabled=enabled; else enabled=disabled; fi",
+        "echo \"HyperBackup: ${ver:-not found} [$enabled]\"",
         "echo ''",
         "echo '=== BACKUP TASK LIST ==='",
-        "/host/usr/syno/bin/synobackup --list 2>/dev/null || echo 'No backup CLI available'",
+        "for cli in /host/usr/syno/bin/synobackup /usr/syno/bin/synobackup; do [ -x \"$cli\" ] && { \"$cli\" --list 2>/dev/null && break; }; done || echo 'No backup CLI available'",
         "echo ''",
-        "echo '=== RECENT BACKUP LOG ==='",
-        `grep -iE 'error|fail|warn|complete|success|abort|destination' /host/log/synolog/synobackup.log 2>/dev/null | tail -${lines} || tail -${lines} /host/log/synolog/synobackup.log 2>/dev/null || echo 'Backup log not found'`,
+        "echo '=== BACKUP LOG FILES DISCOVERED (path | mtime | size) ==='",
+        // Enumerate every plausible backup-log location, list only files that exist,
+        // newest first. The operator can immediately see which file is live.
+        "candidates=$(",
+        "  ls -1 /host/log/synolog/synobackup.log \\",
+        "        /host/var/log/synolog/synobackup.log \\",
+        "        /host/log/synobackup.log \\",
+        "        /host/var/log/synobackup.log \\",
+        "        /host/var/log/packages/HyperBackup.log \\",
+        "        /host/log/packages/HyperBackup.log \\",
+        "        /host/var/log/messages 2>/dev/null;",
+        "  ls -1 /host/var/packages/HyperBackup/target/*/log/*.log 2>/dev/null;",
+        "  ls -1 /host/var/packages/HyperBackup/target/*/*.log 2>/dev/null;",
+        ")",
+        "if [ -z \"$candidates\" ]; then",
+        "  echo 'No backup log files found in any known location.'",
+        "  FRESHEST=''",
+        "else",
+        "  echo \"$candidates\" | xargs -r stat -c '%Y %y | %s bytes | %n' 2>/dev/null | sort -rn | cut -d' ' -f2- | head -20",
+        "  FRESHEST=$(echo \"$candidates\" | xargs -r ls -1t 2>/dev/null | head -1)",
+        "fi",
+        "echo ''",
+        `echo "=== FRESHEST BACKUP LOG (tail, filtered to last ${hours}h where possible) ==="`,
+        "if [ -n \"$FRESHEST\" ]; then",
+        "  echo \"Source: $FRESHEST\"",
+        "  echo ''",
+        `  # Try to filter by date prefix (YYYY-MM-DD); fall back to plain tail if format unknown.`,
+        `  cutoff=$(date -d "${hours} hours ago" '+%Y-%m-%d %H:%M' 2>/dev/null)`,
+        "  if [ -n \"$cutoff\" ]; then",
+        `    awk -v c="$cutoff" '$0 >= c' "$FRESHEST" 2>/dev/null | grep -iE 'error|fail|warn|complete|success|abort|destination' | tail -${lines}`,
+        `    awk -v c="$cutoff" '$0 >= c' "$FRESHEST" 2>/dev/null | tail -5`,
+        "  else",
+        `    grep -iE 'error|fail|warn|complete|success|abort|destination' "$FRESHEST" 2>/dev/null | tail -${lines}`,
+        `    tail -5 "$FRESHEST" 2>/dev/null`,
+        "  fi",
+        "else",
+        "  echo '(no source file to tail)'",
+        "fi",
+        "echo ''",
+        "echo '=== STALENESS CHECK ==='",
+        "if [ -n \"$FRESHEST\" ]; then",
+        "  age=$(( $(date +%s) - $(stat -c %Y \"$FRESHEST\" 2>/dev/null || echo 0) ))",
+        "  if [ \"$age\" -gt 0 ]; then",
+        "    h=$((age/3600)); d=$((h/24))",
+        "    echo \"Freshest log last modified ${h}h ago (~${d} days). If the actual backup ran more recently, the live log is elsewhere — check the per-task dirs under /host/var/packages/HyperBackup/target/.\"",
+        "  fi",
+        "fi",
+        "echo ''",
+        "echo '=== PER-TASK LOG DIRS ==='",
+        "ls -lt /host/var/packages/HyperBackup/target/ 2>/dev/null | head -15 || echo '(no per-task target dir found)'",
         "echo ''",
         "echo '=== BACKUP VAULT LOCATIONS (all volumes) ==='",
-        "for v in /volume[0-9]*; do ls -d \"$v\"/@SynologyHyperBackup* 2>/dev/null && printf '  (on %s)\\n' \"$v\"; done || echo 'No HyperBackup vault found on any volume'",
+        "found=0; for v in /host/volume[0-9]* /volume[0-9]*; do for vault in \"$v\"/@SynologyHyperBackup*; do [ -e \"$vault\" ] || continue; echo \"$vault\"; found=1; done; done; [ $found -eq 0 ] && echo 'No HyperBackup vault found on any volume'",
       ].join("\n");
     },
   },
@@ -1494,6 +1545,111 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo ''`,
         `echo '=== NOTE ==='`,
         `echo 'File-level access audit requires DSM file access logging enabled in Control Panel > File Services > Advanced.'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "search_file_access_log",
+    description:
+      "Queries the DSM Log Center file access audit via the WebAPI (SYNO.Core.Log.Center) for a given path fragment, action, or date range. Returns the raw JSON response with newest events first. Requires Log Center package installed and 'Log Sending → Local' file-access logging enabled in DSM Control Panel. Optional filters: path_filter (client-side grep on the JSON), date_from/date_to (ISO yyyy-mm-dd), action_filter (delete|write|read|rename), limit (default 100, max 1000).",
+    write: false,
+    params: {
+      target,
+      path_filter: z
+        .string()
+        .optional()
+        .describe("Substring to grep for in the result set, e.g. a filename or folder fragment."),
+      date_from: z
+        .string()
+        .optional()
+        .describe("Lower bound ISO date yyyy-mm-dd. Converted to a unix timestamp for the API."),
+      date_to: z
+        .string()
+        .optional()
+        .describe("Upper bound ISO date yyyy-mm-dd. Converted to a unix timestamp for the API."),
+      action_filter: z
+        .enum(["delete", "write", "read", "rename"])
+        .optional()
+        .describe("Restrict to a single action. Applied client-side on the JSON response."),
+      limit: z
+        .number()
+        .int()
+        .optional()
+        .default(100)
+        .describe("Max records to fetch from the API. Default 100, clamped to [1, 1000]."),
+    },
+    buildCommand: (input) => {
+      const limit = clamp(Math.floor((input.limit as number) ?? 100), 1, 1000);
+      const pathFilter = (input.path_filter as string | undefined)?.trim() || "";
+      const actionFilter = (input.action_filter as string | undefined)?.trim() || "";
+      const dateFrom = (input.date_from as string | undefined)?.trim() || "";
+      const dateTo = (input.date_to as string | undefined)?.trim() || "";
+
+      const extra: string[] = [
+        `--data-urlencode "type=file"`,
+        `--data-urlencode "start=0"`,
+        `--data-urlencode "limit=${limit}"`,
+      ];
+      if (dateFrom) {
+        extra.push(
+          `--data-urlencode "from_date=$(date -d ${quote(dateFrom)} +%s 2>/dev/null || echo 0)"`,
+        );
+      }
+      if (dateTo) {
+        extra.push(
+          `--data-urlencode "to_date=$(date -d ${quote(dateTo)} +%s 2>/dev/null || echo 0)"`,
+        );
+      }
+
+      const filterPipeline: string[] = [];
+      if (actionFilter) {
+        filterPipeline.push(`grep -i ${quote(actionFilter)}`);
+      }
+      if (pathFilter) {
+        filterPipeline.push(`grep -i ${quote(pathFilter)}`);
+      }
+      const postFilter =
+        filterPipeline.length > 0
+          ? ` | tr ',' '\\n' | (${filterPipeline.join(" | ")}) | head -${limit}`
+          : "";
+
+      return [
+        `if [ -z "\${DSM_USERNAME:-}" ] || [ -z "\${DSM_PASSWORD:-}" ]; then echo "ERROR: DSM_USERNAME/DSM_PASSWORD not set in .env — required for WebAPI calls"; exit 1; fi`,
+        `DSM_BASE="http://localhost:\${DSM_PORT:-5000}/webapi/entry.cgi"`,
+        `echo "=== Authenticating to DSM WebAPI ==="`,
+        `SID=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=login" --data-urlencode "account=\${DSM_USERNAME}" --data-urlencode "passwd=\${DSM_PASSWORD}" --data-urlencode "format=sid" 2>/dev/null | grep -o '"sid":"[^"]*"' | cut -d'"' -f4)`,
+        `if [ -z "$SID" ]; then echo "ERROR: DSM login failed — check DSM_USERNAME/DSM_PASSWORD and port \${DSM_PORT:-5000}"; exit 1; fi`,
+        `echo "Authenticated"`,
+        `echo ""`,
+        `echo "=== Log Center file access query (SYNO.Core.Log.Center v1 method=list type=file limit=${limit}) ==="`,
+        `RESULT=$(curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.Core.Log.Center" --data-urlencode "version=1" --data-urlencode "method=list" ${extra.join(" ")} --data-urlencode "_sid=$SID" 2>/dev/null)`,
+        `if echo "$RESULT" | grep -q '"success":true'; then`,
+        `  echo "API: OK"`,
+        ...(postFilter
+          ? [
+              `  echo ""`,
+              `  echo "=== FILTERED ROWS (post-processed) ==="`,
+              `  echo "$RESULT"${postFilter}`,
+              `  echo ""`,
+              `  echo "=== RAW (truncated) ==="`,
+              `  echo "$RESULT" | head -c 4000`,
+              `  echo ""`,
+            ]
+          : [
+              `  echo ""`,
+              `  echo "=== RAW RESPONSE ==="`,
+              `  echo "$RESULT"`,
+            ]),
+        `else`,
+        `  echo "API: non-success"`,
+        `  echo "$RESULT"`,
+        `  echo ""`,
+        `  echo "NOTE: SYNO.Core.Log.Center requires Log Center package and may use a different api name on older DSM. Also confirm file access logging is enabled in Control Panel → Log Center → Log Sending → Local."`,
+        `fi`,
+        `echo ""`,
+        `curl -sfG "$DSM_BASE" --data-urlencode "api=SYNO.API.Auth" --data-urlencode "version=7" --data-urlencode "method=logout" --data-urlencode "_sid=$SID" >/dev/null 2>&1 || true`,
+        `echo "Session closed"`,
       ].join("\n");
     },
   },
@@ -2650,3 +2806,290 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
 ];
+
+// ─── Group taxonomy + tool_search registry ────────────────────────────────────
+//
+// Tool name → group. Not part of McpToolDef so we can re-tag without touching
+// the (very large) defs above. Tools missing from this map fall through to
+// "misc" via getGroup() and are still fully searchable + invokable.
+
+export const TOOL_GROUPS: Record<string, string> = {
+  // system
+  check_system_info: "system",
+  check_disk_space: "system",
+  check_hardware_temps: "system",
+  check_volume_health: "system",
+  check_packages: "system",
+  check_scheduled_tasks: "system",
+  list_volumes: "system",
+  list_shared_folders: "system",
+  inspect_mounts: "system",
+  inspect_encryption_state: "system",
+  check_agent_container: "system",
+
+  // performance
+  check_cpu_iowait: "performance",
+  get_resource_snapshot: "performance",
+  check_io_stalls: "performance",
+  check_memory_detail: "performance",
+  check_container_io: "performance",
+
+  // network
+  check_network_health: "network",
+  check_tailscale: "network",
+  check_network_connections: "network",
+  check_interface_flaps: "network",
+  check_bond_health: "network",
+  check_dns_and_gateway_health: "network",
+  check_service_ports: "network",
+  check_synology_drive_network: "network",
+
+  // security
+  check_security_log: "security",
+  check_active_sessions: "security",
+
+  // drive_sync
+  tail_drive_server_log: "drive_sync",
+  search_drive_server_log: "drive_sync",
+  tail_sharesync_log: "drive_sync",
+  check_sharesync_status: "drive_sync",
+  check_drive_package_health: "drive_sync",
+  check_drive_database: "drive_sync",
+  check_share_database: "drive_sync",
+  search_webapi_log: "drive_sync",
+  search_drive_path_activity: "drive_sync",
+
+  // logs
+  tail_system_log: "logs",
+  tail_package_logs: "logs",
+  search_package_logs: "logs",
+  search_all_logs: "logs",
+  fetch_log_file: "logs",
+  fetch_support_artifacts: "logs",
+  check_kernel_io_errors: "logs",
+
+  // storage
+  check_scrub_status: "storage",
+  check_storage_pool_detail: "storage",
+  check_btrfs_detail: "storage",
+  check_disk_error_trends: "storage",
+  check_volume_quota_and_inode_pressure: "storage",
+  check_smart_detail: "storage",
+  check_filesystem_health: "storage",
+  check_smart_test_progress: "storage",
+
+  // files
+  inspect_path_metadata: "files",
+  inspect_path_acl: "files",
+  inspect_effective_permissions: "files",
+  find_recent_path_changes: "files",
+  find_path_versions_and_snapshots: "files",
+  search_file_access_audit: "files",
+  search_file_access_log: "files",
+  search_smb_path_activity: "files",
+  hash_file: "files",
+  compare_file_versions: "files",
+  find_problematic_files: "files",
+
+  // recovery
+  list_snapshot_candidates: "recovery",
+  list_drive_version_history: "recovery",
+  inspect_recycle_bin: "recovery",
+  fetch_package_db: "recovery",
+  collect_incident_bundle: "recovery",
+
+  // packages
+  check_package_runtime: "packages",
+  check_daemon_processes: "packages",
+  inspect_package_lockfiles: "packages",
+  inspect_crash_signals: "packages",
+
+  // backup
+  check_backup_status: "backup",
+
+  // write_restart
+  restart_monitor_agent: "write_restart",
+  stop_monitor_agent: "write_restart",
+  start_monitor_agent: "write_restart",
+  pull_monitor_agent: "write_restart",
+  build_monitor_agent: "write_restart",
+  restart_nas_api: "write_restart",
+  restart_synology_drive_server: "write_restart",
+  restart_synology_drive_sharesync: "write_restart",
+  restart_hyper_backup: "write_restart",
+  restart_synologand: "write_restart",
+  restart_invoked_related_services: "write_restart",
+  restart_scheduler_services: "write_restart",
+  restart_network_service_safe: "write_restart",
+  trigger_sharesync_resync: "write_restart",
+
+  // write_storage
+  start_btrfs_scrub: "write_storage",
+  cancel_btrfs_scrub: "write_storage",
+  start_smart_test: "write_storage",
+  cancel_smart_test: "write_storage",
+  create_prechange_snapshot: "write_storage",
+  set_vm_overcommit_memory: "write_storage",
+  persist_vm_overcommit_memory: "write_storage",
+
+  // write_files
+  rename_file_to_old: "write_files",
+  remove_invalid_chars: "write_files",
+  clear_package_lockfiles: "write_files",
+  repair_drive_db_permissions: "write_files",
+  quarantine_path: "write_files",
+  repair_path_ownership: "write_files",
+  repair_path_acl: "write_files",
+  restore_path_from_snapshot: "write_files",
+  restore_from_recycle_bin: "write_files",
+
+  // write_tasks
+  generate_support_bundle: "write_tasks",
+  trigger_backup_task: "write_tasks",
+  run_scheduled_task: "write_tasks",
+  enable_scheduled_task: "write_tasks",
+  disable_scheduled_task: "write_tasks",
+};
+
+export const KEYWORD_TO_GROUPS: Record<string, string[]> = {
+  snapshot: ["storage", "recovery", "write_storage"],
+  backup: ["backup", "write_tasks"],
+  drive: ["drive_sync"],
+  sync: ["drive_sync"],
+  sharesync: ["drive_sync"],
+  disk: ["storage", "system"],
+  smart: ["storage", "write_storage"],
+  btrfs: ["storage", "write_storage"],
+  scrub: ["storage", "write_storage"],
+  network: ["network"],
+  tailscale: ["network"],
+  bond: ["network"],
+  dns: ["network"],
+  memory: ["performance"],
+  cpu: ["performance"],
+  performance: ["performance"],
+  iowait: ["performance"],
+  log: ["logs", "drive_sync"],
+  logs: ["logs", "drive_sync"],
+  package: ["packages", "write_restart"],
+  packages: ["packages", "write_restart"],
+  restart: ["write_restart"],
+  file: ["files", "write_files"],
+  files: ["files", "write_files"],
+  permission: ["files", "write_files"],
+  permissions: ["files", "write_files"],
+  acl: ["files", "write_files"],
+  delete: ["files", "recovery"],
+  deleted: ["files", "recovery"],
+  recover: ["recovery"],
+  recovery: ["recovery"],
+  recycle: ["recovery"],
+  security: ["security"],
+  session: ["security"],
+  sessions: ["security"],
+  temperature: ["system", "storage"],
+  volume: ["system", "storage"],
+  space: ["system"],
+  audit: ["files", "security"],
+  task: ["write_tasks", "system"],
+  scheduled: ["write_tasks", "system"],
+};
+
+const KNOWN_GROUPS: Set<string> = new Set([
+  ...Object.values(TOOL_GROUPS),
+  "misc",
+]);
+
+export function getGroup(toolName: string): string {
+  return TOOL_GROUPS[toolName] ?? "misc";
+}
+
+export function listUntaggedTools(): string[] {
+  return ALL_TOOL_DEFS.filter((t) => !(t.name in TOOL_GROUPS)).map((t) => t.name);
+}
+
+export function searchTools(query: string, enabled: Set<string>): McpToolDef[] {
+  const lower = query.toLowerCase().trim();
+  if (!lower) return [];
+  const words = lower.split(/\s+/).filter(Boolean);
+  const matchedGroups = new Set<string>();
+  for (const w of words) {
+    for (const g of KEYWORD_TO_GROUPS[w] ?? []) matchedGroups.add(g);
+    if (KNOWN_GROUPS.has(w)) matchedGroups.add(w);
+  }
+
+  const scored: { tool: McpToolDef; score: number }[] = [];
+  for (const tool of ALL_TOOL_DEFS) {
+    if (!enabled.has(tool.name)) continue;
+    let score = 0;
+    if (matchedGroups.has(getGroup(tool.name))) score += 5;
+    const nameLower = tool.name.toLowerCase();
+    const descLower = tool.description.toLowerCase();
+    for (const w of words) {
+      if (nameLower.includes(w)) score += 3;
+      if (descLower.includes(w)) score += 1;
+    }
+    if (score > 0) scored.push({ tool, score });
+  }
+  scored.sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
+  return scored.map((s) => s.tool);
+}
+
+function describeZodParam(schema: z.ZodTypeAny): string {
+  let inner: z.ZodTypeAny = schema;
+  let optional = false;
+  let defaultVal: unknown;
+  // Unwrap ZodOptional / ZodDefault chains
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  while ((inner as any)?._def?.typeName === "ZodOptional" || (inner as any)?._def?.typeName === "ZodDefault") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const d: any = (inner as any)._def;
+    if (d.typeName === "ZodOptional") optional = true;
+    if (d.typeName === "ZodDefault") {
+      try { defaultVal = d.defaultValue?.(); } catch { /* ignore */ }
+    }
+    inner = d.innerType;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tn: string | undefined = (inner as any)?._def?.typeName;
+  let type = "unknown";
+  if (tn === "ZodString") type = "string";
+  else if (tn === "ZodNumber") type = "number";
+  else if (tn === "ZodBoolean") type = "boolean";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  else if (tn === "ZodEnum") type = ((inner as any)._def.values as string[]).map((v) => JSON.stringify(v)).join(" | ");
+  else if (tn === "ZodArray") type = "array";
+  else if (tn === "ZodObject" || tn === "ZodRecord") type = "object";
+
+  const flags: string[] = [];
+  if (optional) flags.push("optional");
+  if (defaultVal !== undefined) flags.push(`default=${JSON.stringify(defaultVal)}`);
+  const flagStr = flags.length ? ` (${flags.join(", ")})` : "";
+  const desc = schema.description ? `  // ${schema.description}` : "";
+  return `${type}${flagStr}${desc}`;
+}
+
+export function formatToolForSearch(tool: McpToolDef): string {
+  const lines: string[] = [];
+  lines.push(`TOOL: ${tool.name}`);
+  lines.push(`GROUP: ${getGroup(tool.name)}`);
+  lines.push(`TYPE: ${tool.write ? "write (requires confirmed: true to execute)" : "read"}`);
+  lines.push(`DESCRIPTION: ${tool.description}`);
+  const paramKeys = Object.keys(tool.params);
+  if (paramKeys.length === 0) {
+    lines.push(`PARAMS: (none)`);
+  } else {
+    lines.push(`PARAMS:`);
+    for (const key of paramKeys) {
+      lines.push(`  ${key}: ${describeZodParam(tool.params[key])}`);
+    }
+    if (tool.write) {
+      lines.push(`  confirmed: boolean (optional, default=false — omit to preview, set true to execute)`);
+    }
+  }
+  return lines.join("\n");
+}
+
+export function findToolByName(name: string): McpToolDef | undefined {
+  return ALL_TOOL_DEFS.find((t) => t.name === name);
+}

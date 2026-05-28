@@ -116,9 +116,17 @@ pnpm build     # compiles TypeScript to dist/
 NAS_EDGE1_API_URL=... NAS_EDGE1_API_SECRET=... node dist/index.js
 ```
 
-To add a tool: define it in `src/tool-definitions.ts`, add the handler in `src/index.ts`, then add the tool name to `enabled_read_tools` (or `enabled_write_tools`) in `tools-config.json`.
+To add a tool:
 
-**Non-obvious:** tools not listed in `tools-config.json` are built into the image but invisible to clients. This lets you ship a tool dark and enable it without a code deploy.
+1. Add a new `McpToolDef` entry to `ALL_TOOL_DEFS` in `src/tool-definitions.ts`.
+2. Tag it: add `<name>: "<group>"` to `TOOL_GROUPS` in the same file. (Optional — untagged tools fall into `"misc"` and startup logs a warning. They remain searchable + invokable.)
+3. Enable it: add the name to `enabled_read_tools` or `enabled_write_tools` in `tools-config.json`.
+4. `pnpm build` to type-check.
+5. Push to `main`.
+
+**No `src/index.ts` change needed.** The server exposes a fixed always-on surface (`tool_search`, `invoke_tool`, `run_command`, plus `EAGER_TOOLS` — `check_disk_space`, `restart_nas_api`). Every other registry tool is discovered via `tool_search` and executed via `invoke_tool({ name, target, args })`. If a new tool truly needs to be eager (no one will ever `tool_search` for it), add its name to `EAGER_TOOLS` in `index.ts`. The default should always be registry-only.
+
+**Non-obvious:** tools in the registry but not listed in `tools-config.json` are built into the image but rejected by `invoke_tool` with a "disabled" message and hidden from `tool_search`. This lets you ship a tool dark and enable it without a code deploy — edit the JSON and push.
 
 ## Debugging
 

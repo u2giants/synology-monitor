@@ -59,6 +59,7 @@
     "find_recent_path_changes",
     "find_path_versions_and_snapshots",
     "search_file_access_audit",
+    "search_file_access_log",
     "search_smb_path_activity",
     "search_drive_path_activity",
     "hash_file",

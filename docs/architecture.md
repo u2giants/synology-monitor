@@ -180,7 +180,36 @@ This is required because `exec.CommandContext` only kills the direct bash child 
 
 ## NAS MCP server
 
-Node.js MCP server at `nas-mcp.designflow.app/mcp` (StreamableHTTP). Also serves the legacy SSE transport at `/sse`. Exposes 71 read tools and 37 write tools (all enabled). Tool availability is controlled by `tools-config.json` — changes require a push to `main`.
+Node.js MCP server at `nas-mcp.designflow.app/mcp` (StreamableHTTP). Also serves the legacy SSE transport at `/sse`.
+
+### Surface model: lazy-loaded tool registry
+
+The server compiles a registry of 108 tool definitions (`ALL_TOOL_DEFS` in `apps/nas-mcp/src/tool-definitions.ts`) but exposes only **5 tools** to MCP clients per session:
+
+| Tool | Purpose |
+|---|---|
+| `tool_search({ query, limit })` | Keyword + group + name/description search across the registry. Returns formatted tool names, descriptions, and parameter shapes as text. |
+| `invoke_tool({ name, target, args })` | Execute any tool in the registry by name. Enforces `tools-config.json` gating. Write tools require `confirmed: true` inside `args`. |
+| `run_command` | Free-form tier-1-only shell. |
+| `check_disk_space` | Eager freebie — common enough that paying the `tool_search` round-trip isn't worth it. |
+| `restart_nas_api` | Eager freebie — recovery tool, should never require discovery. |
+
+**Why:** registering all 108 schemas in `tools/list` pre-loaded ~50k tokens of tool definitions into every Claude session. After ~10–15 tool calls the context filled and sessions degraded. The two-step `tool_search` → `invoke_tool` flow keeps the always-loaded surface at ~3k tokens.
+
+**Why not dynamic registration:** MCP supports `notifications/tools/list_changed`, but Claude clients cache the initial `tools/list` and do not re-fetch on the notification. So `tool_search` cannot register new tools mid-session; it returns schemas as text and Claude calls them by name via `invoke_tool`.
+
+`tools-config.json` still gates which tools are *invokable* (`enabled_read_tools` / `enabled_write_tools`); disabled tools are invisible to `tool_search` and rejected by `invoke_tool` with a clear message.
+
+### Group taxonomy + search
+
+- `TOOL_GROUPS: Record<string, string>` — tool name → group (`system`, `performance`, `network`, `security`, `drive_sync`, `logs`, `storage`, `files`, `recovery`, `packages`, `backup`, `write_restart`, `write_storage`, `write_files`, `write_tasks`). Untagged tools fall through to `"misc"` and remain searchable + invokable; startup logs the untagged set as a warning so they can be tagged later.
+- `KEYWORD_TO_GROUPS: Record<string, string[]>` — keywords (`snapshot`, `tailscale`, `audit`, …) → groups.
+- `searchTools(query, enabled)` scores each enabled tool: +5 for group match, +3 for name substring, +1 for description substring; sorted descending.
+- `formatToolForSearch(tool)` renders one tool as a text block (name, group, type, description, params with type / optional / default annotations, plus the `confirmed` row for write tools). This is what `tool_search` returns.
+
+### Statelessness
+
+Every HTTP request creates a new `McpServer` (`sessionIdGenerator: undefined`, `enableJsonResponse: true`). No session map. The trade-off: dynamic in-session registration is impossible (which the surface model already accounts for), but Coolify redeploys no longer leave clients holding stale `mcp-session-id` values.
 
 ### Timeout architecture
 
