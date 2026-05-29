@@ -23,6 +23,8 @@ deploy/
 
 | | |
 |---|---|
+| [AGENTS.md](AGENTS.md) | **Start here** — canonical operating guide for engineers and AI sessions |
+| [PLAN.md](PLAN.md) | Design for the planned issue-agent rewrite (not yet built) |
 | [docs/architecture.md](docs/architecture.md) | System design, components, data flow, constraints |
 | [docs/development.md](docs/development.md) | Build, run, test, debug |
 | [docs/configuration.md](docs/configuration.md) | Environment variables and config |

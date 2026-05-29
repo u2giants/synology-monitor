@@ -50,20 +50,28 @@ The `sharesync` collector interval is hardcoded at 5m and is not configurable vi
 
 ## Web app (`apps/web/.env.example`)
 
+See `apps/web/.env.example` for the authoritative list (placeholders only — no
+real secrets are committed). Key variables:
+
 | Variable | Required | Notes |
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Yes | Supabase project URL (baked into client bundle at build time) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Yes | Supabase anon key (baked at build time) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key for server-side writes |
-| `NAS_EDGE1_API_URL` | Yes | `http://100.107.131.35:7734` (Tailscale IP of NAS 1) |
-| `NAS_EDGE1_API_SECRET` | Yes | Must match `NAS_API_SECRET` on NAS 1 |
-| `NAS_EDGE1_API_SIGNING_KEY` | Yes | Must match `NAS_API_APPROVAL_SIGNING_KEY` on NAS 1 |
-| `NAS_EDGE2_API_URL` | Yes | `http://100.107.131.36:7734` (Tailscale IP of NAS 2) |
-| `NAS_EDGE2_API_SECRET` | Yes | Must match `NAS_API_SECRET` on NAS 2 |
-| `NAS_EDGE2_API_SIGNING_KEY` | Yes | Must match `NAS_API_APPROVAL_SIGNING_KEY` on NAS 2 |
-| `CRON_SECRET` | Yes | Auth token for `/api/analysis/cron` |
+| `OPENROUTER_API_KEY` | Yes* | LLM calls; code reads `OPENROUTER_API_KEY ?? OPENAI_API_KEY` with `baseURL=openrouter.ai`. *At least one of the two is required |
+| `OPENAI_API_KEY` | Yes* | Fallback for the above; also default approval-token signing key |
+| `OPENAI_CHAT_MODEL` | No | Default chat model id (`gpt-5.4`) when `ai_settings` is empty |
+| `COPILOT_ACTION_SIGNING_KEY` | No | HMAC key for legacy-copilot one-off NAS action approval tokens (falls back to `OPENAI_API_KEY`) |
+| `COPILOT_ADMIN_EMAILS` | No | Comma-separated admin emails for the copilot |
 | `ISSUE_WORKER_MODE` | No | `inline` (default) or `background` |
-| `OPENROUTER_API_KEY` | Yes | Used by all LLM stages |
+| `RUN_ISSUE_WORKER` | No | `true` to run the in-process background worker loop |
+| `ISSUE_WORKER_TOKEN` | If background | Bearer auth for `/api/internal/issue-worker/drain` |
+| `ISSUE_WORKER_INTERVAL_MS` / `ISSUE_WORKER_BATCH_LIMIT` | No | Background worker poll cadence (`3000`) / batch size (`10`) |
+| `NAS_EDGE{1,2}_API_URL` | Yes | `http://100.107.131.3{5,6}:7734` (Tailscale IPs) |
+| `NAS_EDGE{1,2}_API_SECRET` | Yes | Must match `NAS_API_SECRET` on each NAS |
+| `NAS_EDGE{1,2}_API_SIGNING_KEY` | Yes | Must match `NAS_API_APPROVAL_SIGNING_KEY` on each NAS |
+| `NAS_EDGE{1,2}_HOST/PORT/USER/PASSWORD/SUDO_PASSWORD` | Legacy | SSH access used by the **legacy copilot chat only**, not the issue agent |
+| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | No | Web-push public key (`npx web-push generate-vapid-keys`) |
 
 **Non-obvious:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are build-time variables — they are embedded in the Next.js client bundle during `docker build`. Changing them in Coolify after the image is built has no effect. Changing these requires a new image build.
 

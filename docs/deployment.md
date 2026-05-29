@@ -21,7 +21,17 @@ Each workflow has a `paths:` filter — it only runs when files in its app direc
 3. Workflow's final step calls the Coolify redeploy webhook
 4. Coolify pulls the new image and recreates the container
 
-No manual steps needed. The Coolify redeploy webhook is called at the end of the workflow using `secrets.COOLIFY_TOKEN`. The deployment UUID (`efl17f5iocnz94840pexre9d`) is hardcoded in the workflow file, not a secret.
+No manual steps needed. Each workflow's final step calls the Coolify redeploy
+webhook (`GET http://178.156.180.212:8000/api/v1/deploy?uuid=...&force=false`,
+auth `secrets.COOLIFY_TOKEN`):
+- **nas-mcp** (`nas-mcp-image.yml`): UUID `efl17f5iocnz94840pexre9d` is **hardcoded**
+  in the workflow (not a secret).
+- **web** (`web-image.yml`): UUID comes from the secret `COOLIFY_WEBHOOK_UUID`; the
+  build also passes `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` + `BUILD_SHA` as build args.
+
+**Relay** has **no** GitHub Actions workflow — its image is not built by CI. It is
+built/deployed manually on the VPS (see `apps/relay/OPERATIONS.md`); treat that as
+an exceptional path, not the routine one.
 
 ## NAS API (fully automatic via Watchtower)
 

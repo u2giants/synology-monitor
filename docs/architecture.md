@@ -88,6 +88,8 @@ Log files are at `/host/shares/@SynologyDriveShareSync/log/` inside the containe
 
 **Non-obvious:** the `package_status` table uses Supabase's `resolution=merge-duplicates` upsert because it holds one current-state row per package, not a time-series. All other tables are append-only inserts.
 
+**Non-obvious (poison-row isolation):** PostgREST inserts a batch as one statement, so a single rejected row fails the whole batch — and after 5 retries the WAL drops all of them. `sender.go` (`postRows`) therefore re-sends each row individually on a `4xx`, so good rows always land and only the genuinely bad row accumulates attempts. This was added after a bad row silently froze log/alert ingestion (see `AGENTS.md` § Critical incidents). For the same reason, the `nas_logs`/`alerts` `source` CHECK whitelists were dropped (migration 00035) — the agent governs what it writes.
+
 ### container_io collector
 
 Container Manager on Synology does not always expose cgroup blkio files. The collector tries cgroup files under `/host/sys`, falls back to `/sys`, and if Synology's blkio files are absent, sums `/proc/<pid>/io` for all container task PIDs. The `/sys` mount in the agent compose file is required for the primary path.
@@ -227,7 +229,11 @@ See [apps/nas-mcp/README.md](../apps/nas-mcp/README.md) for the full tool catalo
 
 ## Database
 
-Supabase project `qnjimovrsaacneqkggsn`. Tables use unprefixed names (e.g. `metrics`, `nas_logs`).
+Supabase project `qnjimovrsaacneqkggsn`. Tables use unprefixed names (e.g. `metrics`, `nas_logs`). Migration 00031 removed the legacy `smon_` table prefix; two helper functions (`smon_create_alert`, `smon_get_openai_key`) intentionally keep it (other functions call them by name).
+
+### Partitioning & retention
+
+The high-volume time-series tables (`metrics`, `nas_logs`, `storage_snapshots`, `container_status`) are **range-partitioned by week via pg_partman** (extension installed in the `public` schema; daily `cron` job `smon-partition-maintenance` runs `public.run_maintenance_proc()`). Retention: 84 days for `metrics`/`storage_snapshots`, 180 days for `nas_logs`/`container_status`. New weekly partitions are pre-created (premake=2). After the 00031 rename, partman's `part_config` had to be re-pointed at the renamed parents and the default-partition backlog drained (2026-05-29) — see `AGENTS.md` incidents.
 
 ### Telemetry tables (append-only)
 

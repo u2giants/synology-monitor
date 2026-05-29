@@ -75,7 +75,7 @@ pnpm dev       # starts on http://localhost:3000
 
 pnpm build     # production build (requires env vars)
 pnpm lint
-pnpm typecheck
+pnpm type-check   # note: hyphenated, per the root package.json turbo task
 ```
 
 The web Dockerfile builds from the repo root (not `apps/web/`) because it needs access to shared packages. Run `docker build -f apps/web/Dockerfile .` from the repo root if building locally.

@@ -13,13 +13,13 @@
 - Direct SSH to the VPS or NAS is **not** a normal deployment path. The VPS has public SSH disabled by design. Do not propose SSH-based deploys, manual `docker build` on the VPS, or runtime container manipulation.
 - Do not modify Coolify environment variables from this side — Coolify is the source of truth for runtime env per `AI_OPERATING_RULES.md`.
 - Do not create feature branches. This repo uses one branch: `main`.
-- Do not "fix" the items listed under [AGENTS.md § 8 — Intentional quirks](AGENTS.md#8-intentional-quirks--do-not-fix-these) without reading the linked commits first.
+- Do not "fix" the items listed under [AGENTS.md § 10 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
 
 ## Commit style
 
 - Subject line: `area: short imperative` (e.g. `nas-mcp: …`, `agent: …`, `docs: …`). Match prior history (`git log --oneline`) for the project area.
 - Body: one short paragraph on *why*, not what. Reference incident, prior commit, or user request when relevant.
-- Co-author trailer: `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` (default for this CLI).
+- Co-author trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` (match the model in use).
 
 ## Ignore files
 

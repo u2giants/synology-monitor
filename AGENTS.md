@@ -1,6 +1,11 @@
-# Synology Monitor — Architecture Reference
+# Synology Monitor — Agent & Developer Operating Guide
 
-Primary operating guide for AI sessions and new engineers. Full system docs in [docs/architecture.md](docs/architecture.md), [docs/development.md](docs/development.md), [docs/configuration.md](docs/configuration.md), [docs/deployment.md](docs/deployment.md).
+Canonical guide for AI sessions and new engineers. Read this first. Deeper
+references: [docs/architecture.md](docs/architecture.md),
+[docs/development.md](docs/development.md),
+[docs/configuration.md](docs/configuration.md),
+[docs/deployment.md](docs/deployment.md). The planned issue-agent rewrite is in
+[PLAN.md](PLAN.md) (design only — not yet built).
 
 There is no universal ignore-file standard across AI coding tools.
 
@@ -10,267 +15,326 @@ When using any other AI tool, paste this file as your first message and follow t
 
 ## 1. Project summary
 
-AI-assisted monitoring + remediation for two production Synology NAS boxes. The agent on each NAS collects telemetry into Supabase; the Next.js dashboard fingerprints alerts into issues and runs an LLM-driven issue agent that proposes fixes through an operator approval gate. A separate MCP server exposes diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop).
+AI-assisted monitoring + remediation for two production Synology NAS boxes
+(`edgesynology1`, `edgesynology2`). A Go agent on each NAS collects telemetry into
+Supabase; a Next.js dashboard (live at **mon.designflow.app**) fingerprints alerts
+and logs into "issues" and runs an LLM issue-agent that diagnoses problems and
+proposes fixes behind an operator approval gate. A separate MCP server exposes
+NAS diagnostic/remediation tools to AI chat clients (claude.ai, Claude Desktop).
+Product focus: Synology Drive / ShareSync reliability, file-operation visibility,
+sync/replication failures, storage and I/O attribution, and silent task/backup
+failures. The owner is a non-developer; favor changes that keep `main` the single
+source of truth and are easy to audit.
 
-The product focus is Synology Drive / ShareSync reliability, file operation visibility, sync/replication failures, storage and I/O attribution, and silent task/backup failures.
-
-## 2. Quick orientation
-
-Five components:
+## 2. Quick orientation — five components
 
 | Component | Language | Where it runs | Purpose |
 |---|---|---|---|
-| `apps/agent` | Go | Each NAS (Docker) | Collects telemetry, pushes to Supabase |
-| `apps/nas-api` | Go | Each NAS (Docker) | Executes approved shell commands for the issue agent + MCP |
-| `apps/nas-mcp` | Node.js | VPS (Docker) | MCP server — exposes NAS tools to AI chat clients over Streamable HTTP/SSE |
-| `apps/web` | Next.js | VPS (Docker via Coolify) | Dashboard, issue agent loop, operator UI |
-| `apps/relay` | Node.js | VPS (Docker) | Relay for external clients |
+| `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
+| `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes NAS tools to AI chat clients over Streamable HTTP/SSE |
+| `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, issue-agent loop, operator UI |
+| `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
-**One branch: `main`.** Push to `main` → GitHub Actions builds images → Coolify deploys web/nas-mcp automatically → agent/nas-api images are picked up by Watchtower on each NAS within 5 minutes and containers are automatically recreated.
+`packages/shared` holds shared TypeScript types (built with Turbo). **One branch:
+`main`.** Push to `main` → GitHub Actions builds per-app images → web/nas-mcp
+auto-redeploy via Coolify webhook; agent/nas-api are picked up by Watchtower on
+each NAS within ~5 min. **Supabase** (project `qnjimovrsaacneqkggsn`) is the shared
+data layer between agent (writes) and web (reads). NAS API does not touch Supabase.
 
-**Supabase** (telemetry tables) is the shared data layer between agent and web. NAS API does not touch Supabase.
+## 3. Repository structure
 
-## 3. Prime directive — custom-code boundary
+```
+apps/
+  agent/        Go — collectors + DSM client + SQLite WAL sender   (we own)
+  nas-api/      Go — validator (allowlist/hard-blocks) + executor  (we own)
+  nas-mcp/      Node/TS — MCP server + 108-tool registry           (we own; dist/ generated)
+  web/          Next.js — dashboard + issue agent                  (we own src/; .next/ generated)
+  relay/        Node .mjs — named-action proxy                     (we own)
+packages/shared/ shared TS types                                   (we own src/; dist/ generated)
+supabase/migrations/  DB schema (00001..00035) — applied history   (we own; do not rewrite applied files)
+supabase/functions/send-push/  Deno edge function                  (we own)
+deploy/synology/      NAS compose + per-NAS env examples           (we own)
+.github/workflows/    4 image-build workflows                      (we own)
+docs/                 architecture / development / configuration / deployment / mcp-incident
+scripts/              backfill-synobackup.mjs, check-dashboard-data.mjs
+PLAN.md               design for the planned issue-agent rewrite
+```
 
-Project-owned code lives here:
+Generated / not-source: `apps/web/.next/`, `apps/*/dist/`, `apps/nas-mcp/dist/`,
+`packages/shared/dist/`, `.turbo/`, `node_modules/`. Vendored/framework: the
+Next.js runtime surface under `apps/web/.next/`. Build artifacts: image layers (in
+GHCR, not the repo).
 
-- `apps/agent/` — Go collectors + sender (we own)
-- `apps/nas-api/` — Go validator + executor (we own)
-- `apps/nas-mcp/` — Node.js MCP server + tool registry (we own)
-- `apps/web/src/` — Next.js app code (we own)
-- `apps/relay/` — Node.js relay (we own)
-- `deploy/synology/` — NAS-side compose + env templates
-- `supabase/migrations/` — DB schema
-- `docs/`, top-level `*.md`, `.github/workflows/`
+## 4. Prime directive — custom-code boundary
 
-Everything else (`node_modules/`, `.next/`, `dist/`, `apps/web/node_modules/@synology-monitor/`, the Next.js framework surface) requires explicit justification before touching.
+Our custom code lives here:
 
-## 4. Key files
+- `apps/agent/`, `apps/nas-api/`, `apps/nas-mcp/src/`, `apps/web/src/`, `apps/relay/`
+- `packages/shared/src/`
+- `supabase/migrations/`, `supabase/functions/`
+- `deploy/synology/`, `.github/workflows/`, `docs/`, top-level `*.md`, `scripts/`
 
-### Agent
-- Entry: `apps/agent/cmd/agent/main.go`
-- Collectors: `apps/agent/internal/collector/*.go` (full inventory in `docs/architecture.md`)
-- WAL + sender: `apps/agent/internal/sender/`
-- DSM API client: `apps/agent/internal/dsm/client.go`
-- Config: `apps/agent/internal/config/config.go`
+Everything else (`node_modules/`, `.next/`, `dist/`, `.turbo/`, lockfiles, the
+Next.js framework surface) requires explicit justification before touching. Do not
+scatter project logic into generated or framework files.
 
-### NAS API
-- Validator (allowlist + hard-blocks): `apps/nas-api/internal/validator/validator.go`
-- Executor (process-group kill, timeout): `apps/nas-api/internal/executor/executor.go`
-- Auth (HMAC, bearer): `apps/nas-api/internal/auth/auth.go`
+## 5. Core modification inventory
 
-### NAS MCP
-- Server entry + always-on tools: `apps/nas-mcp/src/index.ts`
-- Tool registry (108 defs): `apps/nas-mcp/src/tool-definitions.ts`
-- Group taxonomy + search helpers: `TOOL_GROUPS`, `KEYWORD_TO_GROUPS`, `searchTools`, `formatToolForSearch`, `findToolByName` (same file)
-- NAS HTTP client: `apps/nas-mcp/src/nas-client.ts`
-- Enablement gates: `apps/nas-mcp/tools-config.json`
+No files outside the project-owned areas (above) have been patched — there is no
+forked vendor/framework code in this repo. All code is first-party; third-party
+code is consumed only as dependencies (`node_modules`, Go modules) and base Docker
+images. If you ever patch a vendored file, record it here.
 
-### Web
-- Issue agent loop: `apps/web/src/lib/server/issue-agent.ts`
-- Issue detector: `apps/web/src/lib/server/issue-detector.ts`
-- NAS tools: `apps/web/src/lib/server/tools.ts`
-- NAS API client: `apps/web/src/lib/server/nas-api-client.ts`
-- Job workflow: `apps/web/src/lib/server/issue-workflow.ts`
-- Facts: `apps/web/src/lib/server/fact-store.ts`
-- Forensics: `apps/web/src/lib/server/forensics-drive.ts`, `forensics-hyperbackup.ts`
-
-## 5. Task-to-file navigation
-
-| Task | Files to touch | Files not to touch |
-|---|---|---|
-| Add a NAS MCP tool | `apps/nas-mcp/src/tool-definitions.ts` (def), `apps/nas-mcp/tools-config.json` (enable), `apps/nas-mcp/src/tool-definitions.ts` `TOOL_GROUPS` (tag) | `apps/nas-mcp/src/index.ts` (no registration needed — registry-driven) |
-| Add an agent collector | `apps/agent/internal/collector/<name>.go`, wire in `apps/agent/cmd/agent/main.go` with `wg.Add(1)` pattern | existing collectors |
-| Allow a new NAS command | `apps/nas-api/internal/validator/validator.go` + `validator_test.go` | `executor.go` |
-| Add a Supabase column | `supabase/migrations/<new>.sql`, matching `sender/types.go` payload field | applied migration files |
-| Change issue agent prompt | `apps/web/src/lib/server/issue-agent.ts` | `issue-detector.ts` fingerprinting |
-| Update MCP tool grouping | `TOOL_GROUPS` map in `apps/nas-mcp/src/tool-definitions.ts` | tool defs themselves |
-
-## 6. Container and service inventory
-
-| Container / service | Purpose | Managed by | Image / source |
+| File | Change made | Why | Risk during upgrades |
 |---|---|---|---|
-| `synology-monitor-web` | Dashboard + issue agent | Coolify | `ghcr.io/u2giants/synology-monitor-web:latest` |
-| `synology-monitor-nas-mcp` | MCP server for AI chat clients (Coolify app `efl17f5iocnz94840pexre9d`) | Coolify | `ghcr.io/u2giants/synology-monitor-nas-mcp:latest` |
-| `synology-monitor-relay` | External-client relay | Coolify | `ghcr.io/u2giants/synology-monitor-relay:latest` |
-| `synology-monitor-agent` | Telemetry collector — runs on each NAS | Watchtower on NAS | `ghcr.io/u2giants/synology-monitor-agent:latest` |
-| `nas-api` | Approved-command executor — runs on each NAS, port 7734 | Watchtower on NAS | `ghcr.io/u2giants/synology-monitor-nas-api:latest` |
-| Supabase project `qnjimovrsaacneqkggsn` | telemetry tables — shared data layer | Supabase | managed Postgres |
+| — | — | — | — |
 
-## 7. What to ignore
+## 6. Task-to-file navigation
 
-Not relevant to active development; AI sessions should not read or index:
+| Task | Files to touch | Files NOT to touch |
+|---|---|---|
+| Add a NAS MCP tool | `apps/nas-mcp/src/tool-definitions.ts` (def + `TOOL_GROUPS`), `apps/nas-mcp/tools-config.json` (enable) | `apps/nas-mcp/src/index.ts` (registry-driven; no registration needed) |
+| Add an agent collector | `apps/agent/internal/collector/<name>.go`, wire in `apps/agent/cmd/agent/main.go` with the `wg.Add(1)` pattern | existing collectors |
+| Send a new agent field to Supabase | `apps/agent/internal/sender/types.go` + a `Queue*` method, **and** a matching column via a new `supabase/migrations/*.sql` | applied migration files |
+| Allow a new NAS command | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`) | `executor.go` |
+| Change issue-agent prompt/stage | `apps/web/src/lib/server/issue-stage-models.ts`, `issue-agent.ts` | `issue-detector.ts` fingerprinting |
+| Change AI model per stage | Settings UI / `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
+| Add a web setting/env | `apps/web/src/app/api/settings/route.ts` (key whitelist), `docs/configuration.md` | production env directly (lives in Coolify) |
+| Add a dashboard page | `apps/web/src/app/(dashboard)/<page>/page.tsx`, a hook in `src/hooks/` | — |
 
-- `node_modules/`, `apps/*/node_modules/`
-- `.next/`, `dist/`, `apps/*/dist/`
-- `.turbo/`, `.cache/`
-- `*.bak` files (e.g. `apps/nas-mcp/src/index.ts.20260422-130635.bak`)
-- `pnpm-lock.yaml`, `package-lock.json`
-- `ersahazan2Desktopsynology-monitor` (vestigial scratch file at repo root — leave untouched)
-- `evals/` unless explicitly working on agent evaluation
+## 7. Data model and external identifiers
 
-## 8. Intentional quirks — do not "fix" these
+Do not casually rename or regenerate these.
+
+| Entity / System | Identifier | Where defined | Notes |
+|---|---|---|---|
+| Supabase project | `qnjimovrsaacneqkggsn` | Supabase | Postgres data layer; tables are **unprefixed** (see quirk below) |
+| NAS 1 (`edgesynology1`) | id `4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001`, Tailscale `100.107.131.35`, SSH :22 | `deploy/synology/nas-1.env.example`, web `.env` | `nas_units.id` must match agent `NAS_ID` |
+| NAS 2 (`edgesynology2`) | id `9dbd4646-5f4e-4fa0-8f44-1d0dbe6f1002`, Tailscale `100.107.131.36`, SSH :1904 | `deploy/synology/nas-2.env.example` | |
+| NAS API port | `7734` | NAS `.env` (`NAS_API_PORT`) | HTTP over Tailscale |
+| Coolify nas-mcp app | `efl17f5iocnz94840pexre9d` | **hardcoded** in `.github/workflows/nas-mcp-image.yml` | redeploy webhook target |
+| Coolify web app | `${COOLIFY_WEBHOOK_UUID}` | GitHub secret (not in repo) | redeploy webhook target |
+| Coolify API host | `http://178.156.180.212:8000` | both deploy workflows | VPS Coolify control plane |
+| GHCR images | `ghcr.io/u2giants/synology-monitor-{agent,nas-api,nas-mcp,web}` | workflows | tags: `latest`, `sha-<sha>`, `main` |
+| Public endpoints | `mon.designflow.app` (web + `/relay`), `nas-mcp.designflow.app/mcp` (+`/sse`) | Coolify/Traefik | |
+
+## 8. Container and service inventory
+
+| Container / service | Purpose | Managed by | App ID | Image / source |
+|---|---|---|---|---|
+| `synology-monitor-web` | Dashboard + issue agent | Coolify | `${COOLIFY_WEBHOOK_UUID}` (secret) | `ghcr.io/u2giants/synology-monitor-web:latest` |
+| `synology-monitor-nas-mcp` | MCP server for AI chat clients | Coolify | `efl17f5iocnz94840pexre9d` | `ghcr.io/u2giants/synology-monitor-nas-mcp:latest` |
+| `synology-monitor-relay` | External-client named-action proxy | Coolify (manual — see below) | — | `ghcr.io/u2giants/synology-monitor-relay` |
+| `synology-monitor-agent` | Telemetry collector (per NAS) | Watchtower on NAS | — | `ghcr.io/u2giants/synology-monitor-agent:latest` |
+| `synology-monitor-nas-api` | Approved-command executor (per NAS, :7734) | Watchtower on NAS | — | `ghcr.io/u2giants/synology-monitor-nas-api:latest` |
+| `synology-monitor-watchtower` | Auto-updates agent + nas-api from GHCR (300s poll) | NAS compose | — | `containrrr/watchtower` |
+| Supabase `qnjimovrsaacneqkggsn` | telemetry + issue tables (unprefixed) | Supabase | — | managed Postgres |
+
+**Relay has no CI workflow** — there is no `.github/workflows/relay-*.yml`. The
+relay image is not produced by the standard pipeline; it is built/deployed
+manually on the VPS (see `apps/relay/OPERATIONS.md`). Treat its deploy path as
+exceptional, not routine.
+
+## 9. What to ignore
+
+Not relevant to active development; do not read or index (already in
+`.claudeignore` / `.cursorignore`): `node_modules/`, `apps/*/node_modules/`,
+`.next/`, `dist/`, `apps/*/dist/`, `.turbo/`, `.cache/`, `coverage/`,
+`pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
+agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-monitor`.
+
+## 10. Intentional quirks — do not "fix" these
 
 ### NAS MCP is fully stateless (per-request McpServer)
+Looks like: a bug — every HTTP request builds a new `McpServer`, registers tools,
+handles the request, discards. No session map.
+Actually: deliberate (`sessionIdGenerator: undefined`, `enableJsonResponse: true`).
+Why: Coolify restarts wipe in-memory sessions; statelessness eliminates "stale
+session 404" after redeploys, and a stateless transport for `GET /mcp` without a
+session ID is what stopped the claude.ai proxy's 4-minute hang (see incidents).
+Do not change because: stateful mode brings back session-resume bugs and forces
+dynamic tool registration that Claude clients ignore.
 
-Looks like: a bug — every HTTP request creates a new `McpServer`, registers tools, handles the request, discards. No session map.
+### NAS MCP exposes 5 tools but has a 108-tool registry
+Looks like: most tools are broken/unregistered.
+Actually: deliberate lazy-load. `tools/list` returns only `tool_search`,
+`invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`. Clients
+discover via `tool_search`, execute via `invoke_tool({name,target,args})`.
+Why: pre-loading 108 schemas put ~50k tokens into every session and degraded it
+after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
+Do not change because: it brings back session degradation. New always-on tools go
+in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
 
-Actually: deliberate. Coolify restarts wipe in-memory sessions; statelessness eliminates "stale session 404" failures after every redeploy.
+### `Connection: close` on every nas-api request (from nas-mcp/web)
+Looks like: throws away HTTP keep-alive.
+Actually: required — timed-out requests don't always return their socket to
+undici's pool, so after ~10–15 calls the pool exhausts and calls hang. NAS API is
+local over Tailscale (sub-ms RTT), so re-handshake cost is negligible.
 
-Why: `apps/nas-mcp/src/index.ts` comment at the `/mcp` handler captures the trade-off. Set `sessionIdGenerator: undefined`, `enableJsonResponse: true`.
+### Node `keepAliveTimeout: 120s` / `headersTimeout: 125s` on nas-mcp
+Set above Traefik's 90s idle timeout so Traefik never reuses a socket Node already
+closed (fixed "Tool result could not be submitted").
 
-Do not change because: making it stateful brings back session-resume bugs across deploys and forces the dynamic-tool-registration path that Claude clients do not honor anyway (they cache the initial `tools/list` and ignore `tools/list_changed` notifications).
+### Sender isolates one bad row instead of failing the whole batch
+Looks like: extra complexity in `apps/agent/internal/sender/sender.go` (`postRows`).
+Actually: required. PostgREST inserts a batch as one statement; one bad row rejects
+all rows, and after 5 retries the WAL drops them. On a 4xx the sender now re-sends
+each row alone so good rows land and only the bad row is dropped.
+Why: this exact failure (a constraint rejecting some rows) silently froze log/alert
+ingestion for ~19h/23d (see incidents). Do not revert to all-or-nothing batches.
 
-### NAS MCP exposes only 5 tools but has a 108-tool registry
+### No source whitelist on `nas_logs` / `alerts`
+Looks like: missing validation.
+Actually: the `*_source_check` CHECK constraints were dropped (migration 00035).
+They had to be hand-expanded every time a collector added a source and caused the
+ingestion outage. The agent governs what it writes; the sender isolates bad rows.
+Do not re-add a source whitelist.
 
-Looks like: most tools are unregistered / broken. `tools/list` only returns `tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`.
+### `check_backup_status` enumerates ~7 candidate log paths
+Deliberate. On one NAS the canonical `synobackup.log` was stale (2024) while the
+live log was in a per-task target dir. The tool lists every candidate with
+mtime+size, tails the freshest, shows a staleness banner. A single-path bet returns
+false-positive stale data.
 
-Actually: deliberate lazy-load surface. The full registry lives in `ALL_TOOL_DEFS`. Clients discover by calling `tool_search`, then execute by calling `invoke_tool({ name, target, args })`.
+### NAS API package restarts use the DSM WebAPI, not `synoservice`
+`synoservice` was removed in DSM 7; restarts go through `SYNO.Core.Package`
+stop+start, requiring `DSM_USERNAME`/`DSM_PASSWORD` in the NAS `.env`.
 
-Why: pre-loading 108 schemas into Claude's context window degraded sessions after ~10–15 tool calls. The lazy-load cuts the always-loaded surface from ~50k tokens to ~3k.
+### Recursive grep on `@synologydrive` / `@SynologyDriveShareSync` is hard-blocked
+A `grep -R` against Synology's internal stores ran 4d11h on production before
+discovery. Blocked at the validator regardless of tier (see incidents).
 
-Do not change because: undoing it brings session degradation back. If you need a new always-on tool, add it to `EAGER_TOOLS` in `index.ts` and accept the context cost.
+### Executor kills the process group, not just bash
+`Setpgid: true` + `syscall.Kill(-pid, SIGKILL)` + `WaitDelay: 2s`.
+`exec.CommandContext` only kills the direct bash child, so `grep ... | head`
+orphans `grep` on timeout. Combined with the hard-block, prevents the runaway.
 
-### `Connection: close` on every nas-api request
+### Collector goroutines must use the WaitGroup pattern
+`wg.Add(1)` + `defer wg.Done()`. Without it, graceful shutdown returns before the
+collector finishes, dropping in-flight WAL writes (the ShareSync collector had this
+bug, commit `268b9c9`).
 
-Looks like: terrible practice; loses HTTP keep-alive.
+### `package_status` is the only merge-duplicates upsert
+It's current-state (one row per NAS+package). All other telemetry tables are
+append-only inserts.
 
-Actually: required. Requests that time out don't always return their connection to undici's pool cleanly, so after ~10–15 tool calls in a session the pool exhausts and new calls hang. The NAS API is local over Tailscale (sub-ms RTT), so re-handshake cost is negligible.
+### DB tables are unprefixed; two functions still carry `smon_`
+Migration 00031 renamed all `smon_*` tables to unprefixed (`smon_logs`→`nas_logs`,
+others drop the prefix). Migration 00034 renamed 4 standalone functions. Two
+helper functions (`smon_create_alert`, `smon_get_openai_key`) are intentionally
+still `smon_`-prefixed because other functions call them by name. Historical
+migrations (00002–00030) still contain `smon_` — that is applied history; do not
+rewrite them.
 
-Do not change because: this was the root cause of the "works early, fails later" session-degradation pattern (commit `a0362da`).
+## 11. Credentials and environment
 
-### Node `keepAliveTimeout: 120s` and `headersTimeout: 125s`
+Full reference: [docs/configuration.md](docs/configuration.md). No secret values
+live in the repo (example files use placeholders; real values live in Coolify and
+each NAS `.env`).
 
-Looks like: arbitrarily large numbers.
+| Variable | Purpose | Stored where | Dev | Prod |
+|---|---|---|---|---|
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | agent → Supabase | NAS `.env` | yes | yes |
+| `NEXT_PUBLIC_SUPABASE_URL` / `_ANON_KEY` | web client (build-time) | GitHub secrets (build args) | yes | yes |
+| `SUPABASE_SERVICE_ROLE_KEY` | web server-side writes | Coolify | yes | yes |
+| `DSM_URL` / `DSM_USERNAME` / `DSM_PASSWORD` | agent + nas-api WebAPI restarts | NAS `.env` | yes | yes |
+| `NAS_API_SECRET` / `NAS_API_APPROVAL_SIGNING_KEY` | nas-api auth + HMAC | NAS `.env` | yes | yes |
+| `NAS_EDGE{1,2}_API_URL/_SECRET/_SIGNING_KEY` | web + nas-mcp → nas-api (must match NAS `.env`) | Coolify | yes | yes |
+| `MCP_BEARER_TOKEN` | nas-mcp client auth | Coolify | yes | yes |
+| `OPENROUTER_API_KEY` (fallback `OPENAI_API_KEY`) | issue-agent LLM calls | Coolify | yes | yes |
+| `ISSUE_WORKER_MODE` / `RUN_ISSUE_WORKER` / `ISSUE_WORKER_TOKEN` | issue worker mode/auth | Coolify | no | depends |
+| `COOLIFY_TOKEN` / `COOLIFY_WEBHOOK_UUID` | CI → Coolify redeploy | GitHub secrets | n/a | n/a |
+| `RELAY_BEARER_TOKEN` / `RELAY_ADMIN_SECRET` | relay auth | Coolify (relay) | — | yes |
 
-Actually: set above Traefik's 90s idle timeout. If Node closes first, Traefik tries to reuse a dead socket and the client sees "connection interrupted."
+NAS API URLs are Tailscale IPs; Tailscale must be connected for local dev.
 
-Do not change because: this was the cause of the "Tool result could not be submitted" error fixed in commit `7234d9e`.
+## 12. Deployment
 
-### `check_backup_status` enumerates ~7 candidate log paths instead of one
+Push to `main` → `.github/workflows/{agent,nas-api,nas-mcp,web}-image.yml` build
+and push to GHCR (each has a `paths:` filter; tags `latest`, `sha-<sha>`, `main`):
 
-Looks like: redundant — pick the canonical path.
+- **web** and **nas-mcp**: workflow's final step calls the Coolify redeploy webhook
+  (`GET http://178.156.180.212:8000/api/v1/deploy?uuid=...` with `COOLIFY_TOKEN`).
+  nas-mcp's UUID is hardcoded (`efl17f5iocnz94840pexre9d`); web's is the secret
+  `COOLIFY_WEBHOOK_UUID`. Coolify pulls + recreates.
+- **agent** and **nas-api**: no webhook. Watchtower on each NAS polls GHCR every
+  300s and recreates the container. (`web` build args bake `NEXT_PUBLIC_SUPABASE_*`
+  at image build — changing them in Coolify after build has no effect.)
+- **relay**: no workflow; built/deployed manually on the VPS (exceptional path).
 
-Actually: deliberate. On at least one NAS the canonical `/host/log/synolog/synobackup.log` was stale (2024 entries), while the live log was in a per-task dir under `/host/var/packages/HyperBackup/target/`. The tool now lists every candidate with mtime + size, picks the freshest as the tail source, and shows a staleness banner.
+Runtime env lives in **Coolify** (VPS services) and each NAS `.env` (agent/nas-api).
+Rollback: redeploy a previous image tag in Coolify, or pin `AGENT_IMAGE_TAG` to a
+SHA on the NAS, or `git revert` + push. Public SSH on the VPS is disabled by
+design — **SSH is not a routine deploy path**; manual container rebuilds create
+drift and are not approved.
 
-Do not change because: a single-path bet returns false-positive stale data; the multi-path discovery is the bug fix.
+## 13. Critical incidents
 
-### NAS API package restarts call DSM WebAPI, not `synoservice`
+### 2026-05-29 — Log/alert ingestion silently frozen + pg_partman broken
+What happened: `nas_logs` stopped ingesting ~19h, `alerts` ~23 days, while metrics
+stayed fresh. Separately, partitioning had been dead ~6 weeks (12.85M rows piled
+into the default partition; no retention).
+Impact: the issue agent reasoned on stale logs/alerts; unbounded default-partition
+growth.
+Root cause: brittle `smon_logs/alerts_source_check` whitelists rejected ~13 newer
+log sources + ShareSync alert sources; one rejected row failed the whole PostgREST
+batch → dropped after 5 retries. partman's `part_config` still pointed at the
+pre-00031 `smon_*` parent names.
+Recovery: dropped the whitelists (00035); agent stops emitting `"filter"` severity;
+sender isolates bad rows (`postRows`); corrected partman config, drained the
+backlog, restored retention/premake, reclaimed 3.34 GB.
+Rule added: no source whitelists; the sender must isolate bad rows, never
+all-or-nothing batches; treat empty/sparse tables as possible bugs, not health.
 
-Looks like: over-engineered.
-
-Actually: `synoservice` was removed in DSM 7. Package restarts must go through `SYNO.Core.Package` stop+start. Requires `DSM_USERNAME` + `DSM_PASSWORD` in the NAS `.env`.
-
-### Recursive grep on `@synologydrive` is hard-blocked at the validator
-
-Looks like: an arbitrary deny rule.
-
-Actually: a `grep -R` against Synology's internal stores ran for 4 days 11 hours on a production NAS in May 2026 before discovery. Those dirs contain millions of opaque blobs; recursive grep never returns useful results and thrashes disk I/O. Blocked regardless of tier.
-
-### Web app uses `merge-duplicates` upsert only for `package_status`
-
-Looks like: inconsistent table semantics.
-
-Actually: `package_status` is current-state (one row per NAS+package), not time-series. All other telemetry tables are append-only inserts.
-
-### Agent collector goroutines must use the WaitGroup pattern
-
-Looks like: ceremony.
-
-Actually: without `wg.Add(1)` + `defer wg.Done()`, graceful shutdown returns before the collector finishes, dropping in-flight WAL writes. The ShareSync collector had this bug until commit `268b9c9` (May 2026).
-
-### `GET /mcp` without `Mcp-Session-Id` uses a stateless transport
-
-Looks like: a special case tucked into the `/mcp` handler that creates a second kind of transport.
-
-Actually: the claude.ai proxy sends a `GET /mcp` without a session ID to open a standalone SSE notification stream before making any tool calls. The server creates a stateless transport (`sessionIdGenerator: undefined`) for exactly this path, which causes the MCP SDK to skip `validateSession`. The POST tool-call path is unchanged.
-
-Why: when the server previously routed this GET into a normal stateful session (which had never received `initialize`), `validateSession` returned `400 Bad Request: Server not initialized`. The claude.ai proxy treated this as a fatal connection failure, never proceeded to call tools, and the client waited the full 4-minute timeout. Fix: commit `336348d` (validator portion), correctly re-implemented May 14 2026 and deployed directly. See `docs/mcp-incident-2026-05.md`.
-
-Do not change because: removing the stateless branch for this path causes the 4-minute hang to return. The stateless path is safe — the server never pushes events through it.
-
-### NAS API executor kills the process group, not just bash
-
-Looks like: unusual `Setpgid` + `syscall.Kill(-pid, SIGKILL)` setup.
-
-Actually: `exec.CommandContext` only kills the direct bash child on context expiry — not the subprocess tree. Without process-group kill, `grep ... | head -50` orphans `grep` when the timeout fires. Combined with the hard-block list this prevents the 4-day runaway.
-
-## 9. Credentials and environment
-
-Full reference in [docs/configuration.md](docs/configuration.md). Quick map:
-
-| Variable | Used by | Stored in |
-|---|---|---|
-| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | agent, web | Coolify env / NAS `.env` |
-| `DSM_URL`, `DSM_USERNAME`, `DSM_PASSWORD` | agent, nas-api (for WebAPI restarts) | NAS `.env` |
-| `NAS_EDGE{1,2}_API_URL`, `_API_SECRET`, `_API_SIGNING_KEY` | web, nas-mcp | Coolify env |
-| `NAS_API_SECRET`, `NAS_API_APPROVAL_SIGNING_KEY` | nas-api | NAS `.env` (must match web/mcp values) |
-| `MCP_BEARER_TOKEN` | nas-mcp clients | Coolify env |
-| `ISSUE_WORKER_MODE` (`inline` / `background`) | web | Coolify env |
-| `COOLIFY_TOKEN` | GH Actions | GitHub repo secrets |
-
-NAS API URLs are Tailscale IPs (`100.107.131.35`, `100.107.131.36`). Tailscale must be connected for local dev.
-
-## 10. Deployment
-
-The one normal path:
-
-1. Edit files. Commit to `main`.
-2. GitHub Actions builds and pushes images to GHCR:
-   - `apps/agent/**` → `.github/workflows/agent-image.yml` → `synology-monitor-agent:latest`
-   - `apps/nas-api/**` → `.github/workflows/nas-api-image.yml` → `synology-monitor-nas-api:latest`
-   - `apps/nas-mcp/**` → `.github/workflows/nas-mcp-image.yml` → `synology-monitor-nas-mcp:latest`
-   - `apps/web/**` → `.github/workflows/web-image.yml` → `synology-monitor-web:latest`
-3. For `apps/web` and `apps/nas-mcp`: workflow calls Coolify webhook → Coolify redeploys.
-4. For `apps/agent` and `apps/nas-api`: Watchtower on each NAS detects the new image within ~5 min and recreates the container.
-
-Rollback: re-deploy the previous image tag in Coolify, or `git revert` and push.
-
-Public SSH (port 22) on the VPS is intentionally disabled. There is no routine SSH-based deploy path. Direct manual container rebuilds on the VPS or NAS are not the approved path — they create drift.
-
-## 11. Non-negotiable rules
-
-- Do not commit to any branch other than `main`.
-- Do not build Docker images or restart containers manually on the VPS.
-- Do not hotfix the live NAS and commit after the fact.
-- Do not interpret an empty Supabase table as a healthy subsystem — the collector may be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.
-- Do not add sender payload fields without a matching column in the target Supabase table.
-- Do not undo the "intentional quirks" above without reading the linked commit / incident first.
-
-## 12. Critical incidents
+### 2026-05-29 — Live secrets found committed in example/recovery files
+What happened: real NAS API secrets/signing keys, relay tokens, the Supabase
+service-role key, and a NAS SSH password were committed in
+`apps/relay/RECOVERY_PROMPT.md`, `apps/relay/.env.runtime`,
+`scripts/backfill-synobackup.mjs`, `apps/web/.env.example`, and
+`deploy/synology/nas-{1,2}.env.example`.
+Impact: full NAS + Supabase access exposed in public git history.
+Recovery: all values redacted to placeholders; `.env.runtime` untracked +
+gitignored; hardcoded key removed from the backfill script.
+Rule added: never commit real secrets to example files; **the leaked values remain
+in git history and MUST be rotated** (still pending — see §14).
 
 ### 2026-05 — 4-day runaway `grep -R` on production NAS
-
-What happened: a recursive grep against `@SynologyDriveShareSync` ran for 4 days 11 hours before discovery.
-
-Root cause: missing hard-block in the validator + `exec.CommandContext` only killed the direct bash child, leaving orphaned `grep`.
-
-Fix: hard-block list in `validator.go`; process-group kill in `executor.go` (`Setpgid: true` + `syscall.Kill(-pid, SIGKILL)` on cancel + `WaitDelay: 2s`).
+A recursive grep against `@SynologyDriveShareSync` ran 4d11h before discovery.
+Fix: validator hard-block list + process-group kill in `executor.go`.
 
 ### 2026-05 — Claude MCP sessions hanging / failing
+Tool calls hung to the 4-minute client timeout or returned "Tool result could not
+be submitted." Causes: claude.ai proxy's pre-init `GET /mcp` failing
+`validateSession`; undici keep-alive pool exhaustion; Node keepAlive < Traefik
+idle. Fix: stateless transport for GET-without-session; `Connection: close`; 25s
+exec cap / 45s tool deadline; `keepAliveTimeout 120s`. Full writeup:
+[docs/mcp-incident-2026-05.md](docs/mcp-incident-2026-05.md).
 
-What happened: tool calls hung until Claude's 4-minute client timeout, or returned "Tool result could not be submitted."
+### 2026-05 — `check_backup_status` returning stale 2024 data
+Hard-coded read of a stale `synobackup.log`. Fix: multi-path freshest-by-mtime
+discovery + staleness banner.
 
-Root cause: three independent bugs — `AbortSignal.timeout()` not killing stalled TCP under undici load; undici keep-alive pool exhaustion after ~10–15 calls; Node `keepAliveTimeout: 5s` shorter than Traefik's 90s idle.
+## 14. Pending work
 
-Fix: commits `a0362da` (`AbortController` + `setTimeout`, `Connection: close`, 25s exec cap, 45s tool deadline) and `7234d9e` (Node `keepAliveTimeout: 120s`, `headersTimeout: 125s`). Deployed and confirmed in use.
+| Status | Item | Owner / next action |
+|---|---|---|
+| open | **Rotate leaked credentials** (NAS API secrets/keys, relay tokens, Supabase service-role key, NAS SSH pw) | Owner — values are in git history; regenerate in NAS `.env` + Coolify + Supabase |
+| open | **Issue-agent 3-stage rewrite** (lossless structurer → cached reasoning core → explainer/memory) | Fresh coding session — build from [PLAN.md](PLAN.md) |
+| open | Relay has no CI build workflow | Decide: add `.github/workflows/relay-image.yml` or document the manual path as canonical |
+| low | 2 DB functions still `smon_`-prefixed (`smon_create_alert`, `smon_get_openai_key`) | Rename only with caller-body updates; low value |
+| auto | 3 oldest metric partitions still `smon_`-named | Retention auto-drops them ~2026-06-27 |
+| done | Ingestion fix + partman repair + smon table/function cleanup + secret redaction | Committed `b9f1c0c`, `f15822d`, `e15cbc3`, `248a3ab`; migrations 00034/00035 |
 
-### 2026-05 — `check_backup_status` returning stale 2024 data on edgesynology2
+## 15. Non-negotiable rules
 
-What happened: tool reported 2024 backup events as current.
-
-Root cause: hard-coded read of `/host/log/synolog/synobackup.log`. On that NAS the canonical path was stale; live events were in a per-task target dir.
-
-Fix: tool now enumerates every candidate log location, picks the freshest by mtime, filters tail by date cutoff, prints a staleness banner. See `apps/nas-mcp/src/tool-definitions.ts:check_backup_status`.
-
-### 2026-05 — ShareSync collector dropping in-flight writes on shutdown
-
-What happened: graceful shutdown returned before the ShareSync collector finished, dropping queued WAL writes.
-
-Root cause: the goroutine was started without `wg.Add(1)` registration.
-
-Fix: commit `268b9c9`. The WaitGroup pattern is now an enforced rule for all collectors.
-
-## 13. Pending work
-
-None tracked in-repo. Open issues are tracked outside this file. If you start work that will outlive the current session, create `HANDOFF.md` per the rules in the user's documentation prompt; delete it when complete.
+- Commit only to `main`; never create feature branches.
+- Do not build Docker images or restart containers manually on the VPS/NAS.
+- Do not hotfix the live NAS/VPS and commit after the fact.
+- Do not modify Coolify runtime env from the repo side (Coolify is the source of
+  truth for runtime env — see `AI_OPERATING_RULES.md`).
+- Do not add a sender payload field without a matching Supabase column/migration.
+- Do not interpret an empty Supabase table as a healthy subsystem — a collector may
+  be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.
+- Do not commit real secrets, even to `*.env.example`.
+- Do not undo the §10 intentional quirks without reading the linked incident first.
