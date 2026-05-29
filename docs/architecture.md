@@ -204,7 +204,7 @@ The server compiles a registry of 108 tool definitions (`ALL_TOOL_DEFS` in `apps
 
 - `TOOL_GROUPS: Record<string, string>` — tool name → group (`system`, `performance`, `network`, `security`, `drive_sync`, `logs`, `storage`, `files`, `recovery`, `packages`, `backup`, `write_restart`, `write_storage`, `write_files`, `write_tasks`). Untagged tools fall through to `"misc"` and remain searchable + invokable; startup logs the untagged set as a warning so they can be tagged later.
 - `KEYWORD_TO_GROUPS: Record<string, string[]>` — keywords (`snapshot`, `tailscale`, `audit`, …) → groups.
-- `searchTools(query, enabled)` scores each enabled tool: +5 for group match, +3 for name substring, +1 for description substring; sorted descending.
+- `searchTools(query, enabled)` — splits query into words. For each word: if it is an exact group name, builds a match set containing only tools in that group (no name/description fallback); otherwise builds a match set from KEYWORD_TO_GROUPS-mapped groups plus tools whose name or description contains the word. Applies AND semantics across all per-word sets — a tool must appear in every word's match set to be included. Scores survivors: +3 per query word found in tool name, +1 per query word found in description; sorted descending, then alphabetically by name.
 - `formatToolForSearch(tool)` renders one tool as a text block (name, group, type, description, params with type / optional / default annotations, plus the `confirmed` row for write tools). This is what `tool_search` returns.
 
 ### Statelessness

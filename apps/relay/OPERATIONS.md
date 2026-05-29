@@ -2,22 +2,13 @@
 
 ## Status
 
-Implemented in the repo:
+All components are deployed:
 
-- public relay app exists under [apps/relay](/worksp/monitor/app/apps/relay:1)
-- NAS API repo hardening is implemented in:
-  - [apps/nas-api/cmd/server/main.go](/worksp/monitor/app/apps/nas-api/cmd/server/main.go:1)
-  - [apps/nas-api/internal/validator/validator.go](/worksp/monitor/app/apps/nas-api/internal/validator/validator.go:1)
-  - [apps/nas-api/Dockerfile](/worksp/monitor/app/apps/nas-api/Dockerfile:1)
-- Synology `nas-api` live mounts were expanded on both NASes
+- relay is live at `https://mon.designflow.app/relay` (local container: `http://127.0.0.1:8787`)
+- NAS API hardening (strict validator, process-group kill) is live on both NASes via Watchtower auto-update
+- expanded NAS-side mounts are live on both NASes
 
-Important:
-
-- The stricter NAS API code is **not live yet** until the NAS API image is rebuilt and redeployed.
-- The expanded mounts **are live now** on both NASes.
-- The relay is live on this VPS at:
-  - `https://mon.designflow.app/relay`
-  - local-only container endpoint: `http://127.0.0.1:8787`
+Deployment is fully automated via GitHub Actions (`nas-api-image.yml`, `relay`). No manual steps needed for normal updates — push to `main`.
 
 ## Required relay env
 
@@ -60,14 +51,6 @@ docker run -d \
 - expose the relay over HTTPS
 - keep NAS API private on Tailscale only
 - let the Lovable app call the relay, not the NAS API directly
-
-## Recommended next deployment steps
-
-1. Deploy the relay on the VPS.
-2. Put it behind HTTPS.
-3. Restrict `RELAY_ALLOWED_ORIGINS` to the exact Lovable app origin.
-4. Update the Lovable app to call the relay.
-5. Rebuild and redeploy the NAS API image so the stricter validator and extra runtime tools become live.
 
 ## Verification
 

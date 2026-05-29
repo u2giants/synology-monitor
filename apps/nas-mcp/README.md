@@ -60,7 +60,7 @@ invoke_tool({
 - **Name substring** of any tool in the registry
 - **Description substring** of any tool
 
-Scoring: group match +5, name substring +3, description substring +1. Top results returned first; default `limit: 8`, max 30.
+Multi-word queries require a tool to match **all** words (AND, not OR). When a query word is an exact group name (e.g. `files`, `recovery`), only tools in that group are returned — description matches for that word are suppressed. For all other words, tools in KEYWORD_TO_GROUPS-mapped groups plus name/description substring matches qualify. Survivors are scored: name match +3, description match +1 per word; sorted descending then alphabetically. Default `limit: 8`, max 30.
 
 ### Why lazy-load, why not dynamic registration
 
@@ -277,7 +277,7 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All a
 Standard CI/CD path (see [AI_OPERATING_RULES.md](../../AI_OPERATING_RULES.md)):
 
 - Push to `main` with changes under `apps/nas-mcp/**`
-- `.github/workflows/build-nas-mcp.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
+- `.github/workflows/nas-mcp-image.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
 - Coolify auto-deploys (app UUID `efl17f5iocnz94840pexre9d`, project Synology Monitor → production)
 
 ## Environment variables (set in Coolify)

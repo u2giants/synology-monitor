@@ -179,6 +179,16 @@ Looks like: ceremony.
 
 Actually: without `wg.Add(1)` + `defer wg.Done()`, graceful shutdown returns before the collector finishes, dropping in-flight WAL writes. The ShareSync collector had this bug until commit `268b9c9` (May 2026).
 
+### `GET /mcp` without `Mcp-Session-Id` uses a stateless transport
+
+Looks like: a special case tucked into the `/mcp` handler that creates a second kind of transport.
+
+Actually: the claude.ai proxy sends a `GET /mcp` without a session ID to open a standalone SSE notification stream before making any tool calls. The server creates a stateless transport (`sessionIdGenerator: undefined`) for exactly this path, which causes the MCP SDK to skip `validateSession`. The POST tool-call path is unchanged.
+
+Why: when the server previously routed this GET into a normal stateful session (which had never received `initialize`), `validateSession` returned `400 Bad Request: Server not initialized`. The claude.ai proxy treated this as a fatal connection failure, never proceeded to call tools, and the client waited the full 4-minute timeout. Fix: commit `336348d` (validator portion), correctly re-implemented May 14 2026 and deployed directly. See `docs/mcp-incident-2026-05.md`.
+
+Do not change because: removing the stateless branch for this path causes the 4-minute hang to return. The stateless path is safe — the server never pushes events through it.
+
 ### NAS API executor kills the process group, not just bash
 
 Looks like: unusual `Setpgid` + `syscall.Kill(-pid, SIGKILL)` setup.
@@ -206,7 +216,11 @@ NAS API URLs are Tailscale IPs (`100.107.131.35`, `100.107.131.36`). Tailscale m
 The one normal path:
 
 1. Edit files. Commit to `main`.
-2. `.github/workflows/build-*.yml` builds and pushes images to GHCR.
+2. GitHub Actions builds and pushes images to GHCR:
+   - `apps/agent/**` → `.github/workflows/agent-image.yml` → `synology-monitor-agent:latest`
+   - `apps/nas-api/**` → `.github/workflows/nas-api-image.yml` → `synology-monitor-nas-api:latest`
+   - `apps/nas-mcp/**` → `.github/workflows/nas-mcp-image.yml` → `synology-monitor-nas-mcp:latest`
+   - `apps/web/**` → `.github/workflows/web-image.yml` → `synology-monitor-web:latest`
 3. For `apps/web` and `apps/nas-mcp`: workflow calls Coolify webhook → Coolify redeploys.
 4. For `apps/agent` and `apps/nas-api`: Watchtower on each NAS detects the new image within ~5 min and recreates the container.
 

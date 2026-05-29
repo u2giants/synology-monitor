@@ -504,10 +504,10 @@ If test 1 returns 400 again, the stateless-GET fix is missing from the deployed 
 There were two real bugs:
 
 - a false write-pattern match in `nas-api`
-- a transport/session regression in `nas-mcp`
+- a transport/session problem in `nas-mcp`: `GET /mcp` without a session ID was routed into a stateful transport that hadn't been initialized, causing `validateSession` to return 400 and the client to hang for 4 minutes
 
-The false `403` fix is safe and should stay.
+Both are fixed and live:
 
-The stateless pre-init `GET /mcp` experiment caused regression and should stay reverted.
-
-The resource-safety changes from earlier work are still correct and should not be rolled back.
+- the false `403` fix (removing `cat` from the write-detection regex in `nas-api`) is safe and should stay
+- the stateless-GET fix (stateless transport for `GET /mcp` without `Mcp-Session-Id`) is correct, verified May 14 2026, and should stay — see the Resolution section at the top of this document
+- the resource-safety changes (process-group kill, hard-blocks, lighter `get_resource_snapshot`) are correct and should not be rolled back

@@ -3012,24 +3012,56 @@ export function searchTools(query: string, enabled: Set<string>): McpToolDef[] {
   const lower = query.toLowerCase().trim();
   if (!lower) return [];
   const words = lower.split(/\s+/).filter(Boolean);
-  const matchedGroups = new Set<string>();
-  for (const w of words) {
-    for (const g of KEYWORD_TO_GROUPS[w] ?? []) matchedGroups.add(g);
-    if (KNOWN_GROUPS.has(w)) matchedGroups.add(w);
+
+  // For each query word, build the set of matching tool names independently.
+  // - Direct group name (e.g. "files", "recovery"): only tools in that group, no description fallback.
+  // - KEYWORD_TO_GROUPS alias (e.g. "snapshot"): tools in the mapped groups + name/description match.
+  // - No mapping: name/description match only.
+  const perWord: Set<string>[] = words.map((word) => {
+    const matching = new Set<string>();
+    if (KNOWN_GROUPS.has(word)) {
+      for (const tool of ALL_TOOL_DEFS) {
+        if (enabled.has(tool.name) && getGroup(tool.name) === word) matching.add(tool.name);
+      }
+    } else {
+      const mappedGroups = new Set<string>(KEYWORD_TO_GROUPS[word] ?? []);
+      for (const tool of ALL_TOOL_DEFS) {
+        if (!enabled.has(tool.name)) continue;
+        if (
+          mappedGroups.has(getGroup(tool.name)) ||
+          tool.name.toLowerCase().includes(word) ||
+          tool.description.toLowerCase().includes(word)
+        ) {
+          matching.add(tool.name);
+        }
+      }
+    }
+    return matching;
+  });
+
+  // AND semantics: a tool must match every query word.
+  let candidates = perWord[0];
+  for (let i = 1; i < perWord.length; i++) {
+    const next = new Set<string>();
+    for (const name of candidates) {
+      if (perWord[i].has(name)) next.add(name);
+    }
+    candidates = next;
   }
 
+  // Score for ordering within the intersection (name hit outweighs description hit).
+  const toolMap = new Map<string, McpToolDef>(ALL_TOOL_DEFS.map((t) => [t.name, t]));
   const scored: { tool: McpToolDef; score: number }[] = [];
-  for (const tool of ALL_TOOL_DEFS) {
-    if (!enabled.has(tool.name)) continue;
+  for (const name of candidates) {
+    const tool = toolMap.get(name)!;
     let score = 0;
-    if (matchedGroups.has(getGroup(tool.name))) score += 5;
     const nameLower = tool.name.toLowerCase();
     const descLower = tool.description.toLowerCase();
-    for (const w of words) {
-      if (nameLower.includes(w)) score += 3;
-      if (descLower.includes(w)) score += 1;
+    for (const word of words) {
+      if (nameLower.includes(word)) score += 3;
+      if (descLower.includes(word)) score += 1;
     }
-    if (score > 0) scored.push({ tool, score });
+    scored.push({ tool, score });
   }
   scored.sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
   return scored.map((s) => s.tool);
