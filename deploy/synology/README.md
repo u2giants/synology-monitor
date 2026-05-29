@@ -160,11 +160,11 @@ If NAS disk pressure becomes a concern, raise these env vars first:
 
 ### Confirmed working
 
-- `smon_container_io` should receive rows after the second 30-second sample
-- `smon_metrics.type='cpu_iowait_pct'` should continue to receive rows
-- `smon_metrics.type in ('net_rx_errors_ps','net_tx_errors_ps','share_used_bytes','share_growth_bytes')` should receive rows
-- `scheduled_task` warnings can appear in `smon_logs`
-- snapshot-replication API warnings can appear in `smon_logs`
+- `container_io` should receive rows after the second 30-second sample
+- `metrics.type='cpu_iowait_pct'` should continue to receive rows
+- `metrics.type in ('net_rx_errors_ps','net_tx_errors_ps','share_used_bytes','share_growth_bytes')` should receive rows
+- `scheduled_task` warnings can appear in `nas_logs`
+- snapshot-replication API warnings can appear in `nas_logs`
 - Hyper Backup fallback metrics can appear even when the DSM API does not return task rows
 
 Operator-visible surfaces that depend on that telemetry:
@@ -181,7 +181,7 @@ The following collectors are deployed, but the current NAS units do not yet full
 
 Important:
 - empty tables do not imply healthy subsystems
-- check `smon_logs` for explicit API-unavailable warnings
+- check `nas_logs` for explicit API-unavailable warnings
 
 ## Current DSM-specific caveats
 
@@ -250,7 +250,7 @@ The web tool `check_cpu_iowait` runs equivalent checks for the issue agent.
 
 ### Check for explicit blind-spot warnings in Supabase
 
-Look for `smon_logs.source` values such as:
+Look for `nas_logs.source` values such as:
 - `scheduled_task`
 - `hyperbackup`
 - `dsm_system_log`

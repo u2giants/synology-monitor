@@ -69,9 +69,9 @@ The `sharesync` collector interval is hardcoded at 5m and is not configurable vi
 
 ### LLM model selection
 
-Model assignments are stored in Supabase (`smon_ai_settings`) and read at runtime by the issue agent. The web app Settings UI exposes these. If `smon_ai_settings` is empty, each stage falls back to env vars, then hardcoded defaults. See `apps/web/src/lib/server/ai-settings.ts` for the fallback chain.
+Model assignments are stored in Supabase (`ai_settings`) and read at runtime by the issue agent. The web app Settings UI exposes these. If `ai_settings` is empty, each stage falls back to env vars, then hardcoded defaults. See `apps/web/src/lib/server/ai-settings.ts` for the fallback chain.
 
-**Non-obvious:** `smon_ai_settings` must be read via `createAdminClient()` (service role), not the session client. The issue agent runs as a background worker with no user session; using the session client causes silent RLS failures and every model silently falls back to its hardcoded default.
+**Non-obvious:** `ai_settings` must be read via `createAdminClient()` (service role), not the session client. The issue agent runs as a background worker with no user session; using the session client causes silent RLS failures and every model silently falls back to its hardcoded default.
 
 ## NAS API (`apps/nas-api`)
 

@@ -426,7 +426,7 @@ async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, 
       .limit(20),
 
     // DSM Log Center errors — warning/error events from the NAS OS itself,
-    // separate from the high-volume smon_logs stream.
+    // separate from the high-volume nas_logs stream.
     supabase
       .from("dsm_errors")
       .select("nas_id, level, message, who, log_name, logged_at, created_at")

@@ -2,7 +2,7 @@
  * Metric collector — reads custom metric data collected by the NAS monitoring agent.
  *
  * Collection is done BY THE AGENT (apps/agent/internal/collector/custom.go), which
- * polls smon_custom_metric_schedules and runs shell commands natively inside the
+ * polls custom_metric_schedules and runs shell commands natively inside the
  * container. This file only provides the read side: feeding collected data back
  * into AI analysis prompts.
  */

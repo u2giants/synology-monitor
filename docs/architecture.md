@@ -28,7 +28,7 @@ Focus is Synology Drive / ShareSync reliability, file operation visibility, sync
          ▼                                ▼
 ┌──────────────────┐           ┌──────────────────────┐
 │ Supabase         │ ◄──reads──│ web app (Next.js)     │
-│ smon_* tables    │           │ mon.designflow.app    │
+│ telemetry tables    │           │ mon.designflow.app    │
 └──────────────────┘           │  - issue detector     │
                                 │  - issue agent loop   │
                                 │  - operator UI        │
@@ -50,23 +50,23 @@ The Go agent runs on each NAS as a Docker container. It collects telemetry on a 
 
 | Collector | File | Primary tables | Default interval |
 |---|---|---|---|
-| system | `collector/system.go` | `smon_metrics`, `smon_container_status`, `smon_storage_snapshots` | 30s / 60s |
-| drive | `collector/drive.go` | `smon_sync_task_snapshots`, `smon_logs` | 30s |
-| sharesync | `collector/sharesync.go` | `smon_alerts`, `smon_logs` | 5m |
-| sharehealth | `collector/sharehealth.go` | `smon_logs`, `smon_metrics`, `smon_package_status`, `smon_dsm_errors` | 2m |
-| storagepool | `collector/storagepool.go` | `smon_snapshot_replicas`, `smon_metrics`, `smon_logs` | 60s / 5m |
-| process | `collector/process.go` | `smon_process_snapshots` | 15s |
-| diskstats | `collector/diskstats.go` | `smon_disk_io_stats` | 15s |
-| container_io | `collector/container_io.go` | `smon_container_io` | 30s |
-| connections | `collector/connections.go` | `smon_net_connections` | 30s |
-| sysextras | `collector/sysextras.go` | `smon_metrics` (`cpu_iowait_pct`, thermal, memory pressure) | 30s |
-| services | `collector/services.go` | `smon_service_health`, `smon_logs` | 60s |
-| hyperbackup | `collector/hyperbackup.go` | `smon_backup_tasks`, `smon_logs` | 5m |
-| schedtasks | `collector/schedtasks.go` | `smon_scheduled_tasks`, `smon_logs` | 5m |
-| infra | `collector/infra.go` | `smon_metrics`, `smon_logs` | 2m |
-| custom | `collector/custom.go` | `smon_custom_metric_data` | 60s poll |
-| logwatcher | `logwatcher/watcher.go` | `smon_logs` | 10s |
-| security | `security/watcher.go` | `smon_security_events` | inotify-driven |
+| system | `collector/system.go` | `metrics`, `container_status`, `storage_snapshots` | 30s / 60s |
+| drive | `collector/drive.go` | `sync_task_snapshots`, `nas_logs` | 30s |
+| sharesync | `collector/sharesync.go` | `alerts`, `nas_logs` | 5m |
+| sharehealth | `collector/sharehealth.go` | `nas_logs`, `metrics`, `package_status`, `dsm_errors` | 2m |
+| storagepool | `collector/storagepool.go` | `snapshot_replicas`, `metrics`, `nas_logs` | 60s / 5m |
+| process | `collector/process.go` | `process_snapshots` | 15s |
+| diskstats | `collector/diskstats.go` | `disk_io_stats` | 15s |
+| container_io | `collector/container_io.go` | `container_io` | 30s |
+| connections | `collector/connections.go` | `net_connections` | 30s |
+| sysextras | `collector/sysextras.go` | `metrics` (`cpu_iowait_pct`, thermal, memory pressure) | 30s |
+| services | `collector/services.go` | `service_health`, `nas_logs` | 60s |
+| hyperbackup | `collector/hyperbackup.go` | `backup_tasks`, `nas_logs` | 5m |
+| schedtasks | `collector/schedtasks.go` | `scheduled_tasks`, `nas_logs` | 5m |
+| infra | `collector/infra.go` | `metrics`, `nas_logs` | 2m |
+| custom | `collector/custom.go` | `custom_metric_data` | 60s poll |
+| logwatcher | `logwatcher/watcher.go` | `nas_logs` | 10s |
+| security | `security/watcher.go` | `security_events` | inotify-driven |
 
 ### ShareSync health collector (sharesync.go)
 
@@ -96,7 +96,7 @@ Container Manager on Synology does not always expose cgroup blkio files. The col
 
 ### storagepool collector
 
-Reads `/host/proc/mdstat` for RAID activity. Emits log+alert only on state transitions (healthy→degraded or degraded→healthy), not every tick — prevents flooding `smon_logs` with redundant RAID status messages.
+Reads `/host/proc/mdstat` for RAID activity. Emits log+alert only on state transitions (healthy→degraded or degraded→healthy), not every tick — prevents flooding `nas_logs` with redundant RAID status messages.
 
 ## Web app
 
@@ -105,15 +105,15 @@ Next.js app at `mon.designflow.app`. All data comes from Supabase; NAS actions g
 ### Issue pipeline
 
 ```
-smon_alerts + smon_logs
+alerts + nas_logs
        │
        ▼ issue-detector.ts (fingerprinting, grouping)
        │
-       ▼ smon_issues
+       ▼ issues
        │
-       ▼ issue-workflow.ts (job queue in smon_issue_jobs)
+       ▼ issue-workflow.ts (job queue in issue_jobs)
        │
-       ▼ issue-agent.ts (per-cycle loop, max 3 cycles)
+       ▼ issue-agent.ts (per-cycle loop, max 8 cycles)
          ├── gatherTelemetryContext() → raw telemetry
          ├── compressLogsToFacts() → extractor model → normalized facts
          ├── rankIssueHypothesis() → hypothesis model
@@ -136,7 +136,7 @@ Controlled by `ISSUE_WORKER_MODE` env var:
 
 ### Issue agent sustained I/O pressure detection
 
-`issue-detector.ts` detects sustained I/O pressure from `smon_metrics`: `cpu_iowait_pct` avg ≥ 20% over ≥ 3 samples → "Sustained disk I/O pressure" issue; critical at ≥ 40%.
+`issue-detector.ts` detects sustained I/O pressure from `metrics`: `cpu_iowait_pct` avg ≥ 20% over ≥ 3 samples → "Sustained disk I/O pressure" issue; critical at ≥ 40%.
 
 ## NAS API
 
@@ -227,24 +227,24 @@ See [apps/nas-mcp/README.md](../apps/nas-mcp/README.md) for the full tool catalo
 
 ## Database
 
-Supabase project `qnjimovrsaacneqkggsn`. All tables are prefixed `smon_`.
+Supabase project `qnjimovrsaacneqkggsn`. Tables use unprefixed names (e.g. `metrics`, `nas_logs`).
 
 ### Telemetry tables (append-only)
 
-`smon_metrics`, `smon_logs`, `smon_alerts`, `smon_storage_snapshots`, `smon_process_snapshots`, `smon_disk_io_stats`, `smon_net_connections`, `smon_container_status`, `smon_container_io`, `smon_sync_task_snapshots`, `smon_scheduled_tasks`, `smon_backup_tasks`, `smon_snapshot_replicas`, `smon_security_events`, `smon_dsm_errors`
+`metrics`, `nas_logs`, `alerts`, `storage_snapshots`, `process_snapshots`, `disk_io_stats`, `net_connections`, `container_status`, `container_io`, `sync_task_snapshots`, `scheduled_tasks`, `backup_tasks`, `snapshot_replicas`, `security_events`, `dsm_errors`
 
 ### Current-state tables (upserted)
 
-`smon_package_status` — one row per NAS + package, upserted every 2m.
+`package_status` — one row per NAS + package, upserted every 2m.
 
 ### Issue tables
 
-`smon_issues`, `smon_issue_messages`, `smon_issue_evidence`, `smon_issue_actions`, `smon_issue_jobs`, `smon_issue_state_transitions`, `smon_facts`, `smon_fact_sources`, `smon_issue_facts`, `smon_capability_state`, `smon_ingestion_health`, `smon_ingestion_events`, `smon_ai_settings`
+`issues`, `issue_messages`, `issue_evidence`, `issue_actions`, `issue_jobs`, `issue_state_transitions`, `facts`, `fact_sources`, `issue_facts`, `capability_state`, `ingestion_health`, `ingestion_events`, `ai_settings`
 
 ### Known DSM blind spots
 
-- `smon_scheduled_tasks` — DSM returns error 103 for `SYNO.Core.TaskScheduler` on edgesynology1
-- `smon_snapshot_replicas` — Snapshot Replication APIs return error 102 on edgesynology1
-- `smon_container_status` CPU/memory — DSM API always returns 0; use `smon_container_io` for real I/O data
+- `scheduled_tasks` — DSM returns error 103 for `SYNO.Core.TaskScheduler` on edgesynology1
+- `snapshot_replicas` — Snapshot Replication APIs return error 102 on edgesynology1
+- `container_status` CPU/memory — DSM API always returns 0; use `container_io` for real I/O data
 
-Empty tables do not imply healthy subsystems. Check `smon_logs` for explicit API-unavailable warnings from the affected collectors.
+Empty tables do not imply healthy subsystems. Check `nas_logs` for explicit API-unavailable warnings from the affected collectors.

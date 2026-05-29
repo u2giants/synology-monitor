@@ -28,7 +28,7 @@ Five components:
 
 **One branch: `main`.** Push to `main` → GitHub Actions builds images → Coolify deploys web/nas-mcp automatically → agent/nas-api images are picked up by Watchtower on each NAS within 5 minutes and containers are automatically recreated.
 
-**Supabase** (`smon_*` tables) is the shared data layer between agent and web. NAS API does not touch Supabase.
+**Supabase** (telemetry tables) is the shared data layer between agent and web. NAS API does not touch Supabase.
 
 ## 3. Prime directive — custom-code boundary
 
@@ -95,7 +95,7 @@ Everything else (`node_modules/`, `.next/`, `dist/`, `apps/web/node_modules/@syn
 | `synology-monitor-relay` | External-client relay | Coolify | `ghcr.io/u2giants/synology-monitor-relay:latest` |
 | `synology-monitor-agent` | Telemetry collector — runs on each NAS | Watchtower on NAS | `ghcr.io/u2giants/synology-monitor-agent:latest` |
 | `nas-api` | Approved-command executor — runs on each NAS, port 7734 | Watchtower on NAS | `ghcr.io/u2giants/synology-monitor-nas-api:latest` |
-| Supabase project `qnjimovrsaacneqkggsn` | `smon_*` tables — shared data layer | Supabase | managed Postgres |
+| Supabase project `qnjimovrsaacneqkggsn` | telemetry tables — shared data layer | Supabase | managed Postgres |
 
 ## 7. What to ignore
 
@@ -167,11 +167,11 @@ Looks like: an arbitrary deny rule.
 
 Actually: a `grep -R` against Synology's internal stores ran for 4 days 11 hours on a production NAS in May 2026 before discovery. Those dirs contain millions of opaque blobs; recursive grep never returns useful results and thrashes disk I/O. Blocked regardless of tier.
 
-### Web app uses `merge-duplicates` upsert only for `smon_package_status`
+### Web app uses `merge-duplicates` upsert only for `package_status`
 
 Looks like: inconsistent table semantics.
 
-Actually: `smon_package_status` is current-state (one row per NAS+package), not time-series. All other `smon_*` tables are append-only inserts.
+Actually: `package_status` is current-state (one row per NAS+package), not time-series. All other telemetry tables are append-only inserts.
 
 ### Agent collector goroutines must use the WaitGroup pattern
 
@@ -233,7 +233,7 @@ Public SSH (port 22) on the VPS is intentionally disabled. There is no routine S
 - Do not commit to any branch other than `main`.
 - Do not build Docker images or restart containers manually on the VPS.
 - Do not hotfix the live NAS and commit after the fact.
-- Do not interpret an empty Supabase table as a healthy subsystem — the collector may be hitting an unsupported DSM API. Check `smon_logs` for API-unavailable warnings.
+- Do not interpret an empty Supabase table as a healthy subsystem — the collector may be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.
 - Do not add sender payload fields without a matching column in the target Supabase table.
 - Do not undo the "intentional quirks" above without reading the linked commit / incident first.
 

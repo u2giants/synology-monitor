@@ -1,5 +1,5 @@
 /**
- * Load AI model settings from smon_ai_settings table.
+ * Load AI model settings from ai_settings table.
  * Falls back to env vars, then hardcoded defaults.
  *
  * Uses the service-role admin client so settings are readable from any
