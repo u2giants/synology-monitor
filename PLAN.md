@@ -28,7 +28,9 @@ Inference uses **provider-native SDKs directly** (Anthropic, OpenAI, Google Gemi
 DeepSeek, Qwen) — **never an aggregator** on the cached inference path — with
 caching done correctly per provider (§9). Models + reasoning-effort are chosen by
 the operator at runtime via an admin page (3 stages × 2 controls), gated by a
-**provider capability matrix** (§8.3). Nothing is hardcoded.
+**provider capability matrix** (§8.3). The operator's choice always overrides, but
+each stage keeps a hardcoded final-fallback default so a cold/empty `ai_settings`
+still boots (§8.1).
 
 Five decisions this plan locks down (previously gaps): the **context budget**
 (§5), the **tool integration boundary** (§6), the **approval/resume state machine**
@@ -174,6 +176,8 @@ resumable, cache-independent** — are defined in §5/§7/§9.
   - **Live tools on demand** via the shared catalog (§6): read-only tier-1 freely;
     tier-2/3 through the operator approval gate (§7). Includes `fetch_evidence`
     (§5) to reach the rest of the persisted lossless evidence, and live NAS reads.
+    Live NAS reads need Tailscale; if it's down the agent degrades to Supabase-only
+    diagnosis via `fetch_evidence` and flags the NAS as offline (§7).
   - **Whole-system view** + sibling/correlated-issue visibility — can widen scope.
   - **Re-chew guard** — fingerprint (evidence slice + tool results + planned
     action) each turn; if unchanged and repeating, STOP and switch to "what's
@@ -221,10 +225,24 @@ model context is bounded and priced per token regardless of how cheap disk is.
   budgeted slice: (a) all in-scope + anomalous events in full, (b) dedup-with-counts
   summaries for high-volume noise, (c) an **index** of what else exists (source ×
   time-bucket × count). Define an explicit `EVIDENCE_TOKEN_BUDGET` for this block.
-- **Retrieval-by-ID for the rest.** Provide a `fetch_evidence({source, time_range,
-  filter, limit})` tool (§6) so Stage 2 pulls more detail on demand instead of
-  pre-loading it. This is the same mechanism as live NAS tools — the agent decides
-  what it needs, exactly like an SSH session would.
+- **Retrieval-by-ID for the rest — bounded, aggregable, paginated.** Provide a
+  `fetch_evidence` tool (§6) so Stage 2 pulls more detail on demand instead of
+  pre-loading it (the same mechanism as live NAS tools — the agent decides what it
+  needs, like an SSH session). The schema MUST be safe against a cascade that
+  produces tens of thousands of rows:
+  - **server-side hard caps** — `limit` is clamped to a max (e.g. 100) *regardless*
+    of what the model requests, and a bounded `start_time`/`end_time` is required;
+  - **byte cap on the result, not just rows** — one pathological log line can blow
+    the budget at a single row, so cap total result bytes and truncate row bodies
+    in the *result*;
+  - **a cursor** — return `has_more` + `next_offset` + total match count so the
+    model knows more exists (never silent truncation) and can paginate;
+  - **aggregation mode** — support count/group-by queries (`group_by: source |
+    error | time_bucket`) so the agent sees the *shape* of 50k lines cheaply
+    instead of brute-forcing through them. This is what keeps the cap from blunting
+    effectiveness: an expert greps-and-counts rather than `cat`-ing everything, and
+    a model can't reason over 50k raw lines in one prompt anyway. The prompt
+    instructs the model to aggregate first, then page into specifics.
 - **Overflow rule.** If even the prioritized in-scope set exceeds the budget,
   include the index + a representative sample and rely on `fetch_evidence`; `log()`
   / record that truncation happened so it's visible, never silent.
@@ -261,6 +279,23 @@ through nas-mcp.**
 - `apps/nas-mcp` keeps consuming the same shared definitions for its chat clients;
   its lazy-load surface is unchanged (that's an intentional quirk — see AGENTS.md).
 
+**Build-system cost of sharing (own it, don't gloss it):** moving the definitions
+(and any `tools-config`-equivalent gating) into `packages/shared` is not free in
+this monorepo:
+- `web-image.yml` already builds from the repo root and already watches
+  `packages/shared/**` — web is fine.
+- **`nas-mcp-image.yml` builds with `context: ./apps/nas-mcp`**, so it currently
+  *cannot see* `packages/shared` at all, and its `paths:` filter does **not**
+  include `packages/shared/**`. To share, you must (a) change the nas-mcp build
+  context to the repo root + update `apps/nas-mcp/Dockerfile`, and (b) add
+  `packages/shared/**` to `nas-mcp-image.yml`'s `paths:` — otherwise a shared-tool
+  edit silently rebuilds web but **not** nas-mcp, and the config change never
+  reaches production.
+- Tradeoff: sharing removes the current ~108-vs-42 duplication but costs that
+  build surgery. The alternative is to keep `apps/nas-mcp` as the canonical source
+  and have the web app maintain its own subset (status quo duplication). Recommended:
+  share, and pay the one-time build change — but the migration must include it.
+
 ---
 
 ## 7. Workflow, approval & resume state machine
@@ -277,15 +312,27 @@ state or a warm cache.**
   model (with tool calls for read-only data), and ends in exactly one terminal:
   | Turn outcome | DB effect | Status set | Next |
   |---|---|---|---|
-  | needs tier-2/3 action | persist proposed action (command preview + approval token) + transcript | `waiting_for_approval` | return; operator decides |
+  | needs tier-2/3 action | persist the action **intent** (tool name + tier + args + command preview) + transcript — **never the HMAC token** | `waiting_for_approval` | return; operator decides |
   | needs operator input | persist question + transcript | `waiting_on_user` | return |
   | read-only diagnostic only | persist tool results to evidence + transcript | `running` | enqueue next `run_issue` job (bounded by cycle cap) |
   | blocked on another issue | persist `depends_on_issue_id` | `waiting_on_issue` | `releaseDependentIssues` re-queues |
   | done | persist verdict | `resolved` / `stuck` | Stage 3 |
-- **Approval resume:** operator approval enqueues an `approval_decision` job; a new
-  Stage-2 turn re-enters with the persisted transcript + the approved action,
-  **executes it via nas-api**, then **verifies in the same loop** (the next turn
-  evaluates the result — verification is not a separate stage).
+- **Approval resume — mint the token at execution time, never persist it.** The
+  HMAC approval token expires in 15 minutes, but propose→approve can be hours, so a
+  persisted token would be expired on resume and nas-api would return 403. Persist
+  only the intent (row above). On approval, an `approval_decision` job is enqueued;
+  the resumed Stage-2 turn re-enters with the persisted transcript + approved
+  intent, **mints a fresh HMAC token immediately before the nas-api call**, executes,
+  then **verifies in the same loop** (the next turn evaluates the result —
+  verification is not a separate stage). The 15-min window then bounds only
+  exec→exec (seconds), never the operator's think time.
+- **NAS unreachable / Tailscale down — degrade, don't hang.** Live tools reach
+  nas-api only over Tailscale; if the daemon/NAS is down, every call throws
+  `ECONNREFUSED`. Handle this in **code, not just the prompt**: the tool layer
+  retries once, then returns a structured `nas_unreachable` result (not a raw
+  exception), and the whole-system snapshot carries a reachability flag. `fetch_evidence`
+  reads **Supabase**, not the NAS, so it still works — the agent falls back to
+  diagnosing from stored telemetry and tells the operator the NAS appears offline.
 - **Re-entry safety:** because the transcript is the source of truth, a resumed
   turn reconstructs identical context (cache hit if within TTL, cache miss = cost
   only, never a correctness change). `hasAlreadyTried` is replaced by the re-chew
@@ -300,8 +347,13 @@ state or a warm cache.**
 
 ### 8.1 Three stages, two controls each
 Admin Settings shows **exactly 3 stages**, each with **model** + **reasoning/effort
-level** controls (consolidating today's 7 stage keys → 3). Operator picks at
-runtime; nothing hardcoded. Each stage row also has a **copy-spec button** (no
+level** controls (consolidating today's 7 stage keys → 3). The operator's choice
+is read at runtime and overrides everything — but "operator-driven" does **not**
+mean "no defaults": **each stage keeps a hardcoded final-fallback (model, effort)**
+at the end of its chain, read via `createAdminClient()`, so an empty/unconfigured
+`ai_settings` (cold boot) still runs instead of crashing. "Nothing hardcoded" means
+the operator can always override, not that defaults are removed. Each stage row
+also has a **copy-spec button** (no
 on-screen text) that copies an AI-optimized stage description (purpose, exact
 inputs, output schema, required capabilities, current model) for asking an external
 model "what fits this stage?". Files: `settings/page.tsx`, `api/settings/route.ts`
@@ -321,6 +373,14 @@ before any change): `second_opinion_model`, `cluster_model`. Fallback-alias keys
 (`diagnosis_model`, `remediation_model`, `reasoner_model`) may be removed only after
 confirming no remaining reader. The migration whitelists exactly the keys it
 rewrites and leaves everything else intact.
+
+**Cold-boot defaults must survive the migration.** Today the fallback chains end in
+hardcoded defaults (`openai/gpt-5.4`, `minimax/minimax-m2.7`) so an empty
+`ai_settings` doesn't crash the pipeline. Preserve that: keep a hardcoded
+final-fallback per new stage in `ai-settings.ts`, set to a model+effort appropriate
+to the new provider lineup, **and/or** have the migration seed `ai_settings` with
+sane defaults so a fresh environment boots before anyone opens the admin UI. Do not
+read "nothing hardcoded" (§8.1) as license to delete these.
 
 ### 8.3 Provider capability matrix (effort is not universal)
 "Effort" has a different shape per provider, and tool-use / structured-output
@@ -505,3 +565,8 @@ path; (3) every provider's cache usage field is normalized.
 - Confirm consumers of `second_opinion_model` / `cluster_model` before the cleanup
   step touches anything.
 - Whether to keep an aggregator purely for the model-catalog dropdown.
+- `fetch_evidence` exact schema: the hard `limit` max, the byte cap, and whether the
+  aggregation mode is a separate tool or a `group_by` param (§5).
+- If sharing tool defs (§6): change `apps/nas-mcp`'s Docker build context to repo
+  root + update its Dockerfile, and add `packages/shared/**` to `nas-mcp-image.yml`'s
+  `paths:`. Decide share-vs-keep-canonical explicitly before starting.
