@@ -162,6 +162,12 @@ func (w *LogWatcher) tailFile(path, source string) {
 		}
 
 		entry := parseLine(line, source)
+		// "filter" marks low-value noise (e.g. SMB chatter). Drop it instead
+		// of queueing — it is not a valid nas_logs.severity value and storing
+		// it adds nothing. (Queueing it previously poisoned the whole batch.)
+		if entry.severity == "filter" {
+			continue
+		}
 		w.sender.QueueLog(sender.LogPayload{
 			NasID:    w.nasID,
 			Source:   source,
@@ -196,6 +202,9 @@ func (w *LogWatcher) bootstrapFile(path, source string, maxLines int) {
 		}
 
 		entry := parseLine(line, source)
+		if entry.severity == "filter" {
+			continue
+		}
 		w.sender.QueueLog(sender.LogPayload{
 			NasID:    w.nasID,
 			Source:   source,

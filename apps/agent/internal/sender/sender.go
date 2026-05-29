@@ -295,17 +295,63 @@ func (s *Sender) flushTable(table string) {
 		return
 	}
 
+	status, errMsg, transportErr := s.postRows(table, payloads)
+	if transportErr != nil {
+		// Network/transport failure — transient. Retry the whole batch later.
+		log.Printf("[sender] error sending to %s: %v", table, transportErr)
+		s.incrementAttempts(ids, transportErr.Error())
+		return
+	}
+
+	if status >= 200 && status < 300 {
+		s.deleteEntries(ids)
+		log.Printf("[sender] flushed %d entries to %s", len(ids), table)
+		return
+	}
+
+	// A client error (4xx) on a multi-row batch means one or more individual
+	// rows are bad (e.g. a value that violates a CHECK constraint). PostgREST
+	// rejects the ENTIRE batch for one bad row, so retrying the batch forever
+	// would let a single poison row block — and eventually drop — every other
+	// row behind it. Isolate by re-sending each row alone: good rows get
+	// through, only the genuinely bad rows accumulate attempts and are dropped.
+	if status >= 400 && status < 500 && len(ids) > 1 {
+		log.Printf("[sender] %s: batch rejected (HTTP %d) — isolating bad rows row-by-row", table, status)
+		good := 0
+		for i, id := range ids {
+			st, em, te := s.postRows(table, []json.RawMessage{payloads[i]})
+			switch {
+			case te != nil:
+				s.incrementAttempts([]int64{id}, te.Error())
+			case st >= 200 && st < 300:
+				s.deleteEntries([]int64{id})
+				good++
+			default:
+				s.incrementAttempts([]int64{id}, fmt.Sprintf("HTTP %d: %s", st, em))
+			}
+		}
+		log.Printf("[sender] %s: %d/%d rows accepted after isolation", table, good, len(ids))
+		return
+	}
+
+	// 5xx, or a single-row 4xx: increment and retry later (5xx is transient;
+	// a lone 4xx row will be dropped after maxAttempts with its error logged).
+	log.Printf("[sender] error from Supabase for %s: HTTP %d: %s", table, status, errMsg)
+	s.incrementAttempts(ids, fmt.Sprintf("HTTP %d: %s", status, errMsg))
+}
+
+// postRows POSTs one batch (1..N rows) to a table's REST endpoint and returns
+// the HTTP status + response body, or a non-nil error for transport failures.
+func (s *Sender) postRows(table string, payloads []json.RawMessage) (int, string, error) {
 	body, err := normalizeBatchPayloads(payloads)
 	if err != nil {
-		log.Printf("[sender] error normalizing batch for %s: %v", table, err)
-		return
+		return 0, "", fmt.Errorf("normalizing batch for %s: %w", table, err)
 	}
 
 	url := fmt.Sprintf("%s/rest/v1/%s", s.supabaseURL, table)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[sender] error creating request for %s: %v", table, err)
-		return
+		return 0, "", err
 	}
 
 	preferHeader := "return=minimal"
@@ -320,22 +366,15 @@ func (s *Sender) flushTable(table string) {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[sender] error sending to %s: %v", table, err)
-		s.incrementAttempts(ids, err.Error())
-		return
+		return 0, "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		// Success — delete from WAL
-		s.deleteEntries(ids)
-		log.Printf("[sender] flushed %d entries to %s", len(ids), table)
-	} else {
-		respBody, _ := io.ReadAll(resp.Body)
-		errMsg := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
-		log.Printf("[sender] error from Supabase for %s: %s", table, errMsg)
-		s.incrementAttempts(ids, errMsg)
+		return resp.StatusCode, "", nil
 	}
+	respBody, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(respBody), nil
 }
 
 func (s *Sender) deleteEntries(ids []int64) {

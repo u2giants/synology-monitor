@@ -1,0 +1,31 @@
+-- ============================================================
+-- Migration 00035: Drop the brittle source-whitelist CHECK constraints
+-- ============================================================
+-- ROOT CAUSE of a multi-week ingestion outage (found 2026-05-29):
+--   * The agent emits 40 distinct nas_logs `source` values, but
+--     smon_logs_source_check only allowed 28 — so rows with the other 12
+--     (drive_client_attribution, drive_event_summary, sharesync_jam,
+--      sharesync_corruption, sharesync_flap, hyperbackup_churn,
+--      hyperbackup_fallback, network_path, storage_health, disk_health,
+--      container_lifecycle, dsm) were rejected.
+--   * Likewise smon_alerts_source_check rejected the agent's ShareSync
+--     alerts (sharesync_jam / _corruption / _flap) — the product's core
+--     reliability alerts — so alerts silently stopped on 2026-05-06.
+--   * PostgREST inserts a batch as ONE statement, so a single rejected row
+--     fails the whole batch; the agent retries 5x then drops all rows. One
+--     poison row at the head of the WAL froze the entire pipeline.
+--
+-- These whitelists are the brittle anti-pattern AGENTS.md warns about: they
+-- must be hand-expanded every time a collector adds a source (see prior
+-- expansions 00006, 00024) and provide no value the app relies on. Dropping
+-- them permanently removes this class of outage. The agent remains the
+-- gatekeeper of what it writes, and the sender is being hardened separately
+-- to isolate any single bad row instead of failing whole batches.
+--
+-- severity/status CHECK constraints are kept — they are small, stable enums
+-- the UI depends on, and the agent is being fixed to stop emitting the one
+-- invalid value it produced ('filter' log severity for SMB noise lines).
+-- ============================================================
+
+ALTER TABLE public.nas_logs DROP CONSTRAINT IF EXISTS smon_logs_source_check;
+ALTER TABLE public.alerts   DROP CONSTRAINT IF EXISTS smon_alerts_source_check;
