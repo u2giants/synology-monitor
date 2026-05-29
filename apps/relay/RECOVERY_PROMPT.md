@@ -1,6 +1,11 @@
 # Recovery Prompt
 
-This file intentionally contains secrets and access details. Keep it offline or in a secure password vault.
+> **SECURITY NOTE:** This file used to contain live secrets in plaintext and was
+> committed to the repo. Those values are considered **leaked and must be rotated**
+> (NAS API secrets + signing keys, relay tokens, Supabase service-role key, NAS SSH
+> password). All secrets below have been replaced with `__REDACTED__` placeholders.
+> Pull the real values from your secret vault / Coolify / Supabase dashboard at
+> recovery time — do not paste them back into this file.
 
 Copy this prompt into a future AI session if the Synology Monitor relay or NAS-control path breaks.
 
@@ -49,32 +54,32 @@ Recover or verify the Synology Monitor control path:
 ## NAS SSH credentials
 
 - username: `popdam`
-- password: `D@Mp0p123`
+- password: `__REDACTED__`
 
 ## NAS API secrets
 
 - `NAS_EDGE1_API_SECRET`
-  - `f611b43668599521c71421bc96deae0b7920f91cd0381888a8746238526ef1a4`
+  - `__REDACTED__`
 - `NAS_EDGE1_API_SIGNING_KEY`
-  - `fcd42b9f33be9dfdedbf5614a92e263ca474a6a14284927c95ce695699f9f677`
+  - `__REDACTED__`
 - `NAS_EDGE2_API_SECRET`
-  - `1bedfb80619a564d8905fa2c7eacb6207cae77d1acd3169519a4483e4504e3ef`
+  - `__REDACTED__`
 - `NAS_EDGE2_API_SIGNING_KEY`
-  - `f0c85bbca930ab902d6dbbfd48d154e800b1d3a494b5f3b9209d2897bacdfc76`
+  - `__REDACTED__`
 
 ## Supabase
 
 - project url:
   - `https://qnjimovrsaacneqkggsn.supabase.co`
 - service role key:
-  - `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFuamltb3Zyc2FhY25lcWtnZ3NuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTM2MDE3NSwiZXhwIjoyMDkwOTM2MTc1fQ.3EaEht21dAjN3PFIX6glJkBb1BTshzvZkU5m1yab07c`
+  - `__REDACTED__`
 
 ## Relay secrets
 
 - `RELAY_BEARER_TOKEN`
-  - `46a1d0348bd7075a8c25d24b969ba58a35d6364fc7d55cafb215bc37cb317732`
+  - `__REDACTED__`
 - `RELAY_ADMIN_SECRET`
-  - `54d7dcb5448434cf0fda5a9e3a347f7801da169bf6ee673e068599e37998fe39`
+  - `__REDACTED__`
 
 ## Current live state
 
@@ -124,18 +129,18 @@ Files to review:
 ### NAS API health
 
 ```bash
-curl -H 'Authorization: Bearer f611b43668599521c71421bc96deae0b7920f91cd0381888a8746238526ef1a4' \
+curl -H 'Authorization: Bearer __REDACTED__' \
   http://100.107.131.35:7734/health
 
-curl -H 'Authorization: Bearer 1bedfb80619a564d8905fa2c7eacb6207cae77d1acd3169519a4483e4504e3ef' \
+curl -H 'Authorization: Bearer __REDACTED__' \
   http://100.107.131.36:7734/health
 ```
 
 ### Inspect live mounts on a NAS
 
 ```bash
-sshpass -p 'D@Mp0p123' ssh -o StrictHostKeyChecking=no popdam@100.107.131.35 \
-  "printf '%s\n' 'D@Mp0p123' | sudo -S /var/packages/ContainerManager/target/usr/bin/docker inspect synology-monitor-nas-api --format '{{json .Mounts}}'"
+sshpass -p '__REDACTED__' ssh -o StrictHostKeyChecking=no popdam@100.107.131.35 \
+  "printf '%s\n' '__REDACTED__' | sudo -S /var/packages/ContainerManager/target/usr/bin/docker inspect synology-monitor-nas-api --format '{{json .Mounts}}'"
 ```
 
 ### Backfill command
@@ -143,7 +148,7 @@ sshpass -p 'D@Mp0p123' ssh -o StrictHostKeyChecking=no popdam@100.107.131.35 \
 ```bash
 cd /worksp/monitor/app
 SUPABASE_URL='https://qnjimovrsaacneqkggsn.supabase.co' \
-SUPABASE_SERVICE_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFuamltb3Zyc2FhY25lcWtnZ3NuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTM2MDE3NSwiZXhwIjoyMDkwOTM2MTc1fQ.3EaEht21dAjN3PFIX6glJkBb1BTshzvZkU5m1yab07c' \
+SUPABASE_SERVICE_KEY='__REDACTED__' \
 node scripts/backfill-synobackup.mjs
 ```
 
@@ -152,14 +157,14 @@ node scripts/backfill-synobackup.mjs
 ```env
 PORT=8787
 RELAY_ALLOWED_ORIGINS=https://your-lovable-app.example.com
-RELAY_BEARER_TOKEN=46a1d0348bd7075a8c25d24b969ba58a35d6364fc7d55cafb215bc37cb317732
-RELAY_ADMIN_SECRET=54d7dcb5448434cf0fda5a9e3a347f7801da169bf6ee673e068599e37998fe39
+RELAY_BEARER_TOKEN=__REDACTED__
+RELAY_ADMIN_SECRET=__REDACTED__
 NAS_EDGE1_API_URL=http://100.107.131.35:7734
-NAS_EDGE1_API_SECRET=f611b43668599521c71421bc96deae0b7920f91cd0381888a8746238526ef1a4
-NAS_EDGE1_API_SIGNING_KEY=fcd42b9f33be9dfdedbf5614a92e263ca474a6a14284927c95ce695699f9f677
+NAS_EDGE1_API_SECRET=__REDACTED__
+NAS_EDGE1_API_SIGNING_KEY=__REDACTED__
 NAS_EDGE2_API_URL=http://100.107.131.36:7734
-NAS_EDGE2_API_SECRET=1bedfb80619a564d8905fa2c7eacb6207cae77d1acd3169519a4483e4504e3ef
-NAS_EDGE2_API_SIGNING_KEY=f0c85bbca930ab902d6dbbfd48d154e800b1d3a494b5f3b9209d2897bacdfc76
+NAS_EDGE2_API_SECRET=__REDACTED__
+NAS_EDGE2_API_SIGNING_KEY=__REDACTED__
 ```
 
 ## Instruction to future AI

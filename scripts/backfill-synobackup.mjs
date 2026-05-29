@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const DEFAULT_SUPABASE_URL = "https://qnjimovrsaacneqkggsn.supabase.co";
-const DEFAULT_SUPABASE_SERVICE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFuamltb3Zyc2FhY25lcWtnZ3NuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NTM2MDE3NSwiZXhwIjoyMDkwOTM2MTc1fQ.3EaEht21dAjN3PFIX6glJkBb1BTshzvZkU5m1yab07c";
+// Service-role key must come from the environment or a local (gitignored) .env.
+// Never hardcode it here — this file is committed to a public repo.
 
 const dotenvPaths = [
   ".env",
@@ -19,8 +20,7 @@ const SUPABASE_SERVICE_KEY =
   process.env.SUPABASE_SERVICE_KEY
   ?? process.env.SUPABASE_SERVICE_ROLE_KEY
   ?? fileEnv.SUPABASE_SERVICE_KEY
-  ?? fileEnv.SUPABASE_SERVICE_ROLE_KEY
-  ?? DEFAULT_SUPABASE_SERVICE_KEY;
+  ?? fileEnv.SUPABASE_SERVICE_ROLE_KEY;
 
 const DEFAULT_TARGETS = [
   { nasId: "4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001", prefix: "NAS_EDGE1" },

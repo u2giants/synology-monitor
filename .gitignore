@@ -11,6 +11,8 @@ out/
 .env
 .env.local
 .env.*.local
+.env.runtime
+*.runtime
 
 # IDE
 .vscode/
