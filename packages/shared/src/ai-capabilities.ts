@@ -78,6 +78,9 @@ export interface ModelDescriptor {
 // Per-provider defaults for the cache style + the typical effort shape, so model
 // rows stay terse and consistent.
 const GRADED: readonly EffortLevel[] = EFFORT_LEVELS;
+// OpenAI reasoning models reject 'minimal' on some variants (e.g. gpt-5.4-mini
+// returns 400 "does not support 'minimal'"), so only offer low/medium/high.
+const OPENAI_EFFORT: readonly EffortLevel[] = ["low", "medium", "high"];
 
 /**
  * The model catalog. Provider-native ids only. This is intentionally a curated
@@ -126,7 +129,7 @@ export const MODEL_CATALOG: readonly ModelDescriptor[] = [
     provider: "openai",
     label: "GPT-5.4",
     effortControl: "openai_enum",
-    effortLevels: GRADED,
+    effortLevels: OPENAI_EFFORT,
     toolUse: true,
     structuredOutput: true,
     cache: "automatic_prefix",
@@ -136,7 +139,7 @@ export const MODEL_CATALOG: readonly ModelDescriptor[] = [
     provider: "openai",
     label: "GPT-5.4 mini",
     effortControl: "openai_enum",
-    effortLevels: GRADED,
+    effortLevels: OPENAI_EFFORT,
     toolUse: true,
     structuredOutput: true,
     cache: "automatic_prefix",

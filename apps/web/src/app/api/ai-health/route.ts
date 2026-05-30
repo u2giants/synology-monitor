@@ -3,6 +3,7 @@ import { createClient as createSupabaseServerClient } from "@/lib/supabase/serve
 import type { AiProvider } from "@synology-monitor/shared";
 import { callModel } from "@/lib/server/ai/call-model";
 import { block } from "@/lib/server/ai/context-compiler";
+import { AiCallError } from "@/lib/server/ai/providers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,13 +46,13 @@ export async function GET() {
     PROVIDERS.map(async (provider) => {
       const keyPresent = KEY_ENVS[provider].some((e) => !!process.env[e]);
       if (!keyPresent) {
-        return { provider, model: PING_MODEL[provider], keyPresent: false, ok: false, error: "key env var not set" };
+        return { provider, model: PING_MODEL[provider], keyPresent: false, ok: false, keyValid: false, error: "key env var not set" };
       }
       const started = Date.now();
       try {
         const r = await callModel({
           model: PING_MODEL[provider],
-          effort: "minimal",
+          effort: "medium",
           maxTokens: 16,
           blocks: [
             block.stable("system", "You are a connectivity probe. Reply with the single word OK."),
@@ -63,16 +64,23 @@ export async function GET() {
           model: PING_MODEL[provider],
           keyPresent: true,
           ok: true,
+          keyValid: true,
           latencyMs: Date.now() - started,
           sample: r.text.slice(0, 40),
           cacheStyle: r.cacheStyle,
         };
       } catch (err) {
+        // A non-auth error (e.g. a 400 about a parameter, or an unavailable model)
+        // still proves the key authenticated — report keyValid so a model/param
+        // quirk isn't mistaken for a bad key.
+        const kind = err instanceof AiCallError ? err.kind : "unknown";
+        const keyValid = kind !== "missing_key" && kind !== "auth";
         return {
           provider,
           model: PING_MODEL[provider],
           keyPresent: true,
           ok: false,
+          keyValid,
           latencyMs: Date.now() - started,
           error: err instanceof Error ? err.message : String(err),
         };

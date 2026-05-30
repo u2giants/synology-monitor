@@ -28,6 +28,7 @@ interface ProviderProbe {
   model: string;
   keyPresent: boolean;
   ok: boolean;
+  keyValid?: boolean;
   latencyMs?: number;
   error?: string;
 }
@@ -182,6 +183,8 @@ export function AiStagesSection() {
               <div key={r.provider} className="flex items-center gap-2 text-xs">
                 {r.ok ? (
                   <Check className="h-3.5 w-3.5 text-success" />
+                ) : r.keyValid ? (
+                  <Check className="h-3.5 w-3.5 text-amber-500" />
                 ) : (
                   <X className="h-3.5 w-3.5 text-destructive" />
                 )}
@@ -189,6 +192,8 @@ export function AiStagesSection() {
                 <span className="text-muted-foreground">{r.model}</span>
                 {r.ok ? (
                   <span className="text-muted-foreground">· {r.latencyMs}ms</span>
+                ) : r.keyValid ? (
+                  <span className="text-amber-500 truncate">· key valid · {r.error}</span>
                 ) : (
                   <span className="text-destructive truncate">
                     · {!r.keyPresent ? "key not set" : r.error}
