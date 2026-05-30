@@ -14,7 +14,7 @@ import {
   findToolByName,
   getGroup,
   listUntaggedTools,
-} from "./tool-definitions.js";
+} from "./nas-tools.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 

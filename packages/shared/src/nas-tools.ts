@@ -3125,3 +3125,63 @@ export function formatToolForSearch(tool: McpToolDef): string {
 export function findToolByName(name: string): McpToolDef | undefined {
   return ALL_TOOL_DEFS.find((t) => t.name === name);
 }
+
+// ─── JSON-schema view (for the issue-agent Stage 2 tool catalog) ──────────────
+// nas-mcp uses the Zod `params` directly with server.tool(); the web issue agent
+// needs a provider-native JSON-schema input. This converts the small param
+// vocabulary used here (string/number/boolean/enum, optional/default) without a
+// json-schema dependency.
+
+export interface ToolJsonSchema {
+  type: "object";
+  properties: Record<string, Record<string, unknown>>;
+  required?: string[];
+}
+
+function zodFieldToJson(schema: z.ZodTypeAny): { json: Record<string, unknown>; required: boolean } {
+  const description = (schema as { description?: string }).description;
+  let required = true;
+  let s: z.ZodTypeAny = schema;
+  // Unwrap optional/default/nullable wrappers.
+  for (let i = 0; i < 6; i += 1) {
+    const tn = (s as { _def?: { typeName?: string } })._def?.typeName;
+    if (tn === "ZodOptional" || tn === "ZodDefault" || tn === "ZodNullable") {
+      required = false;
+      s = (s as unknown as { _def: { innerType: z.ZodTypeAny } })._def.innerType;
+    } else break;
+  }
+  const def = (s as unknown as { _def: { typeName?: string; values?: unknown[]; value?: unknown } })._def;
+  let json: Record<string, unknown>;
+  switch (def?.typeName) {
+    case "ZodNumber":
+      json = { type: "number" };
+      break;
+    case "ZodBoolean":
+      json = { type: "boolean" };
+      break;
+    case "ZodEnum":
+      json = { type: "string", enum: def.values };
+      break;
+    case "ZodLiteral":
+      json = { const: def.value };
+      break;
+    case "ZodString":
+    default:
+      json = { type: "string" };
+      break;
+  }
+  if (description) json.description = description;
+  return { json, required };
+}
+
+/** Convert a tool's Zod `params` into a JSON-schema object for model tool use. */
+export function toInputSchema(def: McpToolDef): ToolJsonSchema {
+  const properties: Record<string, Record<string, unknown>> = {};
+  const required: string[] = [];
+  for (const [key, field] of Object.entries(def.params)) {
+    const { json, required: req } = zodFieldToJson(field);
+    properties[key] = json;
+    if (req) required.push(key);
+  }
+  return { type: "object", properties, ...(required.length ? { required } : {}) };
+}

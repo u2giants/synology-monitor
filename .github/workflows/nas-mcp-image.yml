@@ -7,6 +7,9 @@ on:
     paths:
       - ".github/workflows/nas-mcp-image.yml"
       - "apps/nas-mcp/**"
+      # The tool catalog now lives in packages/shared (single source), reached
+      # via the src/nas-tools.ts symlink — rebuild nas-mcp when it changes too.
+      - "packages/shared/**"
   workflow_dispatch:
 
 env:
@@ -49,7 +52,7 @@ jobs:
       - name: Build and push NAS MCP image
         uses: docker/build-push-action@v6
         with:
-          context: ./apps/nas-mcp
+          context: .
           file: ./apps/nas-mcp/Dockerfile
           platforms: linux/amd64
           push: true
