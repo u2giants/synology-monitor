@@ -13,6 +13,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { AiStagesSection } from "./ai-stages-section";
 
 type ModelOption = { id: string; name: string };
 type ModelSettingsState = Record<string, string>;
@@ -236,10 +237,12 @@ export default function SettingsPage() {
         )}
       </section>
 
+      <AiStagesSection />
+
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="font-semibold mb-1 flex items-center gap-2">
           <Brain className="h-4 w-4" />
-          Stage Models
+          Stage Models (legacy 7-stage pipeline)
         </h2>
         <p className="text-xs text-muted-foreground mb-4">
           Configure the model used for each model-driven stage of the issue workflow. Use OpenRouter model IDs from{" "}
