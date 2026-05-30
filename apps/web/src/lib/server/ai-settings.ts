@@ -63,39 +63,9 @@ export async function getSecondOpinionModel(): Promise<string> {
   return settings.second_opinion_model || "anthropic/claude-sonnet-4";
 }
 
-export async function getExtractorModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.extractor_model || settings.diagnosis_model || process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
-}
-
 export async function getClusterModel(): Promise<string> {
   const settings = await loadSettings();
   return settings.cluster_model || settings.diagnosis_model || process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
-}
-
-export async function getHypothesisModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.hypothesis_model || settings.reasoner_model || settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
-}
-
-export async function getPlannerModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.planner_model || settings.reasoner_model || settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
-}
-
-export async function getRemediationPlannerModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.remediation_planner_model || settings.reasoner_model || settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
-}
-
-export async function getExplainerModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.explainer_model || settings.diagnosis_model || process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";
-}
-
-export async function getVerifierModel(): Promise<string> {
-  const settings = await loadSettings();
-  return settings.verifier_model || settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
 }
 
 // === 3-stage issue-agent rebuild config (PLAN.md §8.1/§8.2) ===

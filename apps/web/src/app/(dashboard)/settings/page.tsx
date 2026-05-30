@@ -18,48 +18,15 @@ import { AiStagesSection } from "./ai-stages-section";
 type ModelOption = { id: string; name: string };
 type ModelSettingsState = Record<string, string>;
 
+// The issue-agent's models are configured in the "AI Stages" section above. These
+// remaining keys drive OTHER features (issue clustering) — the legacy 7-stage keys
+// were removed with the old pipeline.
 const STAGE_MODEL_FIELDS = [
-  {
-    key: "extractor_model",
-    label: "Evidence Extraction",
-    description: "Turns noisy telemetry into typed facts. Best fit is cheap, fast, strict JSON output.",
-    placeholder: "minimax/minimax-m2.7",
-  },
   {
     key: "cluster_model",
     label: "Issue Clustering",
     description: "Groups repeated events into one issue thread. Best fit is cheap/medium semantic grouping.",
     placeholder: "minimax/minimax-m2.7",
-  },
-  {
-    key: "hypothesis_model",
-    label: "Hypothesis Ranking",
-    description: "Chooses the best current explanation and confidence. This should be the strongest reasoning model.",
-    placeholder: "openai/gpt-5.4",
-  },
-  {
-    key: "planner_model",
-    label: "Next-Step Planning",
-    description: "Selects one next diagnostic or one blocked/user-question outcome.",
-    placeholder: "openai/gpt-5.4",
-  },
-  {
-    key: "remediation_planner_model",
-    label: "Remediation Planning",
-    description: "Refines a concrete fix proposal with exact target, risk, and rollback.",
-    placeholder: "openai/gpt-5.4",
-  },
-  {
-    key: "explainer_model",
-    label: "Operator Explanation",
-    description: "Writes the concise operator-facing update for the issue thread.",
-    placeholder: "minimax/minimax-m2.7",
-  },
-  {
-    key: "verifier_model",
-    label: "Verification",
-    description: "Judges whether the last action helped, failed, or was inconclusive.",
-    placeholder: "openai/gpt-5.4",
   },
 ] as const;
 
@@ -242,10 +209,11 @@ export default function SettingsPage() {
       <section className="rounded-lg border border-border bg-card p-5">
         <h2 className="font-semibold mb-1 flex items-center gap-2">
           <Brain className="h-4 w-4" />
-          Stage Models (legacy 7-stage pipeline)
+          Other feature models
         </h2>
         <p className="text-xs text-muted-foreground mb-4">
-          Configure the model used for each model-driven stage of the issue workflow. Use OpenRouter model IDs from{" "}
+          Models for non-issue-agent features (clustering, copilot, second-opinion). The issue
+          agent itself is configured in <span className="font-medium">AI Stages</span> above. Use OpenRouter model IDs from{" "}
           <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer" className="text-primary underline">
             openrouter.ai/models
           </a>.

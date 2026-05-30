@@ -18,8 +18,8 @@
  * Verification after an executed action is just the next turn of this same loop
  * (§3) — there is no separate verifier stage.
  *
- * Dormant until the worker cutover (step 8): this is the new loop body that will
- * replace runIssueAgent's internals; nothing calls it yet.
+ * This is the live loop body (the legacy runIssueAgent was removed); the worker
+ * runs it for every issue via pipeline-v2's runIssueAgentV2.
  */
 
 import { createHash } from "node:crypto";

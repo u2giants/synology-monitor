@@ -1,4 +1,3 @@
-import { runIssueAgent } from "@/lib/server/issue-agent";
 import { runIssueAgentV2 } from "@/lib/server/ai/pipeline-v2";
 import type { SupabaseClient } from "@/lib/server/issue-store";
 import { listIssuesDependingOn, loadIssue } from "@/lib/server/issue-store";
@@ -124,19 +123,9 @@ async function processIssueJob(
   // If other issues are waiting on this one and it's been idle >30 min, nudge.
   await maybeNudgeBlockingIssue(supabase, userId, job.issue_id);
 
-  // Pipeline cutover (PLAN.md §8): the 3-stage v2 pipeline is now the DEFAULT.
-  // Kill switches (both go through code/Coolify, not required for normal use):
-  //   - ISSUE_PIPELINE_V2=false  → fleet-wide fallback to the legacy pipeline;
-  //   - an issue's metadata.pipeline === "v1" → per-issue fallback.
-  // Rollback to v1 fleet-wide is also a `git revert` of this cutover.
-  const useV2 =
-    process.env.ISSUE_PIPELINE_V2 !== "false" &&
-    (issue.issue.metadata as Record<string, unknown> | undefined)?.pipeline !== "v1";
-  if (useV2) {
-    await runIssueAgentV2(supabase, userId, issue.issue.id);
-  } else {
-    await runIssueAgent(supabase, userId, issue.issue.id);
-  }
+  // The 3-stage pipeline is the only pipeline now (the legacy runIssueAgent was
+  // removed in the final cleanup). Rollback would be a git revert.
+  await runIssueAgentV2(supabase, userId, issue.issue.id);
 
   // If this issue just resolved, release any issues that were blocked on it.
   const afterState = await loadIssue(supabase, userId, job.issue_id);

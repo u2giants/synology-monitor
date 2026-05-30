@@ -52,19 +52,14 @@ export async function POST(request: Request) {
     }
 
     const allowedKeys = [
-      // 3-stage rebuild config (PLAN.md §8.2): stage_{structurer,reasoning,explainer}_{model,effort}
+      // 3-stage pipeline config (PLAN.md §8.2): stage_{structurer,reasoning,explainer}_{model,effort}
       ...STAGE_SETTING_KEYS,
-      // Legacy 7-stage keys — kept writable until the old pipeline is removed (build step 8).
+      // Non-issue-agent feature models still in use (copilot, minimax, clustering,
+      // second-opinion). The legacy 7-stage keys were removed with the old pipeline.
       "diagnosis_model",
       "remediation_model",
       "second_opinion_model",
-      "extractor_model",
       "cluster_model",
-      "hypothesis_model",
-      "planner_model",
-      "remediation_planner_model",
-      "explainer_model",
-      "verifier_model",
     ];
     if (!allowedKeys.includes(key)) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
