@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { loadIssue, updateIssue } from "@/lib/server/issue-store";
+import { appendIssueMessage, loadIssue, updateIssue } from "@/lib/server/issue-store";
 import { runIssueAgentV2 } from "@/lib/server/ai/pipeline-v2";
+
+const RUNNABLE = new Set(["open", "running", "waiting_on_issue"]);
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,12 +32,29 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     const metadata = { ...(state.issue.metadata ?? {}), pipeline: "v2" };
     await updateIssue(supabase, user.id, id, { metadata });
 
+    // Explicit operator validation: if the issue is parked (waiting_*/resolved/
+    // stuck), nudge it into a single turn so the button always exercises v2.
+    let forcedFrom: string | null = null;
+    if (!RUNNABLE.has(state.issue.status)) {
+      forcedFrom = state.issue.status;
+      await updateIssue(supabase, user.id, id, { status: "running" });
+      await appendIssueMessage(
+        supabase,
+        user.id,
+        id,
+        "system",
+        `Manual v2 validation run started (was: ${forcedFrom}).`,
+        { trigger: "v2_validation_run", previous_status: forcedFrom },
+      );
+    }
+
     const turn = await runIssueAgentV2(supabase, user.id, id);
     const after = await loadIssue(supabase, user.id, id);
 
     return NextResponse.json({
       ok: true,
       ranTurn: !!turn,
+      forcedFrom,
       turn: turn ?? null,
       status: after?.issue.status ?? state.issue.status,
     });

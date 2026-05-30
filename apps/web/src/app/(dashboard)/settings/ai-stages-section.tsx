@@ -90,7 +90,8 @@ export function AiStagesSection() {
         const t = data.turn;
         setRunResult(
           `Status: ${data.status}` +
-            (t ? ` · ${t.toolCallCount ?? 0} tool calls${t.reChewed ? " · re-chew guard fired" : ""}` : " · no turn run (awaiting input/terminal)"),
+            (data.forcedFrom ? ` (forced from ${data.forcedFrom})` : "") +
+            (t ? ` · ${t.toolCallCount ?? 0} tool calls${t.reChewed ? " · re-chew guard fired" : ""}` : " · no turn run"),
         );
       }
     } catch (e) {
