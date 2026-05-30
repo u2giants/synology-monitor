@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { appendIssueMessage, loadIssue, updateIssue } from "@/lib/server/issue-store";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { appendIssueMessage, loadIssue, updateIssue, type SupabaseClient } from "@/lib/server/issue-store";
 import { runIssueAgentV2 } from "@/lib/server/ai/pipeline-v2";
 
 const RUNNABLE = new Set(["open", "running", "waiting_on_issue"]);
@@ -18,11 +19,18 @@ export const maxDuration = 300;
  */
 export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const supabase = await createClient();
+    // Authenticate with the session client...
+    const session = await createClient();
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } = await session.auth.getUser();
     if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+
+    // ...but run the pipeline with the service-role client, exactly like the
+    // worker does: the 3-stage pipeline writes to RLS-protected tables
+    // (issue_evidence_items has no INSERT policy), so the session/authenticated
+    // role would be denied. Reads/writes stay scoped by the user.id filter.
+    const supabase = createAdminClient() as unknown as SupabaseClient;
 
     const { id } = await params;
     const state = await loadIssue(supabase, user.id, id);
@@ -59,9 +67,24 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       status: after?.issue.status ?? state.issue.status,
     });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "v2 run failed." },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: describeError(error) }, { status: 500 });
   }
+}
+
+/** Surface the real cause — Supabase throws plain PostgrestError objects, not Errors. */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  if (error && typeof error === "object") {
+    const e = error as Record<string, unknown>;
+    const parts = [e.message, e.code && `code=${e.code}`, e.details && `details=${e.details}`, e.hint && `hint=${e.hint}`]
+      .filter(Boolean)
+      .map(String);
+    if (parts.length) return parts.join(" · ");
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
 }
