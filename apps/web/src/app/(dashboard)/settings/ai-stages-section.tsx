@@ -33,6 +33,14 @@ interface ProviderProbe {
   error?: string;
 }
 
+interface IssueOption {
+  id: string;
+  title: string;
+  status: string;
+  severity: string;
+  pipeline: string;
+}
+
 export function AiStagesSection() {
   const [values, setValues] = useState<StageValues>({});
   const [loading, setLoading] = useState(true);
@@ -43,6 +51,10 @@ export function AiStagesSection() {
   const [health, setHealth] = useState<NasHealth | null>(null);
   const [probe, setProbe] = useState<{ results: ProviderProbe[]; defaultsReady: boolean } | null>(null);
   const [probing, setProbing] = useState(false);
+  const [issues, setIssues] = useState<IssueOption[]>([]);
+  const [selectedIssue, setSelectedIssue] = useState("");
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -62,7 +74,31 @@ export function AiStagesSection() {
 
     fetch("/api/ai-usage").then((r) => r.json()).then(setStats).catch(() => {});
     fetch("/api/nas-health").then((r) => r.json()).then(setHealth).catch(() => {});
+    fetch("/api/issues").then((r) => r.json()).then((d) => setIssues(d.issues ?? [])).catch(() => {});
   }, []);
+
+  async function runV2() {
+    if (!selectedIssue) return;
+    setRunning(true);
+    setRunResult(null);
+    try {
+      const res = await fetch(`/api/issues/${selectedIssue}/run-v2`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setRunResult(`Error: ${data.error ?? res.statusText}`);
+      } else {
+        const t = data.turn;
+        setRunResult(
+          `Status: ${data.status}` +
+            (t ? ` · ${t.toolCallCount ?? 0} tool calls${t.reChewed ? " · re-chew guard fired" : ""}` : " · no turn run (awaiting input/terminal)"),
+        );
+      }
+    } catch (e) {
+      setRunResult(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRunning(false);
+    }
+  }
 
   function setModel(stage: AiStage, model: string) {
     const d = STAGE_DESCRIPTORS[stage];
@@ -301,6 +337,39 @@ export function AiStagesSection() {
             {saved ? <Check className="h-4 w-4" /> : null}
             {saving ? "Saving…" : saved ? "Saved" : "Save Stage Config"}
           </button>
+
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+            <div className="text-sm font-medium mb-1">Validate the new pipeline (v2)</div>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Run one chosen issue through the 3-stage pipeline without affecting any other issue.
+              The issue is opted into v2 and continues on v2 from here. The old pipeline stays the
+              default for everything else.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={selectedIssue}
+                onChange={(e) => setSelectedIssue(e.target.value)}
+                className="min-w-[16rem] flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
+              >
+                <option value="">Select an issue…</option>
+                {issues.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    [{i.status}] {i.title} {i.pipeline === "v2" ? "· v2" : ""}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!selectedIssue || running}
+                onClick={runV2}
+                className="inline-flex items-center gap-2 rounded-md border border-amber-500/40 px-3 py-2 text-sm font-medium hover:bg-amber-500/10 disabled:opacity-50"
+              >
+                {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                {running ? "Running turn…" : "Run v2 turn"}
+              </button>
+            </div>
+            {runResult && <div className="mt-2 text-xs text-muted-foreground">{runResult}</div>}
+          </div>
         </div>
       )}
     </section>
