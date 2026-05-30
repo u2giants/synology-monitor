@@ -16,6 +16,7 @@ type StageValues = Record<string, string>; // ai_settings key -> value
 interface CacheStats {
   overall: { calls: number; cacheHitRatio: number; input: number; cached: number };
   byStage: Record<string, { calls: number; cacheHitRatio: number }>;
+  byModel: Array<{ provider: string; model: string; calls: number; cacheHitRatio: number; input: number; cached: number }>;
 }
 
 interface NasHealth {
@@ -323,10 +324,31 @@ export function AiStagesSection() {
           })}
 
           {stats && stats.overall.calls > 0 && (
-            <div className="rounded-md bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-              Overall (7d): {(stats.overall.cacheHitRatio * 100).toFixed(0)}% prompt-cache hit across{" "}
-              {stats.overall.calls} model calls ({stats.overall.cached.toLocaleString()} /{" "}
-              {stats.overall.input.toLocaleString()} input tokens cached).
+            <div className="rounded-md bg-muted/20 px-3 py-2 text-xs text-muted-foreground space-y-2">
+              <div>
+                Overall (7d): {(stats.overall.cacheHitRatio * 100).toFixed(0)}% prompt-cache hit across{" "}
+                {stats.overall.calls} model calls ({stats.overall.cached.toLocaleString()} /{" "}
+                {stats.overall.input.toLocaleString()} input tokens cached).
+              </div>
+              {stats.byModel?.length > 0 && (
+                <div>
+                  <div className="font-medium text-foreground/80 mb-1">Cache hit by model (7d)</div>
+                  <div className="space-y-0.5">
+                    {stats.byModel.map((m) => (
+                      <div key={`${m.provider}/${m.model}`} className="flex items-center gap-2">
+                        <span className="w-44 truncate">
+                          {m.model} <span className="text-muted-foreground/70">({m.provider})</span>
+                        </span>
+                        <span className="tabular-nums">{(m.cacheHitRatio * 100).toFixed(0)}%</span>
+                        <span className="text-muted-foreground/70">
+                          · {m.calls} call{m.calls === 1 ? "" : "s"} · {m.cached.toLocaleString()}/
+                          {m.input.toLocaleString()} tok
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
