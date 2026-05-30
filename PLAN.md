@@ -276,6 +276,12 @@ through nas-mcp.**
 - **Reuse, don't reinvent:** enable/disable gating (a `tools-config`-equivalent),
   tier classification + approval preview, and the 8s/25s/45s timeout discipline all
   move with the shared definitions or are reused from the web app's NAS client.
+- **Server-only.** The shared defs include `buildCommand` shell templates. Mark the
+  module `import 'server-only'` and import it **only from server code** (the agent
+  runs server-side) so the command surface never ships in the client bundle —
+  browser-bundle exposure/bloat, and execution must stay server-side. (These
+  templates aren't secret — they're in the repo — but they have no business in the
+  browser.)
 - `apps/nas-mcp` keeps consuming the same shared definitions for its chat clients;
   its lazy-load surface is unchanged (that's an intentional quirk — see AGENTS.md).
 
@@ -333,6 +339,10 @@ state or a warm cache.**
   exception), and the whole-system snapshot carries a reachability flag. `fetch_evidence`
   reads **Supabase**, not the NAS, so it still works — the agent falls back to
   diagnosing from stored telemetry and tells the operator the NAS appears offline.
+  Operator-facing UX: a periodic `GET /health` probe against nas-api drives an
+  **Offline Mode** in the dashboard — live-action controls are disabled and an
+  "NAS offline" badge is shown, so operators aren't left clicking actions that will
+  fail. (Read-only views and `fetch_evidence`-backed diagnosis stay available.)
 - **Re-entry safety:** because the transcript is the source of truth, a resumed
   turn reconstructs identical context (cache hit if within TTL, cache miss = cost
   only, never a correctness change). `hasAlreadyTried` is replaced by the re-chew
@@ -426,6 +436,15 @@ against this app's pricing/reuse before trusting them.**
    (no Vercel AI SDK) and **no** aggregator on the inference path. Aggregators erase
    per-provider cache usage fields; if you can't see cache reads/writes you can't
    tune. (An aggregator is fine for the model-catalog/pricing dropdown only.)
+   **Wrap vs. flatten — the line that matters:** a thin per-provider client that
+   standardizes *operational* concerns (timeouts, retries, error classification incl.
+   `nas_unreachable`) is encouraged — that IS the "provider client" in §10 step 2.
+   What's forbidden is a unifying layer that flattens the *request/response/usage*
+   shape: each provider's native usage object and native cache controls
+   (`cache_control`, retention, session id, `cachedContent`) must pass through
+   untouched, or cache observability dies. Wrap the plumbing; never normalize the
+   payload. This belongs in `apps/web`/`packages/shared` (where the agent runs), not
+   in `apps/nas-mcp`.
 2. **Stable-before-dynamic — enforced.** Order every prompt `[stable system] →
    [stable tools] → [stable schema] → [semi-stable taxonomy] → [whole-system
    snapshot] → [bounded evidence] → [dynamic instruction] → [retry]`. Build a
@@ -513,7 +532,8 @@ path; (3) every provider's cache usage field is normalized.
    transcript each turn; verification is a turn, not a stage.
 6. **Stage 3 — explainer/memory.**
 7. **Admin UI** — 3 stages × (model, effort gated by §8.3) + copy-spec button +
-   `cache_hit_ratio` view.
+   `cache_hit_ratio` view + a NAS **Offline-Mode** indicator that disables
+   live-action controls when the nas-api `/health` probe fails (§7).
 8. **Cleanup** — remove the old 7-stage code, the OpenRouter inference path, and
    retired alias keys (only after confirming no readers); keep non-stage keys.
 
