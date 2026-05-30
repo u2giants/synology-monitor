@@ -56,6 +56,17 @@ export const geminiClient: ProviderClient = {
     const ai = getClient();
     const { context, effort } = params;
 
+    // Tool-use for Gemini is not yet wired (its function-calling shape differs
+    // from the OpenAI/Anthropic loops). Gemini is fine for the tool-less stages
+    // (1 & 3); fail loudly rather than silently dropping tools for Stage 2.
+    if (params.tools && params.tools.length > 0) {
+      throw new AiCallError(
+        "bad_request",
+        "gemini",
+        "Gemini tool-use is not yet supported — select an Anthropic or OpenAI-family model for a tool-using stage.",
+      );
+    }
+
     // Gemini uses role "model" (not "assistant"); the dynamic text is the final user turn.
     const contents = buildGeminiContents(context, params.messages ?? []);
 

@@ -11,8 +11,14 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { CompiledContext } from "../context-compiler";
-import { normalizeAnthropic } from "../usage";
-import { AiCallError, type ModelCallParams, type ModelCallResult, type ProviderClient } from "./types";
+import { addUsage, emptyUsage, normalizeAnthropic } from "../usage";
+import {
+  AiCallError,
+  type ModelCallParams,
+  type ModelCallResult,
+  type ProviderClient,
+  type ToolCallRecord,
+} from "./types";
 
 let client: Anthropic | null = null;
 
@@ -85,32 +91,112 @@ export const anthropicClient: ProviderClient = {
     // max_tokens must exceed the thinking budget.
     const maxTokens = thinkingOn ? Math.max(params.maxTokens, budget + 1_024) : params.maxTokens;
 
+    const tools: Anthropic.Tool[] | undefined = params.tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.input_schema as Anthropic.Tool.InputSchema,
+    }));
+    const maxIterations = params.maxToolIterations ?? 8;
+
+    const toolCalls: ToolCallRecord[] = [];
+    let usage = emptyUsage();
+    let rawUsage: unknown = null;
+    let finishReason: string | null = null;
+    let toolIterationsExhausted = false;
+
     try {
-      const response = await anthropic.messages.create(
-        {
-          model: params.model,
-          max_tokens: maxTokens,
-          system,
-          messages,
-          ...(thinkingOn
-            ? { temperature: 1, thinking: { type: "enabled", budget_tokens: budget } }
-            : {}),
-        },
-        { signal: params.signal },
-      );
+      // In-turn agentic loop: the model may call read-only tools, get results,
+      // and loop, until it produces a final answer (or hits the iteration cap).
+      for (let iter = 0; ; iter += 1) {
+        const response = await anthropic.messages.create(
+          {
+            model: params.model,
+            max_tokens: maxTokens,
+            system,
+            messages,
+            ...(tools ? { tools } : {}),
+            ...(thinkingOn
+              ? { temperature: 1, thinking: { type: "enabled", budget_tokens: budget } }
+              : {}),
+          },
+          { signal: params.signal },
+        );
 
-      const text = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === "text")
-        .map((b) => b.text)
-        .join("");
+        usage = addUsage(usage, normalizeAnthropic(response.usage));
+        rawUsage = response.usage;
+        finishReason = response.stop_reason ?? null;
 
-      return {
-        text,
-        usage: normalizeAnthropic(response.usage),
-        rawUsage: response.usage,
-        finishReason: response.stop_reason ?? null,
-        cacheStyle: "explicit_cache_control",
-      };
+        const toolUses = response.content.filter(
+          (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+        );
+
+        if (response.stop_reason !== "tool_use" || toolUses.length === 0 || !params.executeTool) {
+          const text = response.content
+            .filter((b): b is Anthropic.TextBlock => b.type === "text")
+            .map((b) => b.text)
+            .join("");
+          return {
+            text,
+            usage,
+            rawUsage,
+            finishReason,
+            cacheStyle: "explicit_cache_control",
+            toolCalls,
+            toolIterationsExhausted,
+          };
+        }
+
+        // Execute each requested tool and feed results back as a user turn.
+        messages.push({ role: "assistant", content: response.content });
+        const results: Anthropic.ToolResultBlockParam[] = [];
+        for (const use of toolUses) {
+          const input = (use.input ?? {}) as Record<string, unknown>;
+          const out = await params.executeTool({ id: use.id, name: use.name, input });
+          toolCalls.push({ id: use.id, name: use.name, input, result: out.content, isError: !!out.isError });
+          results.push({
+            type: "tool_result",
+            tool_use_id: use.id,
+            content: out.content,
+            ...(out.isError ? { is_error: true } : {}),
+          });
+        }
+        messages.push({ role: "user", content: results });
+
+        if (iter + 1 >= maxIterations) {
+          // Force a final answer with no further tool use.
+          toolIterationsExhausted = true;
+          const final = await anthropic.messages.create(
+            {
+              model: params.model,
+              max_tokens: maxTokens,
+              system,
+              messages,
+              tool_choice: { type: "none" },
+              ...(tools ? { tools } : {}),
+              ...(thinkingOn
+                ? { temperature: 1, thinking: { type: "enabled", budget_tokens: budget } }
+                : {}),
+            },
+            { signal: params.signal },
+          );
+          usage = addUsage(usage, normalizeAnthropic(final.usage));
+          rawUsage = final.usage;
+          finishReason = final.stop_reason ?? null;
+          const text = final.content
+            .filter((b): b is Anthropic.TextBlock => b.type === "text")
+            .map((b) => b.text)
+            .join("");
+          return {
+            text,
+            usage,
+            rawUsage,
+            finishReason,
+            cacheStyle: "explicit_cache_control",
+            toolCalls,
+            toolIterationsExhausted,
+          };
+        }
+      }
     } catch (err) {
       throw toAiError(err);
     }

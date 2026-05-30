@@ -17,7 +17,7 @@
 import OpenAI from "openai";
 import type { AiProvider, CacheStyle } from "@synology-monitor/shared";
 import type { NormalizedUsage } from "../usage";
-import { normalizeDeepSeek, normalizeOpenAI, normalizeQwen } from "../usage";
+import { addUsage, emptyUsage, normalizeDeepSeek, normalizeOpenAI, normalizeQwen } from "../usage";
 import type { CompiledContext } from "../context-compiler";
 import {
   AiCallError,
@@ -26,6 +26,7 @@ import {
   type ModelCallParams,
   type ModelCallResult,
   type ProviderClient,
+  type ToolCallRecord,
 } from "./types";
 
 /**
@@ -83,45 +84,103 @@ function makeClient(config: OpenAICompatConfig): ProviderClient {
       const openai = getSdk();
       const { context, effort } = params;
 
-      const messages = buildOpenAIMessages(context, params.messages ?? []);
+      const messages = buildOpenAIMessages(
+        context,
+        params.messages ?? [],
+      ) as OpenAI.Chat.ChatCompletionMessageParam[];
 
-      const body: Record<string, unknown> = {
-        model: params.model,
-        messages,
-        [config.maxTokensField]: params.maxTokens,
-      };
-      if (params.json) body.response_format = { type: "json_object" };
-      if (effort.kind === "openai") body.reasoning_effort = effort.reasoningEffort;
+      const tools: OpenAI.Chat.ChatCompletionTool[] | undefined = params.tools?.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.input_schema },
+      }));
+      const maxIterations = params.maxToolIterations ?? 8;
+
+      const toolCalls: ToolCallRecord[] = [];
+      let usage = emptyUsage();
+      let rawUsage: unknown = null;
+      let finishReason: string | null = null;
+      let responseId: string | undefined;
+      let toolIterationsExhausted = false;
 
       try {
-        const response = (await openai.chat.completions.create(
-          body as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-          { signal: params.signal },
-        )) as OpenAI.Chat.ChatCompletion;
+        for (let iter = 0; ; iter += 1) {
+          const forceFinal = tools && iter + 1 >= maxIterations;
+          const body: Record<string, unknown> = {
+            model: params.model,
+            messages,
+            [config.maxTokensField]: params.maxTokens,
+          };
+          if (params.json) body.response_format = { type: "json_object" };
+          if (effort.kind === "openai") body.reasoning_effort = effort.reasoningEffort;
+          if (tools) {
+            body.tools = tools;
+            body.tool_choice = forceFinal ? "none" : "auto";
+          }
 
-        const choice = response.choices[0];
-        const text = choice?.message?.content ?? "";
-        if (!text) {
-          throw new AiCallError(
-            "unknown",
-            config.provider,
-            `empty content (finish_reason=${choice?.finish_reason ?? "unknown"}, model=${params.model})`,
-          );
+          const response = (await openai.chat.completions.create(
+            body as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+            { signal: params.signal },
+          )) as OpenAI.Chat.ChatCompletion;
+
+          usage = addUsage(usage, config.normalize(response.usage));
+          rawUsage = response.usage;
+          responseId = response.id;
+          const choice = response.choices[0];
+          finishReason = choice?.finish_reason ?? null;
+          const requested = choice?.message?.tool_calls ?? [];
+
+          if (!tools || !params.executeTool || requested.length === 0) {
+            const text = choice?.message?.content ?? "";
+            if (!text) {
+              throw new AiCallError(
+                "unknown",
+                config.provider,
+                `empty content (finish_reason=${finishReason ?? "unknown"}, model=${params.model})`,
+              );
+            }
+            return {
+              text,
+              usage,
+              rawUsage,
+              finishReason,
+              cacheStyle: config.cacheStyle,
+              responseId,
+              toolCalls,
+              toolIterationsExhausted,
+            };
+          }
+
+          // Echo the assistant tool-call turn, then append each tool result.
+          messages.push(choice.message as OpenAI.Chat.ChatCompletionMessageParam);
+          for (const call of requested) {
+            if (call.type !== "function") continue;
+            const input = safeParseArgs(call.function.arguments);
+            const out = await params.executeTool({ id: call.id, name: call.function.name, input });
+            toolCalls.push({
+              id: call.id,
+              name: call.function.name,
+              input,
+              result: out.content,
+              isError: !!out.isError,
+            });
+            messages.push({ role: "tool", tool_call_id: call.id, content: out.content });
+          }
+          if (forceFinal) toolIterationsExhausted = true;
         }
-
-        return {
-          text,
-          usage: config.normalize(response.usage),
-          rawUsage: response.usage,
-          finishReason: choice?.finish_reason ?? null,
-          cacheStyle: config.cacheStyle,
-          responseId: response.id,
-        };
       } catch (err) {
         throw toAiError(err, config.provider);
       }
     },
   };
+}
+
+function safeParseArgs(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 function toAiError(err: unknown, provider: AiProvider): AiCallError {

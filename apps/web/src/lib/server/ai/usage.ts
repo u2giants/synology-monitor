@@ -37,6 +37,17 @@ export function cacheHitRatio(u: NormalizedUsage): number {
   return u.inputTokens > 0 ? u.cachedInputTokens / u.inputTokens : 0;
 }
 
+/** Sum usage across multiple model rounds (e.g. an in-turn tool loop). */
+export function addUsage(a: NormalizedUsage, b: NormalizedUsage): NormalizedUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
+  };
+}
+
 // Defensive readers — provider SDKs type usage loosely / fields can be absent.
 function num(obj: unknown, ...path: string[]): number {
   let cur: unknown = obj;

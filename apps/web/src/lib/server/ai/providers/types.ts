@@ -20,6 +20,29 @@ export interface ChatMessage {
   content: string;
 }
 
+/** A tool the model may call within a turn (provider-native JSON-schema input). */
+export interface ToolSchema {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** A tool invocation the model produced. */
+export interface ToolInvocation {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/** The executor Stage 2 supplies: runs read-only tier-1 tools inline (§3). */
+export type ToolExecutor = (call: ToolInvocation) => Promise<{ content: string; isError?: boolean }>;
+
+/** A completed tool round, returned for transcript persistence (§7). */
+export interface ToolCallRecord extends ToolInvocation {
+  result: string;
+  isError: boolean;
+}
+
 export interface ModelCallParams {
   model: string;
   /** Stable→dynamic content (system + schema + taxonomy + snapshot + evidence + instruction). */
@@ -37,6 +60,11 @@ export interface ModelCallParams {
   signal?: AbortSignal;
   /** Qwen/DashScope multi-turn session continuity (§9.2) — persist + replay. */
   previousResponseId?: string;
+  /** Tools the model may call this turn. Read-only ones run inline via executeTool. */
+  tools?: ToolSchema[];
+  executeTool?: ToolExecutor;
+  /** Max in-turn tool rounds before forcing a final answer (default 8). */
+  maxToolIterations?: number;
 }
 
 export interface ModelCallResult {
@@ -48,6 +76,10 @@ export interface ModelCallResult {
   cacheStyle: CacheStyle;
   /** Present for providers with a server-side session id to persist (Qwen). */
   responseId?: string;
+  /** Tool rounds executed this turn, in order, for transcript persistence (§7). */
+  toolCalls?: ToolCallRecord[];
+  /** True if the tool loop hit maxToolIterations before a final answer. */
+  toolIterationsExhausted?: boolean;
 }
 
 export interface ProviderClient {

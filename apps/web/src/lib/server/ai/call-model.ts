@@ -18,7 +18,13 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { compileContext, type PromptBlock } from "./context-compiler";
 import { mapEffort } from "./effort";
 import { cacheHitRatio } from "./usage";
-import { getProviderClient, type ChatMessage, type ModelCallResult } from "./providers";
+import {
+  getProviderClient,
+  type ChatMessage,
+  type ModelCallResult,
+  type ToolExecutor,
+  type ToolSchema,
+} from "./providers";
 
 export interface CallModelOptions {
   model: string;
@@ -29,6 +35,10 @@ export interface CallModelOptions {
   json?: boolean;
   signal?: AbortSignal;
   previousResponseId?: string;
+  /** Tools the model may call this turn (read-only ones executed inline). */
+  tools?: ToolSchema[];
+  executeTool?: ToolExecutor;
+  maxToolIterations?: number;
   /** Optional observability context. */
   stage?: AiStage;
   issueId?: string;
@@ -60,6 +70,9 @@ export async function callModel(opts: CallModelOptions): Promise<CallModelResult
     json: opts.json,
     signal: opts.signal,
     previousResponseId: opts.previousResponseId,
+    tools: opts.tools,
+    executeTool: opts.executeTool,
+    maxToolIterations: opts.maxToolIterations,
   });
 
   await recordUsage(opts, descriptor.provider, context.stablePrefixHash, result);
