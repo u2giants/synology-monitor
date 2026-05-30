@@ -27,6 +27,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # PLAN.md §9.7 — hard build blockers. If these fail the image is never
+      # built/pushed and Coolify is never triggered, so a cache-hostile prompt
+      # ordering, collapsed multi-turn history, or an un-normalized provider
+      # usage field cannot reach production.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: AI cache CI guards
+        run: pnpm --filter @synology-monitor/web run guard:ai
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
