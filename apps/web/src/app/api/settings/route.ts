@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
 import { clearAiSettingsCache } from "@/lib/server/ai-settings";
+import { STAGE_SETTING_KEYS, isEffortLevel } from "@synology-monitor/shared";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,6 +52,9 @@ export async function POST(request: Request) {
     }
 
     const allowedKeys = [
+      // 3-stage rebuild config (PLAN.md §8.2): stage_{structurer,reasoning,explainer}_{model,effort}
+      ...STAGE_SETTING_KEYS,
+      // Legacy 7-stage keys — kept writable until the old pipeline is removed (build step 8).
       "diagnosis_model",
       "remediation_model",
       "second_opinion_model",
@@ -64,6 +68,14 @@ export async function POST(request: Request) {
     ];
     if (!allowedKeys.includes(key)) {
       return NextResponse.json({ error: `Invalid setting key. Allowed: ${allowedKeys.join(", ")}` }, { status: 400 });
+    }
+
+    // Effort keys carry an abstract level, not a model id — validate against the matrix (§8.3).
+    if (key.endsWith("_effort") && !isEffortLevel(value.trim())) {
+      return NextResponse.json(
+        { error: "Invalid effort level. Allowed: minimal, low, medium, high." },
+        { status: 400 },
+      );
     }
 
     const { error } = await supabase.from("ai_settings").upsert(
