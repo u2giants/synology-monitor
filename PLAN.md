@@ -141,8 +141,10 @@ while `cycles < 8`; job queue `issue_jobs`; `ISSUE_WORKER_MODE` `inline`
 cross-issue deps (`depends_on_issue_id`, `releaseDependentIssues`,
 `maybeNudgeBlockingIssue` in `issue-workflow.ts`); approval gate (tier-2/3 need
 `confirmed`/HMAC token, 15-min expiry, `buildApprovalToken`/`verifyApprovalToken`).
-Issue statuses: `open / running / waiting_on_user / waiting_for_approval /
-resolved / stuck / cancelled`. Issue data model: `issues`, `issue_messages`,
+Issue statuses (the `issues.status` CHECK allows exactly these seven — verified):
+`open / running / waiting_on_user / waiting_for_approval / resolved / stuck /
+cancelled`. The rebuild adds one more, `waiting_on_issue` (§7). Issue data model:
+`issues`, `issue_messages`,
 `issue_evidence`, `issue_actions`, `issue_jobs`, `issue_state_transitions`,
 `facts`, `fact_sources`, `issue_facts`, `capability_state`, `agent_memory`.
 
@@ -276,12 +278,13 @@ through nas-mcp.**
 - **Reuse, don't reinvent:** enable/disable gating (a `tools-config`-equivalent),
   tier classification + approval preview, and the 8s/25s/45s timeout discipline all
   move with the shared definitions or are reused from the web app's NAS client.
-- **Server-only.** The shared defs include `buildCommand` shell templates. Mark the
-  module `import 'server-only'` and import it **only from server code** (the agent
-  runs server-side) so the command surface never ships in the client bundle —
-  browser-bundle exposure/bloat, and execution must stay server-side. (These
-  templates aren't secret — they're in the repo — but they have no business in the
-  browser.)
+- **Server-runtime only (enforce by package boundary / lint, not a Next.js
+  marker).** The shared defs include `buildCommand` shell templates and must be
+  imported only from server runtimes — `apps/web` *server* code and `apps/nas-mcp`
+  — never from client components. Because the package is also consumed by a
+  plain-Node app (nas-mcp), do **not** lean on a Next.js-only `import 'server-only'`
+  marker; enforce it with package boundaries / lint rules / code review. (Not
+  secret — they're in the repo — but they have no business in the client bundle.)
 - `apps/nas-mcp` keeps consuming the same shared definitions for its chat clients;
   its lazy-load surface is unchanged (that's an intentional quirk — see AGENTS.md).
 
@@ -297,10 +300,10 @@ this monorepo:
   `packages/shared/**` to `nas-mcp-image.yml`'s `paths:` — otherwise a shared-tool
   edit silently rebuilds web but **not** nas-mcp, and the config change never
   reaches production.
-- Tradeoff: sharing removes the current ~108-vs-42 duplication but costs that
-  build surgery. The alternative is to keep `apps/nas-mcp` as the canonical source
-  and have the web app maintain its own subset (status quo duplication). Recommended:
-  share, and pay the one-time build change — but the migration must include it.
+- This is **required migration work, not an open architectural question** — the
+  decision (top of §6) is to share. The build-context move + `paths:` change above
+  are part of that migration. Sharing removes the current ~108-vs-42 duplication;
+  the one-time build change is simply its cost.
 
 ---
 
@@ -321,7 +324,7 @@ state or a warm cache.**
   | needs tier-2/3 action | persist the action **intent** (tool name + tier + args + command preview) + transcript — **never the HMAC token** | `waiting_for_approval` | return; operator decides |
   | needs operator input | persist question + transcript | `waiting_on_user` | return |
   | read-only diagnostic only | persist tool results to evidence + transcript | `running` | enqueue next `run_issue` job (bounded by cycle cap) |
-  | blocked on another issue | persist `depends_on_issue_id` | `waiting_on_issue` | `releaseDependentIssues` re-queues |
+  | blocked on another issue | persist `depends_on_issue_id` | `waiting_on_issue` (**new** — added below) | `releaseDependentIssues` re-queues |
   | done | persist verdict | `resolved` / `stuck` | Stage 3 |
 - **Approval resume — mint the token at execution time, never persist it.** The
   HMAC approval token expires in 15 minutes, but propose→approve can be hours, so a
@@ -348,8 +351,12 @@ state or a warm cache.**
   only, never a correctness change). `hasAlreadyTried` is replaced by the re-chew
   guard (§3) operating over the persisted transcript.
 - Keep `issue_jobs`, the job types, the cycle cap (rename to a turn cap), and the
-  `stuck` guard. Map the four old stages' status transitions onto the table above;
-  no new status is needed except confirming `waiting_on_issue` already exists.
+  `stuck` guard. Map the four old stages' status transitions onto the table above.
+  This introduces **one new status, `waiting_on_issue`** — the current
+  `issues.status` CHECK allows only the seven in §2 (verified against the DB), so
+  the workflow migration must add `waiting_on_issue` to that CHECK. (Cross-issue
+  blocking exists today via `depends_on_issue_id`/`releaseDependentIssues` but
+  without a dedicated status.)
 
 ---
 
@@ -587,6 +594,6 @@ path; (3) every provider's cache usage field is normalized.
 - Whether to keep an aggregator purely for the model-catalog dropdown.
 - `fetch_evidence` exact schema: the hard `limit` max, the byte cap, and whether the
   aggregation mode is a separate tool or a `group_by` param (§5).
-- If sharing tool defs (§6): change `apps/nas-mcp`'s Docker build context to repo
-  root + update its Dockerfile, and add `packages/shared/**` to `nas-mcp-image.yml`'s
-  `paths:`. Decide share-vs-keep-canonical explicitly before starting.
+- The new `waiting_on_issue` status: the exact migration that extends the
+  `issues.status` CHECK (§7). (The nas-mcp build-context + `paths:` change for tool
+  sharing is decided and lives in §6, not here.)
