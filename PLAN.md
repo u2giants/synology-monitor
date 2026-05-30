@@ -1,6 +1,16 @@
 # PLAN — Issue-Agent AI Rebuild (3-stage, cached, live-tool)
 
-Status: **design complete, not yet built.** Authored 2026-05-29.
+Status: **BUILT, deployed, and live as the only issue-agent pipeline** (2026-05-30).
+Authored 2026-05-29. All build-order steps (§10) shipped: config layer +
+capability matrix, provider-native clients + caching core + CI guards, lossless
+evidence store + Stage 1 + fetch_evidence, resumable turn state machine, Stage 2
+reasoning core, Stage 3 explainer/memory, admin UI (3 stages + cache-hit + NAS
+offline badge), §6 tool-catalog sharing into packages/shared, the cutover (v2 is
+the default in code), and the cleanup (legacy 7-stage pipeline + OpenRouter
+inference path removed). The sections below are the original design, kept for
+reference. Provider keys (Anthropic/OpenAI/Gemini/DeepSeek/Qwen) are live in
+Coolify. Outstanding (separate from this rebuild): rotate the leaked secrets
+still in git history.
 
 **How to use this doc:** This is the self-contained handoff for a *fresh* coding
 session (start clean — prompt caching makes re-reads cheap but does not stop a
