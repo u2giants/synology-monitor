@@ -1,4 +1,5 @@
 import { runIssueAgent } from "@/lib/server/issue-agent";
+import { runIssueAgentV2 } from "@/lib/server/ai/pipeline-v2";
 import type { SupabaseClient } from "@/lib/server/issue-store";
 import { listIssuesDependingOn, loadIssue } from "@/lib/server/issue-store";
 import {
@@ -123,7 +124,17 @@ async function processIssueJob(
   // If other issues are waiting on this one and it's been idle >30 min, nudge.
   await maybeNudgeBlockingIssue(supabase, userId, job.issue_id);
 
-  await runIssueAgent(supabase, userId, issue.issue.id);
+  // Pipeline cutover (PLAN.md §8): the 3-stage v2 pipeline runs when globally
+  // enabled (ISSUE_PIPELINE_V2=true) OR when this specific issue is opted in
+  // (metadata.pipeline === "v2") for single-issue validation. Default: v1.
+  const useV2 =
+    process.env.ISSUE_PIPELINE_V2 === "true" ||
+    (issue.issue.metadata as Record<string, unknown> | undefined)?.pipeline === "v2";
+  if (useV2) {
+    await runIssueAgentV2(supabase, userId, issue.issue.id);
+  } else {
+    await runIssueAgent(supabase, userId, issue.issue.id);
+  }
 
   // If this issue just resolved, release any issues that were blocked on it.
   const afterState = await loadIssue(supabase, userId, job.issue_id);

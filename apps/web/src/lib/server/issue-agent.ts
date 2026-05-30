@@ -272,7 +272,7 @@ async function syncIssueFacts(
   return facts;
 }
 
-async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, issue: IssueFull["issue"]) {
+export async function gatherTelemetryContext(supabase: SupabaseClient, userId: string, issue: IssueFull["issue"]) {
   const since6h = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
   const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const since48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();

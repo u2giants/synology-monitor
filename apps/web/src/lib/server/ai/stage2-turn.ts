@@ -140,7 +140,9 @@ export async function applyTurnOutcome(
       const actionId = await createIssueAction(supabase, userId, issue.id, {
         kind: outcome.intent.kind,
         target: outcome.intent.target,
-        toolName: outcome.intent.toolName,
+        // Encode the tier in tool_name (shell:tierN) so the executor can recover
+        // it at approval time — the issue_actions table has no tier column.
+        toolName: `shell:tier${outcome.intent.tier}`,
         commandPreview: outcome.intent.commandPreview,
         summary: outcome.intent.summary,
         reason: outcome.intent.reason,
