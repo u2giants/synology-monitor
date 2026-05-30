@@ -6,7 +6,7 @@ RUN npm install -g pnpm@9
 # Dependencies
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-workspace.yaml ./
+COPY .npmrc package.json pnpm-workspace.yaml ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --no-frozen-lockfile
@@ -14,10 +14,12 @@ RUN pnpm install --no-frozen-lockfile
 # Build
 FROM base AS builder
 WORKDIR /app
+# With node-linker=hoisted, deps live flat in the root node_modules and
+# packages/shared has no node_modules of its own — copy the root store plus the
+# workspace-link node_modules under apps/web.
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
 COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
-COPY package.json pnpm-workspace.yaml ./
+COPY .npmrc package.json pnpm-workspace.yaml ./
 COPY packages/shared ./packages/shared
 COPY apps/web ./apps/web
 COPY turbo.json ./
