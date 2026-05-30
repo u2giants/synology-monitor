@@ -124,12 +124,14 @@ async function processIssueJob(
   // If other issues are waiting on this one and it's been idle >30 min, nudge.
   await maybeNudgeBlockingIssue(supabase, userId, job.issue_id);
 
-  // Pipeline cutover (PLAN.md §8): the 3-stage v2 pipeline runs when globally
-  // enabled (ISSUE_PIPELINE_V2=true) OR when this specific issue is opted in
-  // (metadata.pipeline === "v2") for single-issue validation. Default: v1.
+  // Pipeline cutover (PLAN.md §8): the 3-stage v2 pipeline is now the DEFAULT.
+  // Kill switches (both go through code/Coolify, not required for normal use):
+  //   - ISSUE_PIPELINE_V2=false  → fleet-wide fallback to the legacy pipeline;
+  //   - an issue's metadata.pipeline === "v1" → per-issue fallback.
+  // Rollback to v1 fleet-wide is also a `git revert` of this cutover.
   const useV2 =
-    process.env.ISSUE_PIPELINE_V2 === "true" ||
-    (issue.issue.metadata as Record<string, unknown> | undefined)?.pipeline === "v2";
+    process.env.ISSUE_PIPELINE_V2 !== "false" &&
+    (issue.issue.metadata as Record<string, unknown> | undefined)?.pipeline !== "v1";
   if (useV2) {
     await runIssueAgentV2(supabase, userId, issue.issue.id);
   } else {
