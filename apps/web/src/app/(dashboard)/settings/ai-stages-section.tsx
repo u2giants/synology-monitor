@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Brain, Check, ClipboardCopy, Loader2, WifiOff } from "lucide-react";
+import { Brain, Check, ClipboardCopy, Loader2, WifiOff, X, Zap } from "lucide-react";
 import {
   AI_STAGES,
   STAGE_DESCRIPTORS,
@@ -23,6 +23,15 @@ interface NasHealth {
   anyOffline: boolean;
 }
 
+interface ProviderProbe {
+  provider: string;
+  model: string;
+  keyPresent: boolean;
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+}
+
 export function AiStagesSection() {
   const [values, setValues] = useState<StageValues>({});
   const [loading, setLoading] = useState(true);
@@ -31,6 +40,8 @@ export function AiStagesSection() {
   const [copied, setCopied] = useState<string | null>(null);
   const [stats, setStats] = useState<CacheStats | null>(null);
   const [health, setHealth] = useState<NasHealth | null>(null);
+  const [probe, setProbe] = useState<{ results: ProviderProbe[]; defaultsReady: boolean } | null>(null);
+  const [probing, setProbing] = useState(false);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -94,6 +105,20 @@ export function AiStagesSection() {
     }
   }
 
+  async function testProviders() {
+    setProbing(true);
+    setProbe(null);
+    try {
+      const res = await fetch("/api/ai-health");
+      const data = await res.json();
+      setProbe({ results: data.results ?? [], defaultsReady: !!data.defaultsReady });
+    } catch {
+      setProbe({ results: [], defaultsReady: false });
+    } finally {
+      setProbing(false);
+    }
+  }
+
   async function copySpec(stage: AiStage) {
     const d = STAGE_DESCRIPTORS[stage];
     const model = values[d.modelKey];
@@ -139,6 +164,46 @@ export function AiStagesSection() {
         that support each stage&apos;s required capabilities; effort is disabled for models with no
         reasoning knob.
       </p>
+
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={testProviders}
+          disabled={probing}
+          className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-muted/40 disabled:opacity-50"
+        >
+          {probing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+          {probing ? "Testing providers…" : "Test providers"}
+        </button>
+        {probe && (
+          <div className="mt-3 space-y-1">
+            {probe.results.length === 0 && <div className="text-xs text-destructive">Probe failed to run.</div>}
+            {probe.results.map((r) => (
+              <div key={r.provider} className="flex items-center gap-2 text-xs">
+                {r.ok ? (
+                  <Check className="h-3.5 w-3.5 text-success" />
+                ) : (
+                  <X className="h-3.5 w-3.5 text-destructive" />
+                )}
+                <span className="font-medium w-20">{r.provider}</span>
+                <span className="text-muted-foreground">{r.model}</span>
+                {r.ok ? (
+                  <span className="text-muted-foreground">· {r.latencyMs}ms</span>
+                ) : (
+                  <span className="text-destructive truncate">
+                    · {!r.keyPresent ? "key not set" : r.error}
+                  </span>
+                )}
+              </div>
+            ))}
+            <div className={`mt-1 text-xs font-medium ${probe.defaultsReady ? "text-success" : "text-amber-500"}`}>
+              {probe.defaultsReady
+                ? "Default lineup ready (Anthropic + Gemini reachable)."
+                : "Default lineup not ready — Anthropic and Gemini must both pass before cutover."}
+            </div>
+          </div>
+        )}
+      </div>
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
