@@ -29,7 +29,8 @@ import {
   type Issue,
   type SupabaseClient,
 } from "@/lib/server/issue-store";
-import { TOOL_DEFINITIONS, type CopilotToolName, type NasTarget } from "@/lib/server/tools";
+import { type NasTarget } from "@/lib/server/tools";
+import { ALL_TOOL_DEFS, findToolByName, toInputSchema } from "@synology-monitor/shared/nas-tools";
 import { nasApiExec, nasApiPreview, resolveNasApiConfig } from "@/lib/server/nas-api-client";
 import { parseJsonObject } from "@/lib/server/model-json";
 import { callModel } from "./call-model";
@@ -178,22 +179,23 @@ export async function buildWholeSystemSnapshot(
 
 // ─── Tool catalog for Stage 2 ────────────────────────────────────────────────
 
-/** Read-only tier-1 tools (write:false) + fetch_evidence, as model tool schemas. */
+/**
+ * Read-only tools (write:false) from the SHARED catalog (§6) + fetch_evidence, as
+ * model tool schemas. The executor picks the NAS, so `target` is dropped from the
+ * model-facing schema — the model only supplies tool-specific params.
+ */
 export function buildStage2Tools(): ToolSchema[] {
-  const nasTools: ToolSchema[] = (Object.entries(TOOL_DEFINITIONS) as Array<[CopilotToolName, (typeof TOOL_DEFINITIONS)[CopilotToolName]]>)
-    .filter(([, def]) => !def.write)
-    .map(([name, def]) => ({
-      name,
+  const nasTools: ToolSchema[] = ALL_TOOL_DEFS.filter((def) => !def.write).map((def) => {
+    const schema = toInputSchema(def);
+    const { target: _target, ...properties } = schema.properties;
+    void _target;
+    const required = (schema.required ?? []).filter((r) => r !== "target");
+    return {
+      name: def.name,
       description: def.description,
-      input_schema: {
-        type: "object",
-        properties: {
-          target: { type: "string", enum: ["edgesynology1", "edgesynology2"], description: "NAS to run on." },
-          lookbackHours: { type: "number", description: "Lookback window in hours (where applicable)." },
-          filter: { type: "string", description: "Search term (where applicable)." },
-        },
-      },
-    }));
+      input_schema: { type: "object", properties, ...(required.length ? { required } : {}) },
+    };
+  });
   return [
     {
       name: FETCH_EVIDENCE_TOOL.name,
@@ -226,20 +228,19 @@ function makeToolExecutor(
       }
     }
 
-    const def = TOOL_DEFINITIONS[call.name as CopilotToolName];
+    const def = findToolByName(call.name);
     if (!def || def.write) {
       return { content: `Tool "${call.name}" is not an available read-only tool.`, isError: true };
     }
 
     try {
-      const target = ((call.input.target as string) || defaultTarget) as NasTarget;
+      const reqTarget = call.input.target;
+      const target = (reqTarget === "edgesynology1" || reqTarget === "edgesynology2" ? reqTarget : defaultTarget) as NasTarget;
       const config = resolveNasApiConfig(target);
       if (!config) return { content: `No NAS API config for ${target}.`, isError: true };
 
-      const command = def.buildPreview(target, {
-        lookbackHours: typeof call.input.lookbackHours === "number" ? call.input.lookbackHours : undefined,
-        filter: typeof call.input.filter === "string" ? call.input.filter : undefined,
-      });
+      // buildCommand ignores target (routing is the executor's job); pass params through.
+      const command = def.buildCommand(call.input);
 
       // Classify FIRST. Read-only investigation runs TIER 1 ONLY; anything higher
       // (or blocked) must go through the operator approval gate as a proposed
