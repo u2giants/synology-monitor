@@ -30,7 +30,7 @@ import {
   type SupabaseClient,
 } from "@/lib/server/issue-store";
 import { TOOL_DEFINITIONS, type CopilotToolName, type NasTarget } from "@/lib/server/tools";
-import { executeNasCommand } from "@/lib/server/nas-api-client";
+import { nasApiExec, nasApiPreview, resolveNasApiConfig } from "@/lib/server/nas-api-client";
 import { parseJsonObject } from "@/lib/server/model-json";
 import { callModel } from "./call-model";
 import { block, type PromptBlock } from "./context-compiler";
@@ -231,38 +231,66 @@ function makeToolExecutor(
       return { content: `Tool "${call.name}" is not an available read-only tool.`, isError: true };
     }
 
-    const target = ((call.input.target as string) || defaultTarget) as NasTarget;
-    const command = def.buildPreview(target, {
-      lookbackHours: typeof call.input.lookbackHours === "number" ? call.input.lookbackHours : undefined,
-      filter: typeof call.input.filter === "string" ? call.input.filter : undefined,
-    });
+    try {
+      const target = ((call.input.target as string) || defaultTarget) as NasTarget;
+      const config = resolveNasApiConfig(target);
+      if (!config) return { content: `No NAS API config for ${target}.`, isError: true };
 
-    const exec = await withNasReachability(target, () => executeNasCommand(target, command));
-    if (isNasUnreachable(exec)) {
-      record.nasReachable = false;
-      return { content: `NAS ${target} is unreachable (${exec.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
+      const command = def.buildPreview(target, {
+        lookbackHours: typeof call.input.lookbackHours === "number" ? call.input.lookbackHours : undefined,
+        filter: typeof call.input.filter === "string" ? call.input.filter : undefined,
+      });
+
+      // Classify FIRST. Read-only investigation runs TIER 1 ONLY; anything higher
+      // (or blocked) must go through the operator approval gate as a proposed
+      // remediation — Stage 2 never auto-executes a tier-2/3 action (§3/§7).
+      const preview = await withNasReachability(target, () => nasApiPreview(config, command));
+      if (isNasUnreachable(preview)) {
+        record.nasReachable = false;
+        return { content: `NAS ${target} is unreachable (${preview.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
+      }
+      if (preview.blocked || preview.tier !== 1) {
+        return {
+          content:
+            `"${call.name}" resolved to a tier-${preview.tier} command${preview.blocked ? " (blocked by the NAS validator)" : ""}, ` +
+            `which is not auto-executable. Read-only investigation is tier-1 only. If a change — or a ` +
+            `privileged read of a user-data path — is warranted, propose it as a remediation ` +
+            `(decision=propose_remediation) so the operator can approve it. Command: ${command}`,
+          isError: true,
+        };
+      }
+
+      const exec = await withNasReachability(target, () => nasApiExec(config, command, 1, undefined, 30_000));
+      if (isNasUnreachable(exec)) {
+        record.nasReachable = false;
+        return { content: `NAS ${target} is unreachable (${exec.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
+      }
+
+      const body = `$ ${command}\n${exec.stdout}${exec.stderr ? `\n[stderr] ${exec.stderr}` : ""}`.slice(0, 12_000);
+      record.lastResults.push(body);
+
+      // Persist the tool result into the lossless store so later turns can page it.
+      await supabase.from("issue_evidence_items").insert({
+        issue_id: issue.id,
+        nas_id: target,
+        source: `tool:${call.name}`,
+        severity: exec.exit_code === 0 ? "info" : "error",
+        ts: new Date().toISOString(),
+        first_ts: new Date().toISOString(),
+        last_ts: new Date().toISOString(),
+        body,
+        dedup_count: 1,
+        in_scope: true,
+        anomalous: exec.exit_code !== 0,
+        metadata: { tool: call.name, target, exit_code: exec.exit_code },
+      });
+
+      return { content: body };
+    } catch (err) {
+      // Never throw out of the executor — a tool failure must return to the model
+      // as a result it can react to, not crash the whole turn.
+      return { content: `Tool "${call.name}" failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
-
-    const body = `$ ${command}\n${exec.stdout}${exec.stderr ? `\n[stderr] ${exec.stderr}` : ""}`.slice(0, 12_000);
-    record.lastResults.push(body);
-
-    // Persist the tool result into the lossless store so later turns can page it.
-    await supabase.from("issue_evidence_items").insert({
-      issue_id: issue.id,
-      nas_id: target,
-      source: `tool:${call.name}`,
-      severity: exec.exitCode === 0 ? "info" : "error",
-      ts: new Date().toISOString(),
-      first_ts: new Date().toISOString(),
-      last_ts: new Date().toISOString(),
-      body,
-      dedup_count: 1,
-      in_scope: true,
-      anomalous: exec.exitCode !== 0,
-      metadata: { tool: call.name, target, exit_code: exec.exitCode },
-    });
-
-    return { content: body };
   };
 }
 
