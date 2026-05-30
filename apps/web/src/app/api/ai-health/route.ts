@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServerClient } from "@/lib/supabase/server";
-import type { AiProvider } from "@synology-monitor/shared";
+import type { AiProvider, EffortLevel } from "@synology-monitor/shared";
 import { callModel } from "@/lib/server/ai/call-model";
 import { block } from "@/lib/server/ai/context-compiler";
 import { AiCallError } from "@/lib/server/ai/providers";
@@ -21,6 +21,16 @@ const PING_MODEL: Record<AiProvider, string> = {
   gemini: "gemini-2.5-flash",
   deepseek: "deepseek-chat",
   qwen: "qwen3.6-plus",
+};
+
+// OpenAI rejects 'minimal'; everyone else uses 'minimal' to skip thinking so the
+// short reply fits the probe's token budget (reasoning tokens count against it).
+const PROBE_EFFORT: Record<AiProvider, EffortLevel> = {
+  anthropic: "minimal",
+  openai: "low",
+  gemini: "minimal",
+  deepseek: "minimal",
+  qwen: "minimal",
 };
 
 const KEY_ENVS: Record<AiProvider, string[]> = {
@@ -52,8 +62,10 @@ export async function GET() {
       try {
         const r = await callModel({
           model: PING_MODEL[provider],
-          effort: "medium",
-          maxTokens: 16,
+          effort: PROBE_EFFORT[provider],
+          // Generous so reasoning models don't exhaust the budget before emitting
+          // visible text (a tiny cap yields finish_reason=length with empty output).
+          maxTokens: 2048,
           blocks: [
             block.stable("system", "You are a connectivity probe. Reply with the single word OK."),
             block.dynamic("instruction", "Reply now."),
