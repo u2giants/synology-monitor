@@ -161,6 +161,22 @@ func (c *DiskStatsCollector) collect(emit bool) {
 			UtilPct:    roundFloat(utilPct, 1),
 			QueueDepth: roundFloat(queueDepth, 2),
 		})
+
+		// Emit instantaneous in-progress I/O count as a separate metric.
+		// This is a gauge (not a rate) — field 9 of /proc/diskstats. It captures
+		// spikes (e.g. RAID resync saturation) that the averaged queue_depth can
+		// mask over a 15s interval.
+		c.sender.QueueMetric(sender.MetricPayload{
+			NasID: c.nasID,
+			Type:  "disk_inflight_ios",
+			Value: float64(cur.iosInProgress),
+			Unit:  "count",
+			Metadata: map[string]interface{}{
+				"device": device,
+			},
+			RecordedAt: now,
+		})
+
 		emitted++
 	}
 

@@ -660,12 +660,25 @@ func mergeMetadata(base, extra map[string]interface{}) map[string]interface{} {
 }
 
 func inferDriveLogFiles(watchPaths []string) []LogFile {
+	// The agent's Docker compose mounts @synologydrive at /host/shares/@synologydrive
+	// and @SynologyDriveShareSync at /host/shares/@SynologyDriveShareSync. These
+	// must be the first bases tried, before the legacy watch-path-based search, so
+	// Drive client logs are always collected regardless of WATCH_PATHS config.
+	bases := []string{"/host/shares"}
+	bases = append(bases, watchPaths...)
+
+	seen := map[string]bool{}
 	var files []LogFile
-	for _, watchPath := range watchPaths {
-		files = append(files,
-			LogFile{Path: filepath.Join(watchPath, "@synologydrive/log/*.log"), Source: "drive"},
-			LogFile{Path: filepath.Join(watchPath, "@synologydrive/log/syncfolder.log"), Source: "drive_sharesync"},
-		)
+	for _, base := range bases {
+		for _, lf := range []LogFile{
+			{Path: filepath.Join(base, "@synologydrive/log/*.log"), Source: "drive"},
+			{Path: filepath.Join(base, "@synologydrive/log/syncfolder.log"), Source: "drive_sharesync"},
+		} {
+			if !seen[lf.Path] {
+				seen[lf.Path] = true
+				files = append(files, lf)
+			}
+		}
 	}
 	return files
 }
