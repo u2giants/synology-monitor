@@ -166,45 +166,98 @@ Each stage reads **(model, reasoning/effort)** from config (§8). Caching (§9)
 makes the strong middle stage affordable. Stage 2's invariants — **bounded,
 resumable, cache-independent** — are defined in §5/§7/§9.
 
-### Stage 1 — Lossless Structurer (cheap, low effort, single-shot)
-- Replaces `compressLogsToFacts`.
-- Input: raw telemetry for the issue window (sources in §1a).
-- Job: **remove only exact repetition/noise; keep every distinct event in full.**
-  Collapse byte-identical lines into `{line, count, first_ts, last_ts}`; group by
-  source/time; normalize for token efficiency; **never truncate or summarize a
-  distinct event, never drop fields.**
-- Output: the **persisted** structured evidence set (see §5 for where it lives and
-  how Stage 2 consumes a bounded slice of it). Raw detail is retained and
-  retrievable — not discarded as today.
+### §3.1 Stage 1 — Lossless Structurer (deterministic, no model call)
 
-### Stage 2 — Reasoning Core (strong, high effort, cached, live tools, resumable)
-- Consolidates hypothesis + planner + remediation_planner + verifier into one
-  agentic loop.
-- Prompt structure (stable→dynamic, §9): system prompt → tool schemas → output
-  schema → NAS taxonomy (issue families, `capability_state`, DSM blind spots) →
-  **whole-system health snapshot** → issue summary/history → **bounded evidence
-  slice** (§5) → per-turn instruction.
-- Capabilities:
-  - **Live tools on demand** via the shared catalog (§6): read-only tier-1 freely;
-    tier-2/3 through the operator approval gate (§7). Includes `fetch_evidence`
-    (§5) to reach the rest of the persisted lossless evidence, and live NAS reads.
-    Live NAS reads need Tailscale; if it's down the agent degrades to Supabase-only
-    diagnosis via `fetch_evidence` and flags the NAS as offline (§7).
-  - **Whole-system view** + sibling/correlated-issue visibility — can widen scope.
-  - **Re-chew guard** — fingerprint (evidence slice + tool results + planned
-    action) each turn; if unchanged and repeating, STOP and switch to "what's
-    missing": fetch more evidence, run a new diagnostic, escalate, or ask the
-    operator.
-- Outputs per turn: hypothesis+confidence, and exactly one of {diagnostic action,
-  remediation proposal, user question, terminal verdict}. Verification after an
-  executed action is **just the next turn of the same loop**, not a separate stage.
-- **Resumable**: every turn persists its transcript to the DB; the process dies at
-  each approval/user gate and resumes from DB state (§7). The cache is an
-  optimization only (§9).
+Replaces `compressLogsToFacts`. Makes no model calls and no external I/O beyond reading from Supabase and writing back to `issue_evidence_items`.
 
-### Stage 3 — Explainer / Memory (cheap, low effort, single-shot)
-- Consolidates explainer + memory_consolidation: operator-facing message + durable
-  `agent_memory` entries.
+**Telemetry sources ingested** (`TELEMETRY_SOURCES` constant):
+
+| Source key | Evidence source label |
+|---|---|
+| `alerts` | `alert` |
+| `logs` / `audit_logs` | per-DB `source` field |
+| `top_processes` | `process_snapshot` |
+| `disk_io` | `disk_io` |
+| `scheduled_tasks_with_issues` | `scheduled_task` |
+| `backup_tasks` | `backup_task` |
+| `snapshot_replicas` | `snapshot_replica` |
+| `container_io_top` | `container_io` |
+| `sharesync_tasks` | `sync_task` |
+| `io_pressure_metrics` | `io_metric` |
+| `storage_snapshots` | `storage_snapshot` |
+| `dsm_errors` | `dsm_error` |
+
+**Evidence body construction (losslessness).** For log-type rows (`logs`, `audit_logs`, `dsm_errors`) the per-DB `source` field is used as the evidence source label and the `message` field is the evidence body. For all other (structured) rows the evidence body is the full JSON serialisation of the row via `stableJson`, which strips only the top-level `metadata` key to avoid duplicate nesting of fields already promoted to evidence columns.
+
+**Idempotency.** Stage 1 deletes all existing `issue_evidence_items` rows for the issue before inserting, making it a pure function of the current telemetry state. Safe to re-run.
+
+**Deduplication.** Byte-identical `(source, body)` pairs are collapsed into one row with `dedup_count` = occurrence count, `first_ts`/`last_ts` spanning the range. Distinct events are never merged, truncated, or summarised.
+
+**Anomaly classification.** A row is `anomalous=true` if: `severity >= error`, OR `severity = warning` AND the body contains at least one state-change keyword (`failed`, `error`, `timeout`, `degraded`, `offline`, `crash`, `panic`, `rejected`, `aborted`, `stopped`, `restart`, …).
+
+**Scope classification.** A row is `in_scope=true` if: the row's `nas_id` matches `issue.affected_nas`, OR `severity >= error`, OR `issue.affected_nas` is empty/null.
+
+**Token budget and prioritisation.** `EVIDENCE_TOKEN_BUDGET = 12,000 tokens` (≈48,000 chars). 70% of that budget is reserved for in-scope/anomalous rows (full bodies, sorted by descending severity then recency). The remaining 30% is used for noise summaries (dedup-with-count one-liners). The evidence index (source × time-bucket × count) is always included regardless of budget.
+
+**Overflow rule.** If the priority tier alone exceeds its 70% budget, Stage 1 includes the full evidence index plus as many full bodies as fit. Evidence bodies are never silently dropped; the index always allows Stage 2 to retrieve omitted items via `fetch_evidence`.
+
+---
+
+### §3.2 Stage 2 — Reasoning Core (strong model, agentic loop, resumable)
+
+Consolidates hypothesis + planner + remediation_planner + verifier into one agentic loop. One job invocation = one turn; turns are bounded by `TURN_CAP = 8`.
+
+**Prompt structure (strictly stable→dynamic for cache correctness, §9):**
+
+1. `[stable]` System prompt — role, constraints, tier policy, tool inventory
+2. `[stable]` Output schema — the JSON decision format
+3. `[stable]` NAS taxonomy — issue families, DSM blind spots
+4. `[semi-stable]` Whole-system snapshot — NAS reachability (3s probe against `nas-api /health`), active alert counts (6h), open issue list with sibling titles
+5. `[semi-stable]` Issue summary — title, severity, status, affected NAS, current hypothesis, operator constraints
+6. `[dynamic]` Evidence slice — built from `issue_evidence_items`; changes each turn as new tool results are persisted
+7. `[dynamic]` Per-turn instruction — initial investigation, re-chew warning, or respond-to-user
+
+**Transcript.** Loaded from `issue_messages` (cap: 60 messages). `role=agent` → `"assistant"`; `role=system` → prefixed `"[system] …"` user turn.
+
+**Tool catalog (all tier-1, auto-execute):**
+
+| Tool | Purpose |
+|---|---|
+| `fetch_evidence` | Page or aggregate `issue_evidence_items` for this issue. Results are NOT re-persisted (no double-counting). Works when NAS is offline. |
+| `run_command` | Free-form read-only shell command: `cat /proc/mdstat`, `cat /sys/block/md5/inflight`, `tail -n 200 /var/log/kern.log`, etc. Use when no predefined tool covers the need. Write commands are hard-blocked by the NAS validator. |
+| Predefined tools (100+) | Curated read-only commands for SMART, BTRFS, ShareSync, Docker, process/network/storage diagnostics (shared catalog, §6). |
+
+Every NAS tool result and every `run_command` result is persisted to `issue_evidence_items` immediately. This means the evidence slice changes on the next turn (new rows included), the fingerprint changes, and the re-chew counter resets correctly.
+
+**NAS offline degradation.** `withNasReachability` wraps all NAS calls; on ECONNREFUSED/timeout it returns a structured `nas_unreachable` result (never a raw exception). The model is informed the NAS is offline and directed to use `fetch_evidence`.
+
+**Tier policy.** Tier-2/3 actions are NEVER auto-executed. If a tool resolves to tier-2/3 or is hard-blocked, the executor returns a structured error explaining why and directing the model to `propose_remediation` or `ask_user`.
+
+**Re-chew guard.** The evidence slice text is hashed each turn. If the hash equals the prior turn's hash and the model returns `decision=continue`, the repeat counter increments. After ≥ 2 repeats, `toTurnOutcome` overrides to `ask_user` to prevent infinite loops.
+
+**Resumable from DB (§7).** The process dies at every approval/user gate. On resume, `runStage2Turn` rebuilds identical context from `issue_evidence_items` + `issue_messages`; a cache hit saves cost, a miss changes nothing.
+
+---
+
+### §3.3 Stage 3 — Explainer / Memory (cheap model, single-shot)
+
+Runs after Stage 2 reaches a terminal decision (`resolved` or `stuck`). Wrapped in `try/catch` in `pipeline-v2` — Stage 3 failure must never fail the issue resolution.
+
+**Context fed to Stage 3:**
+- Issue fields: `title`, `severity`, `status`, `affected_nas`, `current_hypothesis`, `conversation_summary`
+- Evidence highlights: `issue_evidence_items` filtered to `in_scope=true`, most recent 30 rows, body truncated to 300 chars each
+- Action history: `issue_actions`, first 20 rows
+
+**Operator message.** 2–5 sentence plain-language summary (what happened, root cause, what was done/proposed, what to watch). Posted to `issue_messages` with `role="agent"`.
+
+**Memory types** (max 5 per issue; each must be specific, non-obvious, and durable):
+
+| Type | Purpose |
+|---|---|
+| `nas_profile` | NAS-specific hardware/software behaviour on a named unit |
+| `issue_pattern` | Recurring failure pattern identifiable by its symptom signature |
+| `calibration` | Threshold or baseline calibration insight for a metric or alert |
+| `institutional` | Human-facing process, ownership, or escalation knowledge |
 
 ---
 
