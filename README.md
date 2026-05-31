@@ -1,41 +1,49 @@
 # Synology Monitor
 
-AI-powered monitoring dashboard for Synology NAS. The system collects telemetry from two NAS boxes, groups it into issues, and runs an LLM-driven issue agent that diagnoses problems and proposes fixes with an operator approval gate.
+Telemetry collection, issue detection, and LLM-driven remediation for a two-unit Synology NAS fleet. A Go agent on each NAS pushes metrics and logs to Supabase; a Next.js dashboard groups them into issues and runs a three-stage AI pipeline that diagnoses problems and proposes fixes behind an operator approval gate. An MCP server also exposes 100+ NAS diagnostic tools to AI chat clients.
 
 Live at **[mon.designflow.app](https://mon.designflow.app)**.
-
-## Repository layout
-
-```
-apps/
-  agent/       Go monitoring agent — runs on each NAS, pushes telemetry to Supabase
-  nas-api/     Go REST API — runs on each NAS, executes approved shell commands
-  nas-mcp/     Node.js MCP server — exposes NAS tools to AI agents over Streamable HTTP/SSE
-  web/         Next.js dashboard — issues, telemetry, operator UI
-  relay/       Relay service for external clients
-deploy/
-  synology/    NAS compose files, env examples, deployment scripts
-.github/
-  workflows/   One build+push workflow per app, all trigger on main
-```
 
 ## Docs
 
 | | |
 |---|---|
-| [AGENTS.md](AGENTS.md) | **Start here** — canonical operating guide for engineers and AI sessions |
-| [PLAN.md](PLAN.md) | Design for the planned issue-agent rewrite (not yet built) |
-| [docs/architecture.md](docs/architecture.md) | System design, components, data flow, constraints |
+| [AGENTS.md](AGENTS.md) | **Start here** — canonical operating guide for AI sessions and engineers |
+| [docs/architecture.md](docs/architecture.md) | System design, data flow, component constraints |
 | [docs/development.md](docs/development.md) | Build, run, test, debug |
-| [docs/configuration.md](docs/configuration.md) | Environment variables and config |
-| [docs/deployment.md](docs/deployment.md) | Deploy and release workflow |
-| [deploy/synology/README.md](deploy/synology/README.md) | NAS-side agent deployment detail |
-| [apps/nas-mcp/README.md](apps/nas-mcp/README.md) | MCP server tool catalog |
+| [docs/configuration.md](docs/configuration.md) | All environment variables |
+| [docs/deployment.md](docs/deployment.md) | CI/CD and release workflow |
+| [PLAN.md](PLAN.md) | Issue-agent pipeline design (built and live as of 2026-05-30) |
 
-## Quick orientation
+## Prerequisites
 
-**Push to `main`** triggers GitHub Actions builds for whichever apps have changed. The web app and nas-mcp workflows call the Coolify webhook at the end to redeploy automatically. The agent and nas-api images are picked up by Watchtower on each NAS within 5 minutes and the containers are automatically recreated — no manual steps required.
+- **Go 1.23+** with CGO enabled
+- **Node.js 22+** and **pnpm 9**
+- **Docker**
 
-**Supabase** is the shared data layer. The agent writes to it; the web app reads from it. The NAS API does not touch Supabase directly.
+## Getting started
 
-**NAS API** is a three-tier command executor — read-only (auto-approved), reversible writes (require `confirmed: true`), destructive writes (require HMAC token). It is not an SSH bridge; every allowed command is statically declared in `apps/nas-api/internal/validator/validator.go`. Recursive grep against Synology internal stores (`@synologydrive`, `@SynologyDriveShareSync`) is permanently hard-blocked regardless of tier — see `docs/architecture.md` for why.
+```sh
+pnpm install
+pnpm build
+```
+
+| Task | Command |
+|---|---|
+| Run web app locally | `cd apps/web && pnpm dev` (needs `.env.local` — see `docs/development.md`) |
+| Build the Go agent | `cd apps/agent && CGO_ENABLED=1 go build ./...` |
+| Run type checks | `pnpm type-check` |
+| Run Go tests | `cd apps/agent && go test ./...` |
+
+## Where to look for what
+
+| You want to... | Start here |
+|---|---|
+| Add or modify a NAS diagnostic tool | `apps/nas-mcp/src/tool-definitions.ts`, `tools-config.json` |
+| Add a new agent telemetry collector | `apps/agent/internal/collector/` + wire in `cmd/agent/main.go` |
+| Change how issues are detected or diagnosed | `apps/web/src/lib/server/issue-detector.ts`, `ai/pipeline-v2.ts` |
+| Allow a new NAS shell command | `apps/nas-api/internal/validator/validator.go` + `validator_test.go` |
+
+## Deployment
+
+Push to `main`. GitHub Actions builds and pushes images to GHCR. The web app and NAS MCP server redeploy automatically via Coolify webhook; the agent and NAS API are picked up by Watchtower on each NAS within 5 minutes. No manual steps required. See [docs/deployment.md](docs/deployment.md) for rollback and pinning instructions.

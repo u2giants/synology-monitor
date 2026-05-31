@@ -5,7 +5,7 @@
 ## Allowed operations
 
 - Edit source under `apps/`, `docs/`, `deploy/`, `supabase/migrations/`, `.github/workflows/`, top-level `*.md`.
-- Run `pnpm build`, `pnpm lint`, `pnpm typecheck`, `go build`, `go test` locally.
+- Run `pnpm build`, `pnpm lint`, `pnpm type-check`, `go build`, `go test` locally.
 - Commit and push to `main` when explicitly asked. Default behavior: do not commit unprompted.
 
 ## Not allowed
@@ -19,16 +19,20 @@
 
 - Subject line: `area: short imperative` (e.g. `nas-mcp: …`, `agent: …`, `docs: …`). Match prior history (`git log --oneline`) for the project area.
 - Body: one short paragraph on *why*, not what. Reference incident, prior commit, or user request when relevant.
-- Co-author trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` (match the model in use).
+- Co-author trailer: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` (match the model in use).
 
 ## Ignore files
 
-`.claudeignore` at the repo root is honored by Claude Code. It excludes build artifacts, dependencies, lockfiles, and the `evals/` and vestigial scratch files from context. Update it when adding new generated directories.
+`.claudeignore` at the repo root is honored by Claude Code. It excludes build artifacts (`node_modules/`, `.next/`, `dist/`, `.turbo/`), lockfiles, `evals/`, and the vestigial scratch file `ersahazan2Desktopsynology-monitor`. Update it when adding new generated directories.
 
-For other AI tools without an analogous ignore mechanism, paste `AGENTS.md` as your first message and follow the *§ 7 — What to ignore* list.
+For other AI tools, paste `AGENTS.md` as your first message and follow the *§ 9 — What to ignore* list.
 
 ## Memory / context notes
 
-- The NAS MCP server has 108 tools in `ALL_TOOL_DEFS` but only 5 are exposed to clients per session. When debugging tool availability, check `tool_search` results and `tools-config.json` enablement, not just the count of definitions.
-- Local workspace path on the dev machine: `/worksp/monitor/app`. This is a working copy of `github.com/u2giants/synology-monitor` on `main`.
+- Local workspace path: `/worksp/monitor/app`. Working copy of `github.com/u2giants/synology-monitor` on `main`.
+- The NAS MCP server has 108 tools in `ALL_TOOL_DEFS` but exposes only 5 per session (`tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). When debugging tool availability, check `tool_search` results and `tools-config.json` enablement — the count of definitions is not the count of exposed tools.
+- The 3-stage AI pipeline (`stage1-structurer.ts`, `stage2-reasoning.ts`, `stage3-explainer.ts`) is the only active issue-agent pipeline as of 2026-05-30. The legacy 7-stage pipeline and OpenRouter inference path have been removed.
+- `issue_evidence_items` and `issue_evidence` are different tables with different purposes — do not confuse them.
+- `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not yet wired to any pipeline stage.
+- `drive_team_folders_partitioned`: schema exists, no child partitions, no writes — future scaling infrastructure; do not drop.
 - HANDOFF.md is created only when work is genuinely incomplete at session end. Delete it as part of the commit that resolves the work it describes.

@@ -1,69 +1,157 @@
 # Deployment
 
-## Overview
+## Architecture overview
 
 ```
-push to main
+GitHub (main branch)
   │
   ├─ agent-image.yml   → ghcr.io/u2giants/synology-monitor-agent:latest
   ├─ nas-api-image.yml → ghcr.io/u2giants/synology-monitor-nas-api:latest
-  ├─ nas-mcp-image.yml → ghcr.io/u2giants/synology-monitor-nas-mcp:latest
-  └─ web-image.yml     → ghcr.io/u2giants/synology-monitor-web:latest
-                             └─ triggers Coolify redeploy (webhook at end of workflow)
+  ├─ nas-mcp-image.yml → ghcr.io/u2giants/synology-monitor-nas-mcp:latest  ─→ Coolify redeploy
+  └─ web-image.yml     → ghcr.io/u2giants/synology-monitor-web:latest      ─→ Coolify redeploy
+
+Coolify VPS (178.156.180.212)
+  ├─ synology-monitor-web      (mon.designflow.app)
+  └─ synology-monitor-nas-mcp  (nas-mcp.designflow.app/mcp)
+
+NAS 1 — edgesynology1 (100.107.131.35)          NAS 2 — edgesynology2 (100.107.131.36)
+  ├─ synology-monitor-agent    (Docker)            ├─ synology-monitor-agent
+  ├─ synology-monitor-nas-api  (:7734)             ├─ synology-monitor-nas-api  (:7734)
+  └─ synology-monitor-watchtower                   └─ synology-monitor-watchtower
 ```
 
-Each workflow has a `paths:` filter — it only runs when files in its app directory (or the workflow file itself) change.
+Each NAS runs the agent, the NAS API, and a Watchtower container. Watchtower polls GHCR every 5 minutes and automatically recreates the agent and nas-api containers when a new image is available. The relay service has no CI workflow and is deployed manually on the VPS — treat that as an exceptional path (see `apps/relay/OPERATIONS.md`).
 
-## Web app and NAS MCP (fully automatic)
+## GitHub Actions workflows
 
-1. Push to `main` with relevant file changes
-2. GitHub Actions builds and pushes image to GHCR
-3. Workflow's final step calls the Coolify redeploy webhook
-4. Coolify pulls the new image and recreates the container
+Four workflows live in `.github/workflows/`. Each has a `paths:` filter and also supports `workflow_dispatch` for manual runs.
 
-No manual steps needed. Each workflow's final step calls the Coolify redeploy
-webhook (`GET http://178.156.180.212:8000/api/v1/deploy?uuid=...&force=false`,
-auth `secrets.COOLIFY_TOKEN`):
-- **nas-mcp** (`nas-mcp-image.yml`): UUID `efl17f5iocnz94840pexre9d` is **hardcoded**
-  in the workflow (not a secret).
-- **web** (`web-image.yml`): UUID comes from the secret `COOLIFY_WEBHOOK_UUID`; the
-  build also passes `NEXT_PUBLIC_SUPABASE_URL/ANON_KEY` + `BUILD_SHA` as build args.
+| Workflow | Trigger paths | Image published | Coolify redeploy |
+|---|---|---|---|
+| `agent-image.yml` | `.github/workflows/agent-image.yml`, `apps/agent/**` | `ghcr.io/u2giants/synology-monitor-agent` | No |
+| `nas-api-image.yml` | `.github/workflows/nas-api-image.yml`, `apps/nas-api/**` | `ghcr.io/u2giants/synology-monitor-nas-api` | No |
+| `nas-mcp-image.yml` | `.github/workflows/nas-mcp-image.yml`, `apps/nas-mcp/**`, `packages/shared/**` | `ghcr.io/u2giants/synology-monitor-nas-mcp` | Yes — UUID `efl17f5iocnz94840pexre9d` (hardcoded) |
+| `web-image.yml` | `.github/workflows/web-image.yml`, `apps/web/**`, `packages/shared/**`, `package.json`, `pnpm-workspace.yaml`, `turbo.json` | `ghcr.io/u2giants/synology-monitor-web` | Yes — UUID from secret `COOLIFY_WEBHOOK_UUID` |
 
-**Relay** has **no** GitHub Actions workflow — its image is not built by CI. It is
-built/deployed manually on the VPS (see `apps/relay/OPERATIONS.md`); treat that as
-an exceptional path, not the routine one.
+All workflows tag images three ways: `:latest`, `:sha-<short-sha>`, and `:main`.
 
-## NAS API (fully automatic via Watchtower)
+### Required GitHub Secrets
 
-The `nas-api-image.yml` workflow builds and pushes the image to GHCR. **There is no Coolify webhook for the NAS API** — it runs on the NAS itself, not on the VPS.
+| Secret | Used by | Purpose |
+|---|---|---|
+| `GITHUB_TOKEN` | All workflows | Push images to GHCR |
+| `COOLIFY_TOKEN` | `nas-mcp-image.yml`, `web-image.yml` | Authenticate Coolify redeploy webhook |
+| `COOLIFY_WEBHOOK_UUID` | `web-image.yml` | UUID of the web app in Coolify |
+| `NEXT_PUBLIC_SUPABASE_URL` | `web-image.yml` | Baked into Next.js client bundle at build time |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `web-image.yml` | Baked into Next.js client bundle at build time |
 
-Watchtower on each NAS polls GHCR every 5 minutes. When it detects a new image it stops the old container, removes it, and starts a new one automatically. No manual steps are needed after pushing changes to `apps/nas-api` or `apps/agent`.
+## Docker images
 
-**Non-obvious:** `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` for the web app are build-time secrets — they are baked into the Next.js bundle during `docker build`. They must be set as GitHub Secrets (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`) so the workflow can pass them as build args. Changing them in Coolify's runtime env after the image is already built has no effect.
+| Image | Contents | Who pulls it |
+|---|---|---|
+| `ghcr.io/u2giants/synology-monitor-agent` | Go binary; telemetry collectors, SQLite WAL sender | Watchtower on each NAS |
+| `ghcr.io/u2giants/synology-monitor-nas-api` | Go binary; three-tier command validator and executor, port 7734 | Watchtower on each NAS |
+| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 108-tool registry | Coolify on VPS |
+| `ghcr.io/u2giants/synology-monitor-web` | Next.js; dashboard, issue detector, issue-agent pipeline | Coolify on VPS |
 
-## Agent and NAS API (NAS-side containers)
+All images are public in GHCR under the `u2giants` organization. Tags: `:latest` (always the most recent main-branch build), `:sha-<short-sha>` (pinnable), `:main` (branch ref, same as latest on main).
 
-Watchtower on each NAS polls GHCR every 5 minutes. When it detects a new image for `synology-monitor-agent` or `synology-monitor-nas-api`, it stops the old container, removes it, and starts a new one automatically. Push to `main` → image builds → Watchtower picks it up within 5 minutes on both NASes.
+## Deploying the web app
 
-**Manual recreate** is only needed if Watchtower itself is down, or if you need to force an immediate update before the next poll cycle:
+**Normal path — fully automatic:**
+
+1. Push to `main` with changes under `apps/web/`, `packages/shared/`, or the web workflow file.
+2. `web-image.yml` builds the image. It passes `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `BUILD_SHA` as Docker build args — these are baked into the Next.js client bundle.
+3. The workflow calls the Coolify redeploy webhook: `GET http://178.156.180.212:8000/api/v1/deploy?uuid=${COOLIFY_WEBHOOK_UUID}&force=false` with `Authorization: Bearer ${COOLIFY_TOKEN}`.
+4. Coolify pulls the new `:latest` image and recreates the container.
+
+**Env vars that must exist in Coolify before the first deploy** (runtime, server-side only — not build-time):
+
+| Variable | Purpose |
+|---|---|
+| `SUPABASE_SERVICE_ROLE_KEY` | Server-side Supabase writes |
+| `OPENROUTER_API_KEY` or `OPENAI_API_KEY` | LLM calls for the issue agent |
+| `NAS_EDGE1_API_URL`, `NAS_EDGE1_API_SECRET`, `NAS_EDGE1_API_SIGNING_KEY` | NAS 1 access |
+| `NAS_EDGE2_API_URL`, `NAS_EDGE2_API_SECRET`, `NAS_EDGE2_API_SIGNING_KEY` | NAS 2 access |
+| `ISSUE_WORKER_TOKEN` | Auth for the internal issue-worker drain endpoint (if using background mode) |
+
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are **not** runtime vars — they must be GitHub Secrets so the build workflow can bake them in. Setting them only in Coolify has no effect after the image is already built.
+
+## Deploying the NAS MCP server
+
+**Normal path — fully automatic:**
+
+1. Push to `main` with changes under `apps/nas-mcp/` or `packages/shared/`.
+2. `nas-mcp-image.yml` builds and pushes the image.
+3. The workflow calls the Coolify redeploy webhook with the hardcoded UUID `efl17f5iocnz94840pexre9d`.
+4. Coolify recreates the container.
+
+**Env vars that must exist in Coolify:**
+
+| Variable | Purpose |
+|---|---|
+| `MCP_BEARER_TOKEN` | Auth token required by all MCP clients |
+| `NAS_EDGE1_API_URL`, `NAS_EDGE1_API_SECRET`, `NAS_EDGE1_API_SIGNING_KEY` | NAS 1 access |
+| `NAS_EDGE2_API_URL`, `NAS_EDGE2_API_SECRET`, `NAS_EDGE2_API_SIGNING_KEY` | NAS 2 access |
+
+Tool availability is controlled by `apps/nas-mcp/tools-config.json` in the repo, not by env vars.
+
+## Deploying the agent to a NAS
+
+### Normal path — Watchtower (fully automatic)
+
+1. Push to `main` with changes under `apps/agent/`.
+2. `agent-image.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-agent:latest`.
+3. Watchtower on each NAS polls GHCR every 5 minutes, detects the new digest, stops the old container, removes it, and starts a new one using the same compose file and env.
+
+No manual steps are needed. Allow up to 5 minutes for the update to propagate after the image push completes.
+
+### Checking the current version
+
+```sh
+# On the NAS (via Synology SSH or Container Manager terminal):
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+$DOCKER inspect synology-monitor-agent --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+# Or check the image tag:
+$DOCKER ps --format 'table {{.Names}}\t{{.Image}}'
+```
+
+### Forcing an immediate update
+
+Only needed if Watchtower itself is down or you cannot wait for the next 5-minute poll:
 
 ```sh
 DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
 cd /volume1/docker/synology-monitor-agent
 
 $DOCKER compose -f compose.yaml pull
-$DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
-$DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
-$DOCKER compose -f compose.yaml up -d
+$DOCKER stop synology-monitor-agent || true
+$DOCKER rm synology-monitor-agent || true
+$DOCKER compose -f compose.yaml up -d synology-monitor-agent
 ```
 
-## Compose file on NAS
+### First deployment to a new NAS
 
-The compose file on each NAS lives at `/volume1/docker/synology-monitor-agent/compose.yaml` and should be kept in sync with `deploy/synology/docker-compose.agent.yml` in this repo.
+1. Install Docker via Synology Container Manager package.
+2. Enable SSH on the NAS temporarily for initial setup (DSM > Control Panel > Terminal).
+3. Create `/volume1/docker/synology-monitor-agent/`.
+4. Copy `deploy/synology/docker-compose.agent.yml` to `/volume1/docker/synology-monitor-agent/compose.yaml`.
+5. Create `/volume1/docker/synology-monitor-agent/.env` from `deploy/synology/nas-1.env.example` (or `nas-2.env.example`) and fill in all required values (see `docs/configuration.md`).
+6. Authenticate Docker with GHCR:
+   ```sh
+   echo $GITHUB_PAT | $DOCKER login ghcr.io -u <username> --password-stdin
+   ```
+7. Pull and start:
+   ```sh
+   DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+   cd /volume1/docker/synology-monitor-agent
+   $DOCKER compose -f compose.yaml pull
+   $DOCKER compose -f compose.yaml up -d
+   ```
+8. Verify: `$DOCKER ps` should show `synology-monitor-agent`, `synology-monitor-nas-api`, and `synology-monitor-watchtower` running.
+9. Insert a row in `nas_units` in Supabase matching the `NAS_ID` in the `.env`.
 
-The NAS compose file mounts individual shares (e.g. `/volume1/mac`) rather than the whole `/volume1` because Synology Container Manager rejects top-level `/volume1` bind mounts on compose-driven recreates.
-
-Required mounts — do not remove these:
+**Required mounts — do not remove these from the compose file:**
 
 | Host path | Container path | Why |
 |---|---|---|
@@ -74,30 +162,145 @@ Required mounts — do not remove these:
 
 The nas-api container also needs `pid: host` for commands that reference live process PIDs.
 
-## Pinning the agent image
+## Deploying the NAS API
 
-If you need to hold a specific agent version, set `AGENT_IMAGE_TAG` in the NAS `.env` to the SHA tag from GHCR. Watchtower will stop auto-updating until you remove the pin.
+The NAS API image (`ghcr.io/u2giants/synology-monitor-nas-api`) is built by `nas-api-image.yml` and deployed by the same Watchtower mechanism as the agent. The NAS API is a sidecar in the same Docker Compose file — Watchtower manages both. All steps in the agent section above apply equally to the NAS API.
+
+## Supabase migrations
+
+**How they are applied:** Manually, via the Supabase CLI or the Supabase dashboard SQL editor. There is no CI step that auto-applies migrations. After writing a new migration file, the operator runs it against the production project `qnjimovrsaacneqkggsn`.
+
+**Naming convention:** Sequential five-digit prefix, then a short snake_case description:
+
+```
+supabase/migrations/00001_initial_schema.sql
+supabase/migrations/00035_drop_source_whitelists.sql
+supabase/migrations/00041_drop_dead_tables.sql
+```
+
+**Rules:**
+- Do not edit or rewrite already-applied migration files. Treat them as append-only history.
+- New columns or tables always get a new migration file.
+- The latest applied migration is `00041`.
+
+## Environment variable management
+
+**Coolify is the source of truth for all production runtime env vars.** Do not:
+- Edit env vars by SSH-ing into the VPS and editing container configs.
+- Commit real secret values to any file in the repo, including `*.env.example` files.
+- Change Coolify env vars from an AI session or script — make the change in the Coolify UI and redeploy.
+
+For NAS-side services (agent, nas-api), env vars live in `/volume1/docker/synology-monitor-agent/.env` on each NAS. Changes take effect on the next container recreate (Watchtower will pick up the new image, but it will not re-read `.env` unless the container is stopped and restarted).
+
+### Cross-service credential parity
+
+Three credential pairs must be kept in sync across the NAS `.env` and Coolify:
+
+| Credential | NAS `.env` key | Coolify key (web + nas-mcp) |
+|---|---|---|
+| NAS 1 API bearer secret | `NAS_API_SECRET` | `NAS_EDGE1_API_SECRET` |
+| NAS 1 HMAC signing key | `NAS_API_APPROVAL_SIGNING_KEY` | `NAS_EDGE1_API_SIGNING_KEY` |
+| NAS 2 API bearer secret | `NAS_API_SECRET` (on NAS 2) | `NAS_EDGE2_API_SECRET` |
+| NAS 2 HMAC signing key | `NAS_API_APPROVAL_SIGNING_KEY` (on NAS 2) | `NAS_EDGE2_API_SIGNING_KEY` |
+
+A mismatch produces silent 403s from the NAS API — the request is made but every response is unauthorized.
+
+## Rollback procedure
+
+### Web app and NAS MCP (Coolify-managed)
+
+In the Coolify UI, navigate to the service, go to Deployments, and redeploy a previous deployment entry. Coolify stores deployment history. Alternatively, in the Coolify service configuration, pin the image to a specific SHA tag (e.g. `ghcr.io/u2giants/synology-monitor-web:sha-abc1234`) and trigger a redeploy.
+
+Image tags for pinning are available in the GHCR package pages:
+- `https://github.com/u2giants/synology-monitor/pkgs/container/synology-monitor-web`
+- `https://github.com/u2giants/synology-monitor/pkgs/container/synology-monitor-nas-mcp`
+
+### Agent and NAS API (Watchtower-managed)
+
+Pin the agent image by setting `AGENT_IMAGE_TAG` in the NAS `.env` to the SHA tag of the last known-good image, then recreate the container:
 
 ```sh
 # In /volume1/docker/synology-monitor-agent/.env
 AGENT_IMAGE_TAG=sha-abc1234
 ```
 
-## Rolling back
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+cd /volume1/docker/synology-monitor-agent
+$DOCKER stop synology-monitor-agent synology-monitor-nas-api || true
+$DOCKER rm synology-monitor-agent synology-monitor-nas-api || true
+$DOCKER compose -f compose.yaml up -d
+```
 
-To roll back the web app: in Coolify, redeploy from a previous image tag. Images are tagged `latest`, `sha-<git-sha>`, and `main`.
+Watchtower will stop auto-updating the agent while `AGENT_IMAGE_TAG` is pinned to a non-`latest` value. Remove the pin (or set it back to `latest`) to resume auto-updates.
 
-To roll back the agent: update `AGENT_IMAGE_TAG` on the NAS to the previous SHA tag and run the recreate sequence above.
+To roll back via code: `git revert` the offending commit on `main`, push, let the workflow build a new image, and allow Watchtower to pick it up within 5 minutes.
 
-## Environment parity
+## SSH access
 
-Three sets of credentials must stay in sync:
+**Public SSH is disabled on the VPS by design.** SSH is not a routine deployment or debugging path. Access the VPS only via the Coolify terminal in the Coolify UI when absolutely necessary. Do not propose SSH-based deploys or manual `docker build` on the VPS — these create undocumented state that `main` cannot reproduce.
 
-| What | NAS .env | Web app (Coolify) |
-|---|---|---|
-| NAS 1 API secret | `NAS_API_SECRET` | `NAS_EDGE1_API_SECRET` |
-| NAS 1 signing key | `NAS_API_APPROVAL_SIGNING_KEY` | `NAS_EDGE1_API_SIGNING_KEY` |
-| NAS 2 API secret | `NAS_API_SECRET` | `NAS_EDGE2_API_SECRET` |
-| NAS 2 signing key | `NAS_API_APPROVAL_SIGNING_KEY` | `NAS_EDGE2_API_SIGNING_KEY` |
+NAS SSH is available (DSM > Control Panel > Terminal) but should only be used for initial setup or emergency diagnosis. Any changes made via NAS SSH must be reflected in the repo to remain reproducible.
 
-A mismatch causes silent 403s from the NAS API — the request is made but every response is unauthorized.
+## Secrets rotation
+
+If a secret is compromised:
+
+1. **Generate a new value** using a cryptographically random generator (e.g. `openssl rand -hex 32`).
+2. **Update the secret in Coolify** (for web and nas-mcp runtime env) or in the NAS `.env` (for agent and nas-api).
+3. **Redeploy affected services:**
+   - For Coolify services: trigger a redeploy in the Coolify UI after saving the new env var.
+   - For NAS services: stop and recreate the containers using the manual recreate sequence above (Watchtower picks up the `.env` change only on recreate, not on image pull).
+4. **For paired secrets** (`NAS_API_SECRET` / `NAS_EDGE{1,2}_API_SECRET` and `NAS_API_APPROVAL_SIGNING_KEY` / `NAS_EDGE{1,2}_API_SIGNING_KEY`): update both ends simultaneously. A mismatch will cause all NAS API requests to return 403 until both sides are in sync.
+5. **For `NEXT_PUBLIC_SUPABASE_*` keys:** these are baked into the web image at build time. Changing them requires updating the GitHub Secrets and triggering a new image build (push a trivial change to `apps/web/` or use `workflow_dispatch`).
+
+### Leaked secrets in git history (2026-05-29 incident)
+
+On 2026-05-29, real NAS API secrets, relay tokens, a Supabase service-role key, and a NAS SSH password were found committed in example and recovery files. All values were redacted to placeholders, and `.env.runtime` was untracked and gitignored. **However, the leaked values remain in git history and must still be rotated by the owner.** Regenerate in the NAS `.env`, Coolify, and Supabase as appropriate. Do not consider them safe simply because the files were redacted — git history is public.
+
+## Monitoring deployments
+
+### Coolify log viewer
+
+In the Coolify UI, select the service and open the Logs tab. Logs stream in real time from the running container. This is the primary way to confirm a deploy succeeded or diagnose a startup failure.
+
+### NAS container logs
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+$DOCKER logs synology-monitor-agent --tail 200
+$DOCKER logs synology-monitor-nas-api --tail 100
+$DOCKER logs synology-monitor-watchtower --tail 50
+```
+
+Look for `[sender] error` lines in agent logs to identify WAL flush failures. Collector-specific errors are prefixed by collector name (e.g. `[sharesync]`, `[drive]`, `[share-health]`).
+
+### Health check endpoints
+
+The NAS API exposes `GET /health` on port 7734. A `200 OK` response confirms the process is running and the validator loaded:
+
+```sh
+curl http://100.107.131.35:7734/health   # NAS 1
+curl http://100.107.131.36:7734/health   # NAS 2
+```
+
+These endpoints require no auth. They are reachable from the VPS and any Tailscale-connected machine.
+
+### Watchtower update log
+
+Watchtower logs image pull and container recreate events. Check with:
+
+```sh
+$DOCKER logs synology-monitor-watchtower --tail 100
+```
+
+A successful update looks like: `Pulling image for synology-monitor-agent ... Stopping container ... Recreating container ...`. If Watchtower shows a credentials error, re-authenticate Docker with GHCR.
+
+## Pinning the agent image
+
+Set `AGENT_IMAGE_TAG` in the NAS `.env` to any GHCR tag to hold that version. Watchtower will not update the container while the tag is non-`latest` and no newer image exists at that exact tag. Remove the variable (or set it to `latest`) to resume automatic updates.
+
+```sh
+# /volume1/docker/synology-monitor-agent/.env
+AGENT_IMAGE_TAG=sha-abc1234
+```
