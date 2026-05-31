@@ -67,12 +67,12 @@ export async function runStage3Explainer(
 
   const [{ data: evidence }, { data: actions }] = await Promise.all([
     supabase
-      .from("issue_evidence")
-      .select("title, detail")
+      .from("issue_evidence_items")
+      .select("source, severity, body, ts")
       .eq("issue_id", issue.id)
-      .eq("user_id", userId)
-      .order("created_at", { ascending: false })
-      .limit(20),
+      .eq("in_scope", true)
+      .order("ts", { ascending: false })
+      .limit(30),
     supabase
       .from("issue_actions")
       .select("command_preview, summary, status, result_text")
@@ -90,7 +90,12 @@ export async function runStage3Explainer(
       affected_nas: issue.affected_nas,
       final_hypothesis: issue.current_hypothesis,
       conversation_summary: issue.conversation_summary,
-      evidence_highlights: evidence ?? [],
+      evidence_highlights: (evidence ?? []).map((e: Record<string, unknown>) => ({
+        source: e.source,
+        severity: e.severity,
+        ts: e.ts,
+        body: String(e.body ?? "").slice(0, 300),
+      })),
       actions: (actions ?? []).map((a: Record<string, unknown>) => ({
         command: a.command_preview,
         summary: a.summary,

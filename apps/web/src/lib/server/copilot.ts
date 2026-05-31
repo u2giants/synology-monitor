@@ -535,35 +535,32 @@ export async function runApprovedAction(
 }
 
 /**
- * Load an analyzed problem by ID and build a copilot prompt from it.
+ * Load a detected issue by ID and build a copilot prompt from it.
+ * Previously read from analyzed_problems; now reads from issues because
+ * /api/analysis was updated to create issues via runIssueDetection.
  */
-export async function buildProblemPrompt(problemId: string): Promise<string | null> {
+export async function buildProblemPrompt(issueId: string): Promise<string | null> {
   const supabase = await createSupabaseServerClient();
 
-  const { data: problem } = await supabase
-    .from("analyzed_problems")
-    .select("title, explanation, severity, affected_nas, affected_shares, affected_users, affected_files, raw_event_count, technical_diagnosis, first_seen, last_seen")
-    .eq("id", problemId)
+  const { data: issue } = await supabase
+    .from("issues")
+    .select("title, summary, severity, affected_nas, current_hypothesis, conversation_summary, status, updated_at")
+    .eq("id", issueId)
     .maybeSingle();
 
-  if (!problem) return null;
+  if (!issue) return null;
 
-  const files = Array.isArray(problem.affected_files)
-    ? (problem.affected_files as { path: string; detail: string }[])
-        .map((f) => `  - ${f.path}: ${f.detail}`)
-        .join("\n")
-    : "";
+  const nasLabel = Array.isArray(issue.affected_nas) && issue.affected_nas.length
+    ? (issue.affected_nas as string[]).join(", ")
+    : "unknown";
 
   return (
-    `I need help fixing this diagnosed problem:\n\n` +
-    `**${problem.title}** (${problem.severity})\n\n` +
-    `${problem.explanation}\n\n` +
-    `Affected NAS: ${(problem.affected_nas as string[]).join(", ") || "unknown"}\n` +
-    `Affected shares: ${(problem.affected_shares as string[]).join(", ") || "none"}\n` +
-    `Affected users: ${(problem.affected_users as string[]).join(", ") || "none"}\n` +
-    (files ? `Affected files:\n${files}\n` : "") +
-    `${problem.raw_event_count} related events\n\n` +
-    `**Technical diagnosis from the analysis AI:**\n${problem.technical_diagnosis}\n\n` +
-    `What specific steps should I take to fix this? Propose the exact commands if applicable.`
+    `I need help with this detected issue:\n\n` +
+    `**${issue.title}** (${issue.severity})\n\n` +
+    `${issue.summary || "(no summary)"}\n\n` +
+    `Affected NAS: ${nasLabel}\n` +
+    (issue.current_hypothesis ? `\n**Current hypothesis:**\n${issue.current_hypothesis}\n` : "") +
+    (issue.conversation_summary ? `\n**Investigation so far:**\n${issue.conversation_summary}\n` : "") +
+    `\nWhat specific steps should I take to fix this? Propose the exact commands if applicable.`
   );
 }

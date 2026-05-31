@@ -56,19 +56,28 @@ const MAX_OUTPUT_TOKENS = 8_192;
 const SYSTEM_PROMPT = `You are the reasoning core of an autonomous Synology NAS incident investigator,
 operating two production NAS units (edgesynology1, edgesynology2). You have the
 instincts of an expert with a live SSH session: form a hypothesis, gather the
-exact evidence that would confirm or kill it, and iterate — but you work through a
-curated, approval-gated tool layer, not raw shell.
+exact evidence that would confirm or kill it, and iterate — through a
+curated, approval-gated tool layer.
+
+Tool inventory (all auto-execute, tier-1 read-only):
+- fetch_evidence: page or aggregate the lossless evidence store (DB). Aggregate
+  first (group_by) to see the shape, then page into specifics. Works when NAS is offline.
+- run_command: free-form read-only shell command on a NAS (cat, tail, head, grep,
+  cat /proc/mdstat, cat /sys/block/md*/inflight, tail -n 200 /path/to/log.log, etc.).
+  Use this when a predefined tool does not cover the file or command you need.
+  Write commands are hard-blocked by the NAS validator.
+- Predefined diagnostic tools: 100+ curated NAS read-only commands covering SMART,
+  BTRFS, ShareSync, Docker, process/network/storage diagnostics. Prefer these over
+  run_command when they cover the query.
 
 Operating rules:
-- Use READ-ONLY tools freely to investigate (they auto-execute). Aggregate
-  evidence first (fetch_evidence group_by) to see the shape, then page into
-  specifics — never assume a sparse/empty result means healthy.
-- Prefer normalized, deduped evidence over raw volume. The evidence slice already
-  separates anomalous events from baseline noise; the rest is retrievable via
-  fetch_evidence.
-- You may NOT execute service/file changes yourself. When a fix is warranted,
-  PROPOSE it as a remediation in your final answer; the operator approves it and
-  the system executes + verifies on the next turn.
+- Aggregate evidence first (fetch_evidence group_by) before paging into raw rows.
+  Never assume a sparse/empty result means healthy.
+- For raw log files and /proc//sys virtual files use run_command directly:
+  "tail -n 100 /var/log/kern.log", "cat /proc/mdstat", "cat /sys/block/md5/inflight".
+- You may NOT auto-execute service/file changes. When a fix is warranted, PROPOSE
+  it as a remediation; the operator approves it; the system executes + verifies on
+  the next turn.
 - If the NAS is unreachable, say so and diagnose from stored evidence
   (fetch_evidence still works — it reads the database, not the NAS).
 - If you've already seen this evidence and nothing changed, do not re-chew: fetch
@@ -145,19 +154,35 @@ export interface WholeSystemSnapshot {
   nasReachable: boolean;
 }
 
+async function probeNasReachable(nasName: string): Promise<boolean> {
+  const config = resolveNasApiConfig(nasName);
+  if (!config) return false;
+  try {
+    const response = await fetch(`${config.url}/health`, {
+      signal: AbortSignal.timeout(3_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function buildWholeSystemSnapshot(
   supabase: SupabaseClient,
   userId: string,
   issue: Issue,
 ): Promise<WholeSystemSnapshot> {
   const since6h = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
-  const [{ data: activeAlerts }, { data: openIssues }] = await Promise.all([
+  const primaryNas = (issue.affected_nas[0] as string | undefined) ?? "edgesynology1";
+
+  const [{ data: activeAlerts }, { data: openIssues }, nasReachable] = await Promise.all([
     supabase.from("alerts").select("severity").eq("status", "active").gte("created_at", since6h),
     supabase
       .from("issues")
       .select("id, title, status, severity")
       .eq("user_id", userId)
       .in("status", ["open", "running", "waiting_on_user", "waiting_for_approval", "waiting_on_issue"]),
+    probeNasReachable(primaryNas),
   ]);
 
   const alertBySeverity = countBy((activeAlerts ?? []) as Array<{ severity?: string }>, (a) => a.severity ?? "info");
@@ -167,6 +192,7 @@ export async function buildWholeSystemSnapshot(
 
   const text = [
     "## Whole-system snapshot",
+    `NAS reachability: ${nasReachable ? `${primaryNas} ONLINE` : `${primaryNas} OFFLINE — use fetch_evidence for diagnosis`}`,
     `Active alerts (6h): ${Object.entries(alertBySeverity).map(([s, n]) => `${s}=${n}`).join(", ") || "none"}`,
     `Open/active issues: ${(openIssues ?? []).length}`,
     siblings.length
@@ -174,15 +200,16 @@ export async function buildWholeSystemSnapshot(
       : "No sibling issues.",
   ].join("\n");
 
-  return { text, nasReachable: true };
+  return { text, nasReachable };
 }
 
 // ─── Tool catalog for Stage 2 ────────────────────────────────────────────────
 
+const RUN_COMMAND_TOOL_NAME = "run_command";
+
 /**
- * Read-only tools (write:false) from the SHARED catalog (§6) + fetch_evidence, as
- * model tool schemas. The executor picks the NAS, so `target` is dropped from the
- * model-facing schema — the model only supplies tool-specific params.
+ * Read-only tools (write:false) from the SHARED catalog (§6) + fetch_evidence +
+ * run_command (free-form tier-1 shell), as model tool schemas.
  */
 export function buildStage2Tools(): ToolSchema[] {
   const nasTools: ToolSchema[] = ALL_TOOL_DEFS.filter((def) => !def.write).map((def) => {
@@ -201,6 +228,29 @@ export function buildStage2Tools(): ToolSchema[] {
       name: FETCH_EVIDENCE_TOOL.name,
       description: FETCH_EVIDENCE_TOOL.description,
       input_schema: FETCH_EVIDENCE_TOOL.parameters as Record<string, unknown>,
+    },
+    {
+      name: RUN_COMMAND_TOOL_NAME,
+      description:
+        "Run any read-only shell command on a Synology NAS for deep diagnosis. " +
+        "Use for raw log files (tail -n N /path/to/log), /proc virtual files (cat /proc/mdstat), " +
+        "/sys gauges (cat /sys/block/md5/inflight), and diagnostic utilities not covered by " +
+        "the predefined tools. Write commands are hard-blocked by the NAS validator.",
+      input_schema: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "Read-only shell command to run, e.g. 'tail -n 100 /var/log/kern.log'",
+          },
+          target: {
+            type: "string",
+            enum: ["edgesynology1", "edgesynology2"],
+            description: "Which NAS to run on",
+          },
+        },
+        required: ["command", "target"],
+      },
     },
     ...nasTools,
   ];
@@ -225,6 +275,60 @@ function makeToolExecutor(
         return { content };
       } catch (err) {
         return { content: `fetch_evidence error: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+      }
+    }
+
+    if (call.name === RUN_COMMAND_TOOL_NAME) {
+      const command = String(call.input.command ?? "").trim();
+      if (!command) return { content: "run_command: command is required.", isError: true };
+
+      const reqTarget = call.input.target;
+      const target = (reqTarget === "edgesynology1" || reqTarget === "edgesynology2" ? reqTarget : defaultTarget) as NasTarget;
+      const config = resolveNasApiConfig(target);
+      if (!config) return { content: `No NAS API config for ${target}.`, isError: true };
+
+      try {
+        const preview = await withNasReachability(target, () => nasApiPreview(config, command));
+        if (isNasUnreachable(preview)) {
+          record.nasReachable = false;
+          return { content: `NAS ${target} is unreachable (${preview.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
+        }
+        if (preview.blocked || preview.tier !== 1) {
+          return {
+            content:
+              `run_command: "${command}" requires tier-${preview.tier}${preview.blocked ? " (hard-blocked by the NAS validator)" : ""}. ` +
+              `Read-only investigation is tier-1 only. If a privileged action is warranted, propose it as a remediation.`,
+            isError: true,
+          };
+        }
+
+        const exec = await withNasReachability(target, () => nasApiExec(config, command, 1, undefined, 30_000));
+        if (isNasUnreachable(exec)) {
+          record.nasReachable = false;
+          return { content: `NAS ${target} is unreachable. Diagnose from stored evidence via fetch_evidence.`, isError: true };
+        }
+
+        const body = `$ ${command}\n${exec.stdout}${exec.stderr ? `\n[stderr] ${exec.stderr}` : ""}`.slice(0, 12_000);
+        record.lastResults.push(body);
+
+        await supabase.from("issue_evidence_items").insert({
+          issue_id: issue.id,
+          nas_id: target,
+          source: "tool:run_command",
+          severity: exec.exit_code === 0 ? "info" : "error",
+          ts: new Date().toISOString(),
+          first_ts: new Date().toISOString(),
+          last_ts: new Date().toISOString(),
+          body,
+          dedup_count: 1,
+          in_scope: true,
+          anomalous: exec.exit_code !== 0,
+          metadata: { tool: "run_command", target, exit_code: exec.exit_code, command },
+        });
+
+        return { content: body };
+      } catch (err) {
+        return { content: `run_command failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
       }
     }
 

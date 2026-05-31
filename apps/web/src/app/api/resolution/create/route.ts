@@ -40,17 +40,20 @@ export async function POST(request: Request) {
     }
 
     if (body.originType === "problem" && body.originId) {
-      const { data: problem } = await supabase
-        .from("analyzed_problems")
-        .select("title, explanation, technical_diagnosis, severity, affected_nas")
+      // originId is now an issue ID from /api/analysis (which creates issues
+      // via runIssueDetection, not analyzed_problems).
+      const { data: sourceIssue } = await supabase
+        .from("issues")
+        .select("title, summary, current_hypothesis, severity, affected_nas")
         .eq("id", body.originId)
         .maybeSingle();
 
-      if (problem) {
-        title = title || problem.title;
-        seed = seed || `${problem.explanation}\n\nTechnical diagnosis: ${problem.technical_diagnosis}`;
-        severity = problem.severity ?? severity;
-        affectedNas = (problem.affected_nas as string[]) ?? [];
+      if (sourceIssue) {
+        title = title || sourceIssue.title;
+        const hypothesis = sourceIssue.current_hypothesis ? `\n\nHypothesis: ${sourceIssue.current_hypothesis}` : "";
+        seed = seed || `${sourceIssue.summary || sourceIssue.title}${hypothesis}`;
+        severity = sourceIssue.severity ?? severity;
+        affectedNas = (sourceIssue.affected_nas as string[]) ?? [];
       }
     }
 

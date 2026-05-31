@@ -58,11 +58,17 @@ export async function getRemediationModel(): Promise<string> {
   return settings.remediation_model || process.env.OPENAI_CHAT_MODEL || "openai/gpt-5.4";
 }
 
+// Not yet wired to a call site — second-opinion cross-check feature is planned
+// but not yet built (PLAN.md §2 "out of scope for this rebuild", flagged in §13).
+// Keep until either wired up or explicitly decided against.
 export async function getSecondOpinionModel(): Promise<string> {
   const settings = await loadSettings();
   return settings.second_opinion_model || "anthropic/claude-sonnet-4";
 }
 
+// Used by log-analyzer.ts for analyzed_problems clustering. The log-analyzer
+// currently hardcodes its model; this getter is the intended abstraction once
+// it is wired through. Keep until the cluster feature is revisited.
 export async function getClusterModel(): Promise<string> {
   const settings = await loadSettings();
   return settings.cluster_model || settings.diagnosis_model || process.env.MINIMAX_MODEL || "minimax/minimax-m2.7";

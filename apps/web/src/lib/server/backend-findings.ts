@@ -16,20 +16,18 @@ type AlertRow = {
   created_at: string;
 };
 
-type ProblemRow = {
+// Detected issues surface here as "problems" in the copilot/resolution UI.
+// Formerly read from analyzed_problems; now reads from issues with
+// origin_type='detected' so the source of truth matches /api/analysis.
+type DetectedIssueRow = {
   id: string;
   title: string;
-  explanation: string;
+  summary: string | null;
   severity: IssueSeverity;
   affected_nas: string[];
-  technical_diagnosis: string;
-  status: "open" | "investigating" | "resolved";
-  created_at: string;
-};
-
-type AnalysisRunRow = {
-  id: string;
-  created_at: string;
+  current_hypothesis: string | null;
+  status: string;
+  updated_at: string;
 };
 
 function severityRank(severity: IssueSeverity) {
@@ -50,15 +48,18 @@ function formatUtc(timestamp: string) {
   return date.toISOString().replace(".000Z", "Z");
 }
 
+const ACTIVE_ISSUE_STATUSES = ["open", "running", "waiting_on_user", "waiting_for_approval", "waiting_on_issue"];
+
 export async function buildBackendFindingsSnapshot(supabase: SupabaseClient) {
-  const [nasUnitsResult, latestRunResult, alertsResult] = await Promise.all([
+  const [nasUnitsResult, detectedIssuesResult, alertsResult] = await Promise.all([
     supabase.from("nas_units").select("id, name, hostname"),
     supabase
-      .from("analysis_runs")
-      .select("id, created_at")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .from("issues")
+      .select("id, title, summary, severity, affected_nas, current_hypothesis, status, updated_at")
+      .eq("origin_type", "detected")
+      .in("status", ACTIVE_ISSUE_STATUSES)
+      .order("updated_at", { ascending: false })
+      .limit(12),
     supabase
       .from("alerts")
       .select("id, nas_id, severity, source, title, message, created_at")
@@ -67,73 +68,49 @@ export async function buildBackendFindingsSnapshot(supabase: SupabaseClient) {
       .limit(10),
   ]);
 
-  if (nasUnitsResult.error) {
-    throw new Error(`Failed to load NAS units: ${nasUnitsResult.error.message}`);
-  }
-  if (latestRunResult.error) {
-    throw new Error(`Failed to load latest analysis run: ${latestRunResult.error.message}`);
-  }
-  if (alertsResult.error) {
-    throw new Error(`Failed to load active alerts: ${alertsResult.error.message}`);
-  }
+  if (nasUnitsResult.error) throw new Error(`Failed to load NAS units: ${nasUnitsResult.error.message}`);
+  if (detectedIssuesResult.error) throw new Error(`Failed to load detected issues: ${detectedIssuesResult.error.message}`);
+  if (alertsResult.error) throw new Error(`Failed to load active alerts: ${alertsResult.error.message}`);
 
   const nasNameById = new Map<string, string>();
   for (const row of (nasUnitsResult.data ?? []) as NasUnitRow[]) {
     nasNameById.set(row.id, row.name || row.hostname || row.id);
   }
 
-  let problems: ProblemRow[] = [];
-  if (latestRunResult.data?.id) {
-    const problemsResult = await supabase
-      .from("analyzed_problems")
-      .select("id, title, explanation, severity, affected_nas, technical_diagnosis, status, created_at")
-      .eq("analysis_run_id", latestRunResult.data.id)
-      .neq("status", "resolved")
-      .order("created_at", { ascending: true })
-      .limit(12);
-
-    if (problemsResult.error) {
-      throw new Error(`Failed to load analyzed problems: ${problemsResult.error.message}`);
-    }
-    problems = (problemsResult.data ?? []) as ProblemRow[];
-  }
-
+  const problems = (detectedIssuesResult.data ?? []) as DetectedIssueRow[];
   const alerts = (alertsResult.data ?? []) as AlertRow[];
+
   const affectedNas = Array.from(new Set([
-    ...problems.flatMap((problem) => problem.affected_nas ?? []),
-    ...alerts.map((alert) => alert.nas_id ? (nasNameById.get(alert.nas_id) ?? alert.nas_id) : null),
-  ].filter((value): value is string => Boolean(value))));
+    ...problems.flatMap((p) => p.affected_nas ?? []),
+    ...alerts.map((a) => a.nas_id ? (nasNameById.get(a.nas_id) ?? a.nas_id) : null),
+  ].filter((v): v is string => Boolean(v))));
 
   const severities = [
-    ...problems.map((problem) => problem.severity),
-    ...alerts.map((alert) => alert.severity),
+    ...problems.map((p) => p.severity),
+    ...alerts.map((a) => a.severity),
   ];
   const severity = severities.length > 0 ? pickSeverity(severities) : "info";
 
-  const latestRun = latestRunResult.data as AnalysisRunRow | null;
+  const latestUpdatedAt = problems[0]?.updated_at ?? null;
   const title = problems.length > 0 || alerts.length > 0
     ? "Current backend findings across both NASes"
     : "No active backend findings across both NASes";
 
   const lines: string[] = [];
   lines.push(title);
-  if (latestRun?.created_at) {
-    lines.push(`Latest analysis run: ${formatUtc(latestRun.created_at)}`);
-  } else {
-    lines.push("Latest analysis run: unavailable");
-  }
-  lines.push(`Open analyzed problems: ${problems.length}`);
+  lines.push(`Last detection run: ${latestUpdatedAt ? formatUtc(latestUpdatedAt) : "unavailable"}`);
+  lines.push(`Open detected issues: ${problems.length}`);
   lines.push(`Active alerts: ${alerts.length}`);
   lines.push(`Affected NAS: ${affectedNas.length > 0 ? affectedNas.join(", ") : "none"}`);
 
   if (problems.length > 0) {
     lines.push("");
-    lines.push("Analyzed problems:");
-    for (const problem of problems) {
-      const nasLabel = problem.affected_nas?.length ? ` [${problem.affected_nas.join(", ")}]` : "";
-      lines.push(`- (${problem.severity}) ${problem.title}${nasLabel}`);
-      lines.push(`  ${problem.explanation}`);
-      lines.push(`  Technical diagnosis: ${problem.technical_diagnosis}`);
+    lines.push("Detected issues:");
+    for (const p of problems) {
+      const nasLabel = p.affected_nas?.length ? ` [${p.affected_nas.join(", ")}]` : "";
+      lines.push(`- (${p.severity}) ${p.title}${nasLabel}`);
+      if (p.summary) lines.push(`  ${p.summary}`);
+      if (p.current_hypothesis) lines.push(`  Hypothesis: ${p.current_hypothesis}`);
     }
   }
 
@@ -151,12 +128,12 @@ export async function buildBackendFindingsSnapshot(supabase: SupabaseClient) {
 
   if (problems.length === 0 && alerts.length === 0) {
     lines.push("");
-    lines.push("The monitor backend does not currently report any open analyzed problems or active alerts.");
+    lines.push("The monitor backend does not currently report any open detected issues or active alerts.");
   }
 
   const summary = problems.length > 0 || alerts.length > 0
-    ? `${problems.length} open analyzed problem${problems.length === 1 ? "" : "s"} and ${alerts.length} active alert${alerts.length === 1 ? "" : "s"} are currently present in the monitor backend.`
-    : "The monitor backend currently reports no open analyzed problems and no active alerts.";
+    ? `${problems.length} open detected issue${problems.length === 1 ? "" : "s"} and ${alerts.length} active alert${alerts.length === 1 ? "" : "s"} are currently present in the monitor backend.`
+    : "The monitor backend currently reports no open detected issues and no active alerts.";
 
   return {
     title,
@@ -166,7 +143,7 @@ export async function buildBackendFindingsSnapshot(supabase: SupabaseClient) {
     seed: lines.join("\n"),
     metadata: {
       source: "backend_findings_snapshot",
-      latest_analysis_run_at: latestRun?.created_at ?? null,
+      latest_analysis_run_at: latestUpdatedAt,
       open_problem_count: problems.length,
       active_alert_count: alerts.length,
     },
