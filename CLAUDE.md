@@ -11,7 +11,7 @@
 ## Not allowed
 
 - Direct SSH to the VPS or NAS is **not** a normal deployment path. The VPS has public SSH disabled by design. Do not propose SSH-based deploys, manual `docker build` on the VPS, or runtime container manipulation.
-- Do not modify Coolify environment variables from this side — Coolify is the source of truth for runtime env per `AI_OPERATING_RULES.md`.
+- Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands or SSH. See `AI_OPERATING_RULES.md`.
 - Do not create feature branches. This repo uses one branch: `main`.
 - Do not "fix" the items listed under [AGENTS.md § 10 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
 

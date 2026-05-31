@@ -47,7 +47,7 @@ AI may help with:
 - editing GitHub Actions workflows
 - editing documentation
 - recommending GitHub Secrets usage for CI/CD
-- recommending Coolify runtime environment variable changes
+- applying Coolify runtime environment variable changes directly through the Coolify API or UI (env vars, feature flags, health checks, restart policy, domain bindings — settings Coolify owns)
 - triggering deployment through the approved GitHub -> Coolify path
 
 ## Forbidden AI actions

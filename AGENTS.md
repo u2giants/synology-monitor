@@ -374,8 +374,7 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 - Commit only to `main`; never create feature branches.
 - Do not build Docker images or restart containers manually on the VPS/NAS.
 - Do not hotfix the live NAS/VPS and commit after the fact.
-- Do not modify Coolify runtime env from the repo side (Coolify is the source of
-  truth for runtime env — see `AI_OPERATING_RULES.md`).
+- Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands, SSH, or server-side scripts (see `AI_OPERATING_RULES.md`).
 - Do not add a sender payload field without a matching Supabase column/migration.
 - Do not interpret an empty Supabase table as a healthy subsystem — a collector may
   be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.

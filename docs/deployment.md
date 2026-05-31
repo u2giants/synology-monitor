@@ -185,10 +185,11 @@ supabase/migrations/00041_drop_dead_tables.sql
 
 ## Environment variable management
 
-**Coolify is the source of truth for all production runtime env vars.** Do not:
-- Edit env vars by SSH-ing into the VPS and editing container configs.
-- Commit real secret values to any file in the repo, including `*.env.example` files.
-- Change Coolify env vars from an AI session or script — make the change in the Coolify UI and redeploy.
+**Coolify is the source of truth for all production runtime env vars.** Rules:
+- AI may apply runtime env changes directly in Coolify through the Coolify API or UI — that is the correct and preferred path for runtime configuration.
+- Do not route runtime env changes through GitHub Actions shell commands or SSH into the VPS to edit container configs.
+- Do not commit real secret values to any file in the repo, including `*.env.example` files.
+- Do not set production runtime env inside Docker images or GitHub Actions shell steps.
 
 For NAS-side services (agent, nas-api), env vars live in `/volume1/docker/synology-monitor-agent/.env` on each NAS. Changes take effect on the next container recreate (Watchtower will pick up the new image, but it will not re-read `.env` unless the container is stopped and restarted).
 

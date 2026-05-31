@@ -8,7 +8,7 @@ All components are deployed:
 - NAS API hardening (strict validator, process-group kill) is live on both NASes via Watchtower auto-update
 - expanded NAS-side mounts are live on both NASes
 
-Deployment is fully automated via GitHub Actions (`nas-api-image.yml`, `relay`). No manual steps needed for normal updates — push to `main`.
+The NAS API is deployed automatically via GitHub Actions (`nas-api-image.yml`) — push to `main` and Watchtower picks up the new image within ~5 minutes. **The relay has no CI workflow.** Relay changes must be committed to the repo and then deployed manually (see below). Treat the relay deploy path as exceptional, not routine; the goal is to add a `relay-image.yml` workflow and move to the same automated path as the other services.
 
 ## Required relay env
 
@@ -33,7 +33,9 @@ cp .env.example .env
 node src/server.mjs
 ```
 
-## Docker run example
+## Manual deploy (emergency / break-glass only)
+
+The relay currently has no CI workflow. Until one is added, manual deployment is the exceptional path — not the normal one. Any manual change must be committed back to the repo immediately so the live server does not become a hidden source of truth.
 
 ```bash
 docker build -t synology-monitor-relay /worksp/monitor/app/apps/relay
