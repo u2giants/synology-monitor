@@ -22,6 +22,8 @@
   --radius-lg: 0.75rem;
   --radius-md: 0.5rem;
   --radius-sm: 0.25rem;
+  --color-user-bubble: #2b2f38;
+  --color-user-bubble-foreground: #f4f5f7;
 }
 
 body {
