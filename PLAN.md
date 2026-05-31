@@ -168,96 +168,181 @@ resumable, cache-independent** — are defined in §5/§7/§9.
 
 ### §3.1 Stage 1 — Lossless Structurer (deterministic, no model call)
 
-Replaces `compressLogsToFacts`. Makes no model calls and no external I/O beyond reading from Supabase and writing back to `issue_evidence_items`.
+#### What this stage is doing
+
+Stage 1 is a deterministic data transformation pipeline — it makes **no model calls**. Its job is to convert raw Supabase telemetry into a structured, deduplicated, prioritised evidence store that Stage 2 can reason over without drowning in noise or losing signal. The core insight driving the design: the old `compressLogsToFacts` threw away information before Stage 2 ever saw it, silently hiding anomalies behind summaries. Stage 1 is the antidote — nothing distinct is discarded, but repetition is collapsed and the volume is managed before hitting a prompt. Think of it as a lossless event recorder followed by a smart index, not a summariser.
+
+The stage does five things in order:
+
+1. **Ingest.** Query Supabase across all telemetry source tables for the issue's time window. Gather every row and tag each with its evidence source label (see table below).
+
+2. **Deduplicate.** For each `(source, body)` pair, collapse byte-identical rows into one row with `dedup_count` tracking occurrence count and `first_ts`/`last_ts` spanning the range. Two rows are identical only if their entire bodies are the same — paraphrase-similar rows are never merged. The goal is to eliminate "same thing 4,000 times" noise without ever hiding a structurally different event.
+
+3. **Classify: anomalous.** Mark each row `anomalous=true` if severity is `error` or higher, OR if severity is `warning` and the body contains at least one state-change keyword: `failed`, `error`, `timeout`, `degraded`, `offline`, `crash`, `panic`, `rejected`, `aborted`, `stopped`, `restart`, and a few dozen more. The keyword list is conservative — false negatives (missed anomaly) are worse than false positives (extra rows in the priority tier).
+
+4. **Classify: in-scope.** Mark each row `in_scope=true` if the row's `nas_id` matches `issue.affected_nas`, OR severity is `error+`, OR the issue has no explicit `affected_nas`. The purpose: cross-NAS noise that is merely informational stays in the evidence store but ranks lower in the budget allocation.
+
+5. **Budget and persist.** Allocate `EVIDENCE_TOKEN_BUDGET = 12,000 tokens` (≈48,000 chars) across two tiers. Tier 1 (70% of budget): in-scope anomalous rows, full bodies, sorted by descending severity then recency. Tier 2 (30%): everything else as dedup-with-count one-liners. The evidence index (source × time-bucket × count summary) is always included and does not count against the budget — it is Stage 2's map of what else exists and how to fetch it. Delete existing `issue_evidence_items` rows for the issue before inserting — Stage 1 is idempotent and safe to re-run.
 
 **Telemetry sources ingested** (`TELEMETRY_SOURCES` constant):
 
-| Source key | Evidence source label |
-|---|---|
-| `alerts` | `alert` |
-| `logs` / `audit_logs` | per-DB `source` field |
-| `top_processes` | `process_snapshot` |
-| `disk_io` | `disk_io` |
-| `scheduled_tasks_with_issues` | `scheduled_task` |
-| `backup_tasks` | `backup_task` |
-| `snapshot_replicas` | `snapshot_replica` |
-| `container_io_top` | `container_io` |
-| `sharesync_tasks` | `sync_task` |
-| `io_pressure_metrics` | `io_metric` |
-| `storage_snapshots` | `storage_snapshot` |
-| `dsm_errors` | `dsm_error` |
+| Source key | Evidence source label | Why it matters |
+|---|---|---|
+| `alerts` | `alert` | Active alert severities; the primary issue-detection signal |
+| `logs` / `audit_logs` | per-DB `source` field | Raw DSM log lines; the richest free-text signal |
+| `top_processes` | `process_snapshot` | CPU/mem/IO hotspots; used to attribute resource contention |
+| `disk_io` | `disk_io` | Per-device IOPS, throughput, latency, utilisation, queue depth |
+| `scheduled_tasks_with_issues` | `scheduled_task` | Failed/overdue DSM tasks; often the root cause of backup/sync failures |
+| `backup_tasks` | `backup_task` | Hyper Backup task status and timing |
+| `snapshot_replicas` | `snapshot_replica` | Replication job status and error codes |
+| `container_io_top` | `container_io` | Per-container I/O attribution; separates agent I/O from Drive I/O |
+| `sharesync_tasks` | `sync_task` | ShareSync pair status, error codes, pending item counts |
+| `io_pressure_metrics` | `io_metric` | Aggregate iowait and pressure over time |
+| `storage_snapshots` | `storage_snapshot` | Space snapshot timeline; detects runaway growth |
+| `dsm_errors` | `dsm_error` | Structured DSM error events from the system journal |
 
-**Evidence body construction (losslessness).** For log-type rows (`logs`, `audit_logs`, `dsm_errors`) the per-DB `source` field is used as the evidence source label and the `message` field is the evidence body. For all other (structured) rows the evidence body is the full JSON serialisation of the row via `stableJson`, which strips only the top-level `metadata` key to avoid duplicate nesting of fields already promoted to evidence columns.
+**Evidence body construction (losslessness).** For log-type rows (`logs`, `audit_logs`, `dsm_errors`) the per-DB `source` field is the evidence source label and the `message` field is the body. For all other structured rows the body is the full JSON serialisation via `stableJson`, which strips only the top-level `metadata` key (fields already promoted to evidence columns) to avoid duplication without hiding data.
 
-**Idempotency.** Stage 1 deletes all existing `issue_evidence_items` rows for the issue before inserting, making it a pure function of the current telemetry state. Safe to re-run.
+**Overflow rule.** If the priority tier alone exceeds its 70% budget, include the full evidence index plus as many full bodies as fit, highest-priority first. Never silently drop bodies — the index ensures Stage 2 can always retrieve omitted items via `fetch_evidence`.
 
-**Deduplication.** Byte-identical `(source, body)` pairs are collapsed into one row with `dedup_count` = occurrence count, `first_ts`/`last_ts` spanning the range. Distinct events are never merged, truncated, or summarised.
+#### Why there is no model call here
 
-**Anomaly classification.** A row is `anomalous=true` if: `severity >= error`, OR `severity = warning` AND the body contains at least one state-change keyword (`failed`, `error`, `timeout`, `degraded`, `offline`, `crash`, `panic`, `rejected`, `aborted`, `stopped`, `restart`, …).
-
-**Scope classification.** A row is `in_scope=true` if: the row's `nas_id` matches `issue.affected_nas`, OR `severity >= error`, OR `issue.affected_nas` is empty/null.
-
-**Token budget and prioritisation.** `EVIDENCE_TOKEN_BUDGET = 12,000 tokens` (≈48,000 chars). 70% of that budget is reserved for in-scope/anomalous rows (full bodies, sorted by descending severity then recency). The remaining 30% is used for noise summaries (dedup-with-count one-liners). The evidence index (source × time-bucket × count) is always included regardless of budget.
-
-**Overflow rule.** If the priority tier alone exceeds its 70% budget, Stage 1 includes the full evidence index plus as many full bodies as fit. Evidence bodies are never silently dropped; the index always allows Stage 2 to retrieve omitted items via `fetch_evidence`.
+Using a model to compress logs before the reasoner is the original defect (§1b). Stage 1 is deterministic because lossy compression is the enemy of diagnosis: a summarising model decides what matters before the reasoning model has formed a hypothesis, so it inevitably discards the evidence that falsifies the wrong hypothesis. The structurer's job is to preserve and organise, not to interpret. There is no interpretation task here that benefits from a model.
 
 ---
 
 ### §3.2 Stage 2 — Reasoning Core (strong model, agentic loop, resumable)
 
-Consolidates hypothesis + planner + remediation_planner + verifier into one agentic loop. One job invocation = one turn; turns are bounded by `TURN_CAP = 8`.
+#### What this stage is doing
 
-**Prompt structure (strictly stable→dynamic for cache correctness, §9):**
+Stage 2 is the diagnostic mind of the pipeline. Its goal is to determine what is wrong with one or both Synology NAS units, why it is wrong, and either propose a safe remediation or produce a definitive "we can't fix this without operator input / more information" verdict. It does this by forming and iteratively testing hypotheses using a combination of stored telemetry and live NAS data, in the same way an expert engineer would reason through an incident with an SSH session and the logs in front of them.
 
-1. `[stable]` System prompt — role, constraints, tier policy, tool inventory
-2. `[stable]` Output schema — the JSON decision format
-3. `[stable]` NAS taxonomy — issue families, DSM blind spots
-4. `[semi-stable]` Whole-system snapshot — NAS reachability (3s probe against `nas-api /health`), active alert counts (6h), open issue list with sibling titles
-5. `[semi-stable]` Issue summary — title, severity, status, affected NAS, current hypothesis, operator constraints
-6. `[dynamic]` Evidence slice — built from `issue_evidence_items`; changes each turn as new tool results are persisted
-7. `[dynamic]` Per-turn instruction — initial investigation, re-chew warning, or respond-to-user
+This is not a summarisation task, not a question-answering task, and not a classification task. It is **iterative multi-hypothesis investigation under uncertainty**, using active data gathering to rule hypotheses in or out. The model must:
 
-**Transcript.** Loaded from `issue_messages` (cap: 60 messages). `role=agent` → `"assistant"`; `role=system` → prefixed `"[system] …"` user turn.
+- Read a structured evidence slice and extract the meaningful signal — differentiating genuine anomalies from background noise and from DSM quirks that look like errors but are normal (e.g. the scheduled-task DSM error 103 on edgesynology1 that is a known blind spot, or the `container_status` CPU/mem always showing 0).
+- Commit to a ranked hypothesis rather than hedging across all possibilities. Vague "it could be X or Y" turns are useless — the model should state its working hypothesis with a confidence level and identify the single most diagnostic piece of evidence it would need to confirm or refute it.
+- Choose tools precisely. The 100+ curated predefined tools plus `run_command` and `fetch_evidence` give the model direct read access to nearly everything on the NAS. A poor model will spam tools randomly or re-run tools it already called. A good one will identify the exact file path, counter, or service log that would distinguish between two plausible root causes, call that one tool, read the result, and update its hypothesis.
+- Know when it has enough. The model must recognise when the evidence is conclusive and stop gathering, rather than continuing to call tools to fill the turn cap. Premature stops and unnecessary loops are both failure modes.
+- Respect tier boundaries. Write-capable commands are hard-blocked by the NAS validator. When a fix is warranted, the model proposes it as a structured remediation for operator approval — it does not attempt to execute the fix itself.
+- Degrade gracefully when the NAS is offline. If `withNasReachability` returns `nas_unreachable`, the model must pivot to diagnosing from the stored evidence only via `fetch_evidence` and communicate to the operator what it can and cannot determine without live access.
+- Know when to ask the operator. Some issues require context only a human has (is this backup expected to take 6 hours? is that ShareSync pair intentionally paused?). The model must recognise these cases and ask a specific, answerable question rather than producing a vague escalation.
+
+One job invocation = one turn. Turns are bounded by `TURN_CAP = 8`. The process dies at every approval/user gate and may resume in a different worker after arbitrary time; Stage 2 must be fully resumable from DB state only (§7).
+
+#### The investigation flow across turns
+
+A well-behaved investigation across up to 8 turns typically follows this shape:
+
+- **Turn 1 — Orient.** Read the evidence slice. Identify the highest-severity events, cross-reference with the whole-system snapshot (other open issues, NAS reachability, active alert counts). Form an initial ranked hypothesis list (usually 1–3 candidates). Pick the single most discriminating test and call exactly that tool or `fetch_evidence` aggregate query. Produce `decision=continue` with the current hypothesis and a brief rationale.
+- **Turns 2–4 — Test and narrow.** Each turn: evaluate the new tool result against the hypothesis. If the result is consistent with hypothesis A and inconsistent with hypothesis B, update the hypothesis confidence and move to the next discriminating test. If the result is ambiguous, choose a more targeted follow-up. Tools called in earlier turns are already in `issue_evidence_items` and will appear in the evidence slice on the next turn — do not re-call a tool that already returned a result.
+- **Turn N (diagnosis confident) — Produce verdict.** Once the evidence is conclusive: either `propose_remediation` (with a specific action, tier, rationale, and expected outcome) or `conclude_stuck` (with a clear statement of what is known, what is unknown, and what operator action is needed). Do not continue gathering evidence after the hypothesis is settled.
+- **Turn N (needs operator input) — Ask precisely.** If the investigation hits a decision point requiring human context, produce `ask_user` with a specific, single-sentence question. Do not ask multiple questions at once; each approval/ask cycle costs operator attention.
+
+The re-chew guard enforces forward progress: if the evidence slice hash and the planned action are identical to the prior turn (nothing new was learned, nothing new was proposed), the repeat counter increments. After ≥ 2 consecutive identical turns, the outcome is overridden to `ask_user` automatically, because the model is stuck without saying so.
+
+#### Prompt structure (strictly stable→dynamic for cache correctness, §9)
+
+Every turn rebuilds the full prompt from DB state. The ordering is non-negotiable for cache hit rates:
+
+1. `[stable]` System prompt — role definition, operating rules, tier policy, tool inventory summary with usage guidance for `fetch_evidence`, `run_command`, and predefined tools
+2. `[stable]` Output schema — the exact JSON decision format the model must produce
+3. `[stable]` NAS taxonomy — the known issue families (ShareSync metadata corruption, sync-failure, Drive-not-ready, backup-failure, I/O pressure, etc.), DSM blind spots (error 103, container_status zero values, etc.), known NAS hardware profiles
+4. `[semi-stable]` Whole-system snapshot — NAS reachability result from 3s `nas-api /health` probe, active alert counts by severity over 6h, list of open/running sibling issues with titles
+5. `[semi-stable]` Issue summary — title, severity, status, affected NAS, current hypothesis field, any operator constraints from prior messages
+6. `[dynamic]` Evidence slice — the prioritised budget-managed output of Stage 1, rebuilt on every turn as new `issue_evidence_items` rows (tool results) are appended
+7. `[dynamic]` Prior transcript — loaded from `issue_messages` (cap: 60 messages); `role=agent` → `"assistant"`, `role=system` → prefixed `"[system] …"` user turn
+8. `[dynamic]` Per-turn instruction — one of: initial investigation prompt, re-chew warning (evidence unchanged, change your approach), or respond-to-user (operator replied)
 
 **Tool catalog (all tier-1, auto-execute):**
 
-| Tool | Purpose |
+| Tool | What the model uses it for |
 |---|---|
-| `fetch_evidence` | Page or aggregate `issue_evidence_items` for this issue. Results are NOT re-persisted (no double-counting). Works when NAS is offline. |
-| `run_command` | Free-form read-only shell command: `cat /proc/mdstat`, `cat /sys/block/md5/inflight`, `tail -n 200 /var/log/kern.log`, etc. Use when no predefined tool covers the need. Write commands are hard-blocked by the NAS validator. |
-| Predefined tools (100+) | Curated read-only commands for SMART, BTRFS, ShareSync, Docker, process/network/storage diagnostics (shared catalog, §6). |
+| `fetch_evidence` | Reading the full lossless evidence store beyond what fits in the slice. The model should aggregate first (`group_by: source` or `group_by: time_bucket`) to see the shape of the data before paging into raw rows. Runs against Supabase, not the NAS — always available even when the NAS is offline. |
+| `run_command` | Free-form read-only shell command on a specific NAS target: `cat /proc/mdstat` (RAID state), `cat /sys/block/md5/inflight` (live I/O gauge), `tail -n 200 /var/log/kern.log`, `cat /proc/net/dev`, etc. For situations where no predefined tool covers the exact file or command needed. Write commands are hard-blocked by the NAS validator regardless of what the model requests. |
+| Predefined tools (100+) | Curated read-only diagnostic commands covering SMART health, BTRFS scrub/device status, ShareSync task detail, Hyper Backup job logs, Docker container state, top-process snapshots, network interface stats, package health, filesystem health, kernel I/O errors, and more. The model should prefer these over `run_command` when they cover the query, because they have tuned timeouts, known output formats, and tested behaviour. |
 
-Every NAS tool result and every `run_command` result is persisted to `issue_evidence_items` immediately. This means the evidence slice changes on the next turn (new rows included), the fingerprint changes, and the re-chew counter resets correctly.
+Every tool result is persisted to `issue_evidence_items` immediately after execution. The evidence slice on the next turn will include these new rows, which means the re-chew fingerprint changes and the model is working from a genuinely larger evidence base.
 
-**NAS offline degradation.** `withNasReachability` wraps all NAS calls; on ECONNREFUSED/timeout it returns a structured `nas_unreachable` result (never a raw exception). The model is informed the NAS is offline and directed to use `fetch_evidence`.
+#### What model capabilities this stage requires — and which matter most
 
-**Tier policy.** Tier-2/3 actions are NEVER auto-executed. If a tool resolves to tier-2/3 or is hard-blocked, the executor returns a structured error explaining why and directing the model to `propose_remediation` or `ask_user`.
+Stage 2 is the most capability-demanding model call in the pipeline. The right model for this stage has:
 
-**Re-chew guard.** The evidence slice text is hashed each turn. If the hash equals the prior turn's hash and the model returns `decision=continue`, the repeat counter increments. After ≥ 2 repeats, `toTurnOutcome` overrides to `ask_user` to prevent infinite loops.
+**Strong multi-step reasoning (critical).** The model must hold a hypothesis, identify what would falsify it, select the right tool call, evaluate the result against the hypothesis, and update its belief — across up to 8 turns, with a growing context. This requires genuine systematic reasoning, not pattern-matching to a likely answer. Models that produce fluent-sounding responses without real logical chains will confidently propose wrong remediations. Extended thinking / chain-of-thought modes directly improve performance here: the harder the issue (multi-causal, rare DSM behaviour, cascading RAID + sync + backup failure), the more the model benefits from spending tokens on internal reasoning before producing its output. For Anthropic models, `extended_thinking` with a meaningful `budget_tokens` value is recommended for this stage. For OpenAI reasoning models, `reasoning_effort: 'high'`.
 
-**Resumable from DB (§7).** The process dies at every approval/user gate. On resume, `runStage2Turn` rebuilds identical context from `issue_evidence_items` + `issue_messages`; a cache hit saves cost, a miss changes nothing.
+**Tool use reliability (critical).** The model must call tools with correct schema adherence on every turn. Incorrect parameter types, missing required fields, or hallucinated tool names cause the executor to return errors, wasting turns. Models with strong native function-calling (not prompting-based tool use) are required. Tool-call accuracy should be tested explicitly during model selection — a model with 95% per-call accuracy fails 40% of 8-turn investigations.
+
+**Long-context coherence (important).** By turn 5–6 the context may be 20,000–40,000 tokens: the stable prefix, the full evidence slice, 4–5 prior turns of tool calls and results. The model must stay coherent over this context — remembering what it already called, what the results were, and what hypothesis it is currently testing. Models that lose track of their own earlier tool results and re-call the same tools waste turns.
+
+**Calibrated self-knowledge (important).** The model needs to know what it does and does not know. Over-confident models produce definitive diagnoses from insufficient evidence; under-confident ones never reach a verdict and exhaust the turn cap hedging. The ideal behaviour is explicit: "my hypothesis is X at 85% confidence; the next tool call would confirm or rule it out; if the result is Y the answer is X, if Z I need to investigate further". Models that express well-calibrated uncertainty in their reasoning produce better stopping decisions.
+
+**Structured output fidelity (important).** Every turn must produce a valid JSON object matching the output schema — hypothesis, confidence, decision type, and the relevant payload. The schema is non-trivial (nested, typed, conditional fields). Models that frequently produce malformed JSON or fill optional fields inconsistently require extra retry/repair logic that wastes turns and tokens.
+
+**Instruction following under constraint (important).** The system prompt contains hard rules: never execute write commands, always propose tier-2/3 actions for approval, aggregate before paginating, do not re-chew evidence you already have. Models that reliably follow complex multi-rule instruction sets under the pressure of an active investigation (where the "obvious" next move might violate a rule) are strongly preferred.
+
+**Domain familiarity with Linux storage and Synology DSM (helpful but compensatable).** The NAS taxonomy section of the prompt provides the known issue families and DSM blind spots explicitly. A strong general reasoner can work from this. However, a model with pre-training familiarity with `/proc/mdstat` format, BTRFS device status output, and Synology's log structure will recognise signal in tool output faster and make better tool-selection decisions. This is a secondary factor — a model that is weaker here but stronger on reasoning and tool use will outperform a domain-familiar model with poor multi-step reasoning.
+
+**Properties that are NOT needed for this stage:**
+- Creative writing or natural-language fluency — the output is JSON and a hypothesis string, not prose
+- Large output generation — most turns produce 200–600 tokens of output; output length is not a bottleneck
+- Web search or retrieval — the tool layer handles all data access; the model does not need to retrieve external knowledge
+- Speed-optimised / low-latency serving — this is a background worker; a 30-second model call per turn is acceptable; correctness matters far more than throughput
+
+**Recommended model tier:** A frontier reasoning model. Anthropic Claude Opus / Sonnet with extended thinking, OpenAI `o-series` with `reasoning_effort: high`, or Google Gemini with thinking config enabled. Do not use a fast/small model for this stage — the turn cap is 8, so the total cost is bounded, and a weak model burning through all 8 turns without reaching a diagnosis is more expensive than a strong model converging in 3.
 
 ---
 
 ### §3.3 Stage 3 — Explainer / Memory (cheap model, single-shot)
 
-Runs after Stage 2 reaches a terminal decision (`resolved` or `stuck`). Wrapped in `try/catch` in `pipeline-v2` — Stage 3 failure must never fail the issue resolution.
+#### What this stage is doing
 
-**Context fed to Stage 3:**
+Stage 3 runs once, after Stage 2 reaches a terminal decision (`resolved` or `stuck`). It has two outputs with different audiences and different purposes:
+
+**Output 1: Operator message.** A 2–5 sentence plain-language summary written for the owner of the NAS — a non-developer who understands that things broke but not why. The message must translate the investigation's technical findings into human terms: what happened, what caused it, what was done or proposed, and what to watch for next. The operator message is posted to `issue_messages` with `role="agent"` and appears in the dashboard as the final agent response.
+
+**Output 2: Memory entries.** Up to 5 durable `agent_memory` records extracted from this issue's investigation. Each entry must be specific, non-obvious, and genuinely reusable — it should capture something that would meaningfully improve Stage 2's reasoning on a future issue of the same type. Generic observations ("ShareSync can fail") are not memory. Actionable specifics are ("edgesynology1's ShareSync metadata DB becomes corrupted after a hard power cycle; the symptom is error code 2006 in the sync log, not a generic sync-fail alert; the fix is a DB repair via the DSM package manager, not a restart").
+
+The operator message and memory entries are generated in a single model call with a structured JSON output schema. Stage 3 is wrapped in `try/catch` in `pipeline-v2` — a Stage 3 failure must never fail or undo the issue resolution that Stage 2 already reached.
+
+#### Context fed to Stage 3
+
 - Issue fields: `title`, `severity`, `status`, `affected_nas`, `current_hypothesis`, `conversation_summary`
-- Evidence highlights: `issue_evidence_items` filtered to `in_scope=true`, most recent 30 rows, body truncated to 300 chars each
-- Action history: `issue_actions`, first 20 rows
+- Evidence highlights: `issue_evidence_items` filtered to `in_scope=true`, most recent 30 rows, body truncated to 300 chars each — enough for Stage 3 to ground the operator message in specifics without the full evidence set
+- Action history: `issue_actions`, first 20 rows — what was actually done or proposed
 
-**Operator message.** 2–5 sentence plain-language summary (what happened, root cause, what was done/proposed, what to watch). Posted to `issue_messages` with `role="agent"`.
+Stage 3 does not receive the full multi-turn Stage 2 transcript. It receives the outcome and the curated highlights. The intent is that Stage 2 has already done the diagnostic work; Stage 3 is a communication and distillation layer, not a re-investigation.
 
-**Memory types** (max 5 per issue; each must be specific, non-obvious, and durable):
+#### Memory types (max 5 per issue)
 
-| Type | Purpose |
-|---|---|
-| `nas_profile` | NAS-specific hardware/software behaviour on a named unit |
-| `issue_pattern` | Recurring failure pattern identifiable by its symptom signature |
-| `calibration` | Threshold or baseline calibration insight for a metric or alert |
-| `institutional` | Human-facing process, ownership, or escalation knowledge |
+Each memory entry must be assigned a type that describes what kind of knowledge it encodes:
+
+| Type | What it records | Example |
+|---|---|---|
+| `nas_profile` | Persistent hardware or software characteristics of a specific named NAS unit that affect how to interpret its telemetry or how to interact with it | "edgesynology2's BTRFS scrub reliably triggers iowait spikes above 60% for the first 4–6 hours; this is normal for its disk configuration and should not be treated as a storage emergency unless accompanied by device errors" |
+| `issue_pattern` | A recurring failure pattern that has a recognisable symptom signature and a known effective response | "ShareSync metadata corruption on either NAS always presents as error 2006 in the syncfolder log, not as a generic sync-fail alert, and persists through restarts until the DB is repaired; the repair procedure is X" |
+| `calibration` | A threshold, baseline, or expected-value insight for a specific metric or alert type on this system | "The Hyper Backup job for the primary volume takes 4–6 hours on Sunday nights and routinely generates iowait warnings above the 20% threshold; these warnings during that window are not actionable" |
+| `institutional` | Human-facing process, ownership, or escalation knowledge that the agent cannot derive from telemetry | "The owner does not want the Synology Drive package restarted during business hours (8am–6pm UTC+8) because client sync sessions are active; always propose an off-hours maintenance window for Drive package restarts" |
+
+#### What model capabilities this stage requires — and which matter most
+
+Stage 3 has almost opposite requirements from Stage 2. The task is communication and pattern distillation, not investigation. The model capabilities that matter are:
+
+**Writing quality and register calibration (critical).** The operator message must be clear, jargon-free, and calibrated to a non-developer reader. The model must translate "BTRFS device had 3 uncorrectable read errors on /dev/sdb3 which caused ShareSync to abort with error 2006" into language the owner understands, without being condescending or losing the essential fact. Models with strong natural language output quality matter here; a model that produces technically accurate but stiff, jargon-heavy prose fails at the actual goal.
+
+**Synthesis under compression (important).** Stage 3 receives a rich investigation transcript and must produce 2–5 sentences. Selecting which facts belong in those sentences — and which to omit without losing the essential meaning — is a non-trivial compression task. Models that reliably identify the most relevant causal chain and anchor the summary to it, rather than producing a generic "there was an issue and it was investigated" summary, are strongly preferred.
+
+**Pattern extraction quality (important).** Memory entries are only useful if they are specific and durable. The model must distinguish between observations that are generalisable (and worth encoding as memory) and observations that are specific to this one incident's state at a point in time (which should not be encoded). A model that produces generic memory entries is producing noise. The quality test for a memory entry: would a fresh Stage 2 turn on a future issue of the same type make a materially better decision if it had this memory, versus not having it?
+
+**Structured output fidelity (important).** The output schema includes both the operator message string and a typed array of memory entries. The model must produce valid JSON, correctly typed, with the right number of entries. The failure mode is malformed output or producing more than 5 memory entries of poor specificity.
+
+**Properties that are NOT needed for this stage:**
+
+- Multi-step reasoning or extended thinking — there is no hypothesis to test, no tool to call, no decision tree to navigate. The investigation is over; this stage just communicates it.
+- Tool use — Stage 3 makes no tool calls. The `try/catch` wrapper exists precisely so that even if this stage fails completely, nothing breaks.
+- Long-context coherence across turns — this is a single-shot call with a bounded, carefully selected context. The model does not need to track state across multiple turns.
+- Domain expertise in Linux/storage — the evidence highlights provide the grounded facts; the model is translating them, not interpreting them.
+- Reasoning effort controls — do not waste `extended_thinking` budget or `reasoning_effort: high` tokens here. The task does not benefit from deeper reasoning; it benefits from better writing.
+
+**Recommended model tier:** A capable but fast and inexpensive model. Claude Haiku, GPT-4o-mini, Gemini Flash, or similar. The operator message quality difference between a frontier model and a good mid-tier model is small for this task; the cost and latency difference is large. Because Stage 3 is wrapped in `try/catch` and its failure is non-fatal, a cheaper model with occasional output quality variation is an acceptable tradeoff.
 
 ---
 
