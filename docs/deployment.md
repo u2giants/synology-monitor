@@ -102,7 +102,24 @@ Tool availability is controlled by `apps/nas-mcp/tools-config.json` in the repo,
 
 1. Push to `main` with changes under `apps/agent/`.
 2. `agent-image.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-agent:latest`.
-3. Watchtower on each NAS polls GHCR every 5 minutes, detects the new digest, stops the old container, removes it, and starts a new one using the same compose file and env.
+3. Watchtower on each NAS polls GHCR every 5 minutes, detects the new digest, stops the old container, removes it, and starts a new one using the **same compose file and env**.
+
+> **Important — compose config changes are NOT auto-deployed by Watchtower.**
+> Watchtower only pulls a new image and restarts with the existing compose state. If
+> `deploy/synology/docker-compose.agent.yml` changes (new capabilities, new volume
+> mounts, new env vars), the NAS containers will not see those changes until you run
+> `docker compose up -d` manually on each NAS. Examples of changes that require this:
+> - Adding or removing `cap_add` entries (e.g. `SYS_PTRACE`)
+> - Adding or removing bind-mount entries (e.g. `/dev/sda:/dev/sda:ro`)
+> - Adding new environment keys that were not in the original container spec
+>
+> **Procedure:** Copy the new `deploy/synology/docker-compose.agent.yml` to
+> `/volume1/docker/synology-monitor-agent/compose.yaml` on the NAS, then:
+> ```sh
+> DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+> cd /volume1/docker/synology-monitor-agent
+> $DOCKER compose -f compose.yaml up -d
+> ```
 
 No manual steps are needed. Allow up to 5 minutes for the update to propagate after the image push completes.
 

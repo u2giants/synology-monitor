@@ -39,7 +39,7 @@ pnpm build
 
 | You want to... | Start here |
 |---|---|
-| Add or modify a NAS diagnostic tool | `apps/nas-mcp/src/tool-definitions.ts`, `tools-config.json` |
+| Add or modify a NAS diagnostic tool | `packages/shared/src/nas-tools.ts`, `apps/nas-mcp/tools-config.json` |
 | Add a new agent telemetry collector | `apps/agent/internal/collector/` + wire in `cmd/agent/main.go` |
 | Change how issues are detected or diagnosed | `apps/web/src/lib/server/issue-detector.ts`, `ai/pipeline-v2.ts` |
 | Allow a new NAS shell command | `apps/nas-api/internal/validator/validator.go` + `validator_test.go` |

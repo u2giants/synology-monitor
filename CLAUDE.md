@@ -30,7 +30,7 @@ For other AI tools, paste `AGENTS.md` as your first message and follow the *§ 9
 ## Memory / context notes
 
 - Local workspace path: `/worksp/monitor/app`. Working copy of `github.com/u2giants/synology-monitor` on `main`.
-- The NAS MCP server has 108 tools in `ALL_TOOL_DEFS` but exposes only 5 per session (`tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). When debugging tool availability, check `tool_search` results and `tools-config.json` enablement — the count of definitions is not the count of exposed tools.
+- The NAS MCP server has 119 tools in `ALL_TOOL_DEFS` but exposes only 5 per session (`tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). When debugging tool availability, check `tool_search` results and `tools-config.json` enablement — the count of definitions is not the count of exposed tools.
 - The 3-stage AI pipeline (`stage1-structurer.ts`, `stage2-reasoning.ts`, `stage3-explainer.ts`) is the only active issue-agent pipeline as of 2026-05-30. The legacy 7-stage pipeline and OpenRouter inference path have been removed.
 - `issue_evidence_items` and `issue_evidence` are different tables with different purposes — do not confuse them.
 - `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not yet wired to any pipeline stage.

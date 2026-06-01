@@ -32,7 +32,7 @@ source of truth and are easy to audit.
 |---|---|---|---|
 | `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
 | `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
-| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes NAS tools to AI chat clients over Streamable HTTP/SSE |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes 119 NAS tools to AI chat clients over Streamable HTTP/SSE |
 | `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, 3-stage issue-agent loop, operator UI |
 | `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
@@ -159,12 +159,12 @@ session ID stopped the claude.ai proxy's 4-minute hang (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 
-### NAS MCP exposes 5 tools but has a 108-tool registry
+### NAS MCP exposes 5 tools but has a 119-tool registry
 Looks like: most tools are broken/unregistered.
 Actually: deliberate lazy-load. `tools/list` returns only `tool_search`,
 `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`. Clients
 discover via `tool_search`, execute via `invoke_tool({name,target,args})`.
-Why: pre-loading 108 schemas put ~50k tokens into every session and degraded it
+Why: pre-loading 119 schemas put ~50k tokens into every session and degraded it
 after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
@@ -239,6 +239,35 @@ Looks like: insecure container config.
 Actually: required by DSM. Synology's container runtime rejects the default
 AppArmor profile during init; `SYS_ADMIN` is required for `btrfs subvolume list`,
 scrub, and snapshot operations. DSM constraint, not a choice.
+
+### NAS API has `SYS_PTRACE` but `gdb` and `lldb` are hard-blocked
+Looks like: contradictory — why grant ptrace and then block it?
+Actually: `strace` and `/proc/PID/stack` (already readable with `SYS_ADMIN`) are the
+safe ptrace operations. `gdb`/`lldb` are blocked because they can call arbitrary
+functions in a traced process via `call system(...)` — a code-injection vector.
+`strace_process` uses `-c` count mode only (syscall summary, no argument printing)
+so no sensitive data is printed.
+Do not change because: removing the `gdb`/`lldb` hard-blocks would allow an
+AI-generated command to inject arbitrary code into live DSM processes.
+
+### `/dev/sd*` and `/dev/md*` are individually named mounts, not the full `/dev` tree
+Looks like: there should just be `- /dev:/dev:ro`.
+Actually: individual named mounts (`/dev/sda:/dev/sda:ro`, ..., `/dev/md3:/dev/md3:ro`).
+Why: Docker bind-mounts the source device at container start. If a source device
+doesn't exist (empty drive bay), the compose `up` fails for the whole service.
+Individual mounts let you comment out non-existent bays.
+Do not change because: mounting the full `/dev` tree read-only would still expose
+`/dev/mem`, `/dev/kmem`, and other sensitive kernel interfaces.
+
+### Watchtower updates images but NOT compose configuration
+Looks like: after pushing `docker-compose.agent.yml` changes to `main`, the NAS
+containers will pick them up like code changes.
+Actually: Watchtower pulls the new image and restarts with the **existing compose
+state** — it reads the current in-memory config, not the file on disk. New
+capabilities (`cap_add`), volume mounts, env keys, etc. do not take effect until
+`docker compose up -d` is run manually on the NAS with the updated compose file.
+Do not assume because: this is how Docker Compose restart semantics work — container
+recreation from a new image uses the last-applied compose spec, not the repo copy.
 
 ### `issue_evidence` and `issue_evidence_items` are different tables
 Looks like: `issue_evidence_items` is just the renamed `issue_evidence`.
@@ -364,10 +393,12 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 | open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → migration 00042 |
 | open | Relay has no CI build workflow | Decide: add workflow or document manual path as canonical |
 | low | 2 DB functions still `smon_`-prefixed (`smon_create_alert`, `smon_get_openai_key`) | Low value; rename with caller updates |
+| **open** | **Manual `docker compose up -d` on each NAS** — `SYS_PTRACE` + `/dev/sd*` mounts in `docker-compose.agent.yml` require a manual compose recreate; Watchtower will not apply these | Owner — run on each NAS after pulling new compose file |
 | done | 3-stage issue-agent rebuild (structurer → reasoning core → explainer/memory) | Completed 2026-05-30 |
 | done | `disk_inflight_ios` metric, Drive client log fix, Stage 2 `run_command` tool, nightly disk health schedules | 2026-05-31 |
 | done | `backend-findings.ts` + `buildProblemPrompt` + `resolution/create` migrated from `analyzed_problems` to `issues` | 2026-05-31 |
 | done | Ingestion fix + partman repair + smon cleanup + secret redaction | Migrations 00034/00035 |
+| done | Deep iowait diagnostics: 9 new MCP tools (PSI, I/O scheduler, NFS client, strace, per-process IO detail, hdparm, set_io_scheduler, set_vm_dirty_ratios, set_ionice), Stage 1 evidence body fix, Stage 2 NAS taxonomy expansion, Metrics page Device Saturation + Container I/O + D-state + per-CPU iowait sections, `SYS_PTRACE` + individual `/dev` mounts in NAS API compose | 2026-06-01 |
 
 ## 15. Non-negotiable rules
 

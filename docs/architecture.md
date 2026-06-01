@@ -147,7 +147,19 @@ POST requests from the web app and nas-mcp to execute shell commands.
 The validator (`internal/validator/validator.go`) classifies commands before
 execution. Hard-blocked commands (regardless of tier): disk destruction (`mkfs`,
 `fdisk`, `dd if=`), firmware writes, user account changes, shutdown/reboot, package
-install/remove, recursive grep on `@synologydrive`/`@SynologyDriveShareSync`.
+install/remove, recursive grep on `@synologydrive`/`@SynologyDriveShareSync`, `gdb`,
+`lldb` (ptrace code-injection vectors), destructive `hdparm` flags.
+
+**Capabilities:**
+- `SYS_PTRACE` — enables `strace` for D-state/hung process diagnosis. `gdb` and
+  `lldb` are hard-blocked in the validator (they can call arbitrary functions via
+  `call system(...)`). The `strace_process` tool uses `-c` count mode only — no
+  argument printing, no sensitive data exposure.
+- `SYS_ADMIN` — required for btrfs subvolume, scrub, and snapshot operations.
+- `/dev/sda`–`/dev/sdh` and `/dev/md0`–`/dev/md3` are bind-mounted read-only for
+  `hdparm -I` and `hdparm -t`. These are individual named mounts — not the full
+  `/dev` tree. Comment out non-existent bay entries in the compose file; Docker
+  bind-mounts fail if the source device doesn't exist.
 
 HMAC approval tokens are minted fresh at execution time — never persisted. The
 15-minute expiry bounds only the exec→exec window, not the operator's think time.
@@ -160,10 +172,25 @@ Claude Desktop) connect over Streamable HTTP/SSE.
 **Always-on tools (5):** `tool_search`, `invoke_tool`, `run_command`,
 `check_disk_space`, `restart_nas_api`.
 
-**Tool registry:** 108 predefined tools in `packages/shared/src/nas-tools.ts`,
-enabled/disabled via `apps/nas-mcp/tools-config.json`. Clients discover tools via
-`tool_search`, execute via `invoke_tool`. The full registry is never loaded into a
-session (lazy-load design — see AGENTS.md §10).
+**Tool registry:** 119 predefined tools (79 read + 40 write) in
+`packages/shared/src/nas-tools.ts`, enabled/disabled via
+`apps/nas-mcp/tools-config.json`. Clients discover tools via `tool_search`, execute
+via `invoke_tool`. The full registry is never loaded into a session (lazy-load design
+— see AGENTS.md §10).
+
+**I/O diagnostic tools (added 2026-06-01):**
+
+| Tool | Purpose |
+|---|---|
+| `check_psi_pressure` | Reads `/proc/pressure/io`, `cpu`, `memory` — PSI full.io >5% = complete saturation |
+| `check_io_scheduler` | Reports scheduler, nr_requests, read_ahead_kb, rotational flag per block device |
+| `check_nfs_client` | NFS mounts, RPC stats, kernel messages, active connections |
+| `check_process_io_detail` | Per-process wchan, `/proc/PID/stack`, open volume fds, ionice class; auto-detects D-state if no PIDs given |
+| `strace_process` | strace `-c` count mode only (5s window, syscall summary — no argument printing) |
+| `hdparm_device_info` | `hdparm -I` device identity + `hdparm -t` throughput test |
+| `set_io_scheduler` | Writes to `/sys/block/dev/queue/scheduler`; validates device and scheduler name |
+| `set_vm_dirty_ratios` | sysctl-sets dirty_ratio (1–80) and dirty_background_ratio (1–50); class 1 I/O rejected |
+| `set_ionice` | Sets process I/O class 2 (best-effort) or 3 (idle) only; class 1 realtime is hard-blocked |
 
 ## Web app (apps/web)
 
@@ -176,6 +203,11 @@ Next.js 14 app at `mon.designflow.app`. Supabase for auth + data. Key subsystems
   DB state
 - **Copilot** (`copilot.ts`): legacy NAS assistant chat (uses OpenRouter/MiniMax)
 - **Resolution UI** (`/api/resolution/*`): operator interface over the issue-agent
+- **Metrics page** (`(dashboard)/metrics/page.tsx`): live telemetry charts including
+  Device Saturation section (util%, await_ms, queue_depth per block device with
+  color-coded health), Container I/O table (top containers by bytes/s), process table
+  with D-state badge (yellow when `state=D`, directly waiting on I/O), per-CPU
+  iowait breakdown
 
 ## 3-stage AI pipeline
 
@@ -191,6 +223,13 @@ prioritized evidence slice for Stage 2's prompt.
 
 Budget: 12,000 tokens (48,000 chars). 70% for in-scope/anomalous events in full;
 30% for noise summaries. Always includes the evidence index.
+
+**Evidence body rule:** Every field of every telemetry row goes into the evidence
+`body` (what Stage 2 sees via `fetch_evidence`). Do not restrict `bodyFields` —
+doing so pushes fields into `metadata`, which `fetch_evidence` never returns.
+The `TELEMETRY_SOURCES` mapping in `stage1-structurer.ts` controls this;
+`process_snapshots` and `container_io` were fixed to include `cpu_pct`, `state`,
+`read_bps`, `write_bps`, and related fields (previously invisible to the AI).
 
 ### Stage 2 — Reasoning Core (strong model, agentic loop, resumable)
 
@@ -210,7 +249,15 @@ turn — resumable from any worker after any approval gate.
 - `fetch_evidence` — reads `issue_evidence_items` for this issue; works offline
 - `run_command` — free-form read-only shell command; validated by nas-api; useful
   for raw log files, `/proc/mdstat`, `/sys/block/*/inflight`, etc.
-- 100+ predefined NAS tools (SMART, BTRFS, ShareSync, Docker, process/network/storage)
+- 119 predefined NAS tools (SMART, BTRFS, ShareSync, Docker, process/network/storage,
+  I/O diagnostics including PSI pressure, per-CPU iowait, NFS client, strace)
+
+**NAS taxonomy:** The Stage 2 system prompt includes a `NAS_TAXONOMY` constant with
+an iowait interpretation guide: RAID resync check-order, disk_io_stats thresholds
+(util_pct ≥80% = saturated, await_ms HDD vs SSD), D-state processes as direct
+iowait sources, IRQ affinity detection from per-CPU concentration, PSI full.io
+threshold, vm.dirty burst flush pattern, NFS as invisible iowait source, I/O
+scheduler recommendations.
 
 Every tool result is persisted to `issue_evidence_items` so later turns can page it.
 
