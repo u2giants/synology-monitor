@@ -2,7 +2,7 @@
 
 ## System purpose
 
-Monitors two Synology NAS devices and gives the operator:
+Monitors two Synology NAS devices (`edgesynology1`, `edgesynology2`) and gives the operator:
 
 - live telemetry (metrics, logs, storage, processes, network, containers)
 - grouped issues with persistent conversation threads
@@ -16,40 +16,63 @@ failures.
 ## Component map
 
 ```
-┌─────────────────────────────────────────────────┐
-│ NAS (×2: edgesynology1, edgesynology2)          │
-│  ┌──────────────────┐  ┌──────────────────────┐ │
-│  │  agent (Go)      │  │  nas-api (Go)        │ │
-│  │  polls DSM APIs  │  │  3-tier shell exec   │ │
-│  │  reads /proc,sys │  │  port 7734           │ │
-│  │  watches logs    │  │  tier1: read-only    │ │
-│  │  → Supabase WAL  │  │  tier2: service ops  │ │
-│  └──────────────────┘  │  tier3: file ops     │ │
-└──────────┬─────────────┴──────────┬────────────┘
-           │ WAL flush (PostgREST)   │ HTTPS over Tailscale
-           ▼                         ▼
-┌──────────────────┐    ┌─────────────────────────┐
-│ Supabase         │◄───│ web app (Next.js)        │
-│ 53 tables        │    │ mon.designflow.app        │
-│ partitioned +    │    │  - issue detector         │
-│ time-series      │    │  - 3-stage issue-agent    │
-└──────────────────┘    │  - operator UI            │
-                         └─────────────────────────┘
-                                    ▲
-                                    │ MCP / Streamable HTTP
-                         ┌─────────────────────────┐
-                         │ nas-mcp (Node.js)        │
-                         │ nas-mcp.designflow.app   │
-                         │ 108-tool registry        │
-                         │ 5 always-on tools        │
-                         └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│ NAS (×2: edgesynology1, edgesynology2)                      │
+│  ┌──────────────────────┐  ┌────────────────────────────┐   │
+│  │  agent (Go)          │  │  nas-api (Go)              │   │
+│  │  polls DSM APIs      │  │  3-tier shell executor     │   │
+│  │  reads /proc, /sys   │  │  port 7734                 │   │
+│  │  watches logs        │  │  tier 1: read-only (auto)  │   │
+│  │  → SQLite WAL        │  │  tier 2: service ops       │   │
+│  └──────────────────────┘  │  tier 3: file ops          │   │
+│           │                 └────────────┬───────────────┘   │
+│           │ PostgREST (batch flush)       │ HTTPS/Tailscale   │
+└───────────┼───────────────────────────────┼───────────────────┘
+            ▼                               ▼
+┌───────────────────┐    ┌───────────────────────────────────┐
+│ Supabase          │◄───│ web app (Next.js)                  │
+│ qnjimovrsaacneqk  │    │ mon.designflow.app                 │
+│ 53 tables         │    │  - issue detector                  │
+│ partitioned +     │    │  - 3-stage issue-agent pipeline    │
+│ time-series       │    │  - operator approval UI            │
+└───────────────────┘    │  - copilot chat                    │
+                         └───────────────────────────────────┘
+                                        ▲
+                              MCP / Streamable HTTP
+                         ┌───────────────────────────────────┐
+                         │ nas-mcp (Node.js)                  │
+                         │ nas-mcp.designflow.app/mcp         │
+                         │ 119-tool registry (lazy-load)      │
+                         │ 5 always-on tools per session      │
+                         └───────────────────────────────────┘
 ```
 
-## Agent (apps/agent)
+Everything is deployed via push to `main`. GitHub Actions builds and pushes four
+Docker images to GHCR. The web app and nas-mcp redeploy automatically via Coolify
+webhooks; the agent and nas-api are picked up by Watchtower on each NAS within
+~5 minutes. There is one branch: `main`.
 
-The Go agent runs on each NAS as a Docker container. It collects telemetry on a
-rolling schedule and buffers writes in a local SQLite WAL before flushing to
-Supabase in batches.
+---
+
+## Agent (`apps/agent`)
+
+The Go agent runs on each NAS as a Docker container with `network_mode: host`.
+It collects telemetry on a rolling schedule, buffers every write in a local SQLite
+WAL at `/app/data/wal.db`, and flushes to Supabase in per-table batches every 30s
+via PostgREST.
+
+### Volume mounts
+
+The NAS host filesystem is exposed to the agent container under `/host/` to avoid
+shadowing the container's own kernel namespaces:
+
+| Host path | Container path | Used by |
+|---|---|---|
+| `/proc` | `/host/proc` | process stats, mdstat, diskstats |
+| `/sys` | `/host/sys` | cgroup I/O, btrfs counters, thermal |
+| `/var/log` | `/host/log` | logwatcher, backup logs |
+| `/volume1/@synologydrive` | `/host/shares/@synologydrive` | drive log collector |
+| `/volume1/@SynologyDriveShareSync` | `/host/shares/@SynologyDriveShareSync` | sharesync log collector |
 
 ### Collector inventory
 
@@ -73,31 +96,29 @@ Supabase in batches.
 | logwatcher | `logwatcher/watcher.go` | `nas_logs` | 10s tail interval |
 | security | `security/watcher.go` | `security_events` | inotify-driven |
 
-### Storagepool collector
+All collector goroutines use the `wg.Add(1)` / `defer wg.Done()` WaitGroup
+pattern in `cmd/agent/main.go`. Omitting this drops in-flight WAL writes on
+shutdown (the ShareSync collector had this bug; see AGENTS.md §10).
 
-Reads `/host/proc/mdstat` directly every 60s for RAID scrub/rebuild/check
-progress and emits `raid_scrub_progress` metrics. Also emits `disk_inflight_ios`
+### Notable collectors
+
+**ShareSync health (`collector/sharesync.go`)** — scans `dscc.log` and
+`dscc_monitor.log` directly at
+`/host/shares/@SynologyDriveShareSync/log/` using byte-offset watermarks stored
+in the WAL's `checkpoints` table. Detects three failure patterns invisible to the
+DSM UI: queue jams (same path in `RedoEvent`/`PullEvent` ≥5 times without a
+`DoneEvent`), basis-file corruption (`PrepareDownloadFile` repeat without
+`DoneEvent`), and transport flaps (≥3 error-code-26 / daemon-socket / reconnect
+events in a window).
+
+**Storagepool (`collector/storagepool.go`)** — reads `/host/proc/mdstat` directly
+every 60s for RAID scrub/rebuild/check progress. Also emits `disk_inflight_ios`
 (instantaneous in-progress I/O count per device from `/proc/diskstats` field 9).
-Alerts once on healthy→degraded state transitions; does not flood on every tick.
+Alerts once on healthy→degraded state transitions.
 
-### ShareSync health collector
+**Log watcher (`logwatcher/watcher.go`)** — tails the following sources by default:
 
-Scans `dscc.log` and `dscc_monitor.log` directly — failure patterns the DSM UI
-does not surface:
-
-- **Queue jam** — same path in `RedoEvent`/`PullEvent` ≥5 times without a
-  `DoneEvent` → `critical` alert
-- **Basis-file corruption** — `PrepareDownloadFile` repeat without `DoneEvent`
-- **Transport flap** — ≥3 error-code-26 / daemon-socket / reconnect events
-
-Uses byte-offset watermarks per log file (stored in WAL `checkpoints` table).
-Log files are at `/host/shares/@SynologyDriveShareSync/log/` inside the container.
-
-### Log watcher
-
-Tails the following sources by default:
-
-| Path (in container) | Source label |
+| Container path | Source label |
 |---|---|
 | `/host/log/messages` | `system` |
 | `/host/log/synolog/synobackup.log` | `backup` |
@@ -115,184 +136,380 @@ Tails the following sources by default:
 | `/host/shares/@synologydrive/log/*.log` | `drive` |
 | `/host/shares/@synologydrive/log/syncfolder.log` | `drive_sharesync` |
 
-Additional paths can be added via `EXTRA_LOG_FILES` env var or by editing
-`defaultLogFiles` in `logwatcher/watcher.go`.
+The `@synologydrive` paths are mounted at `/host/shares/@synologydrive` (not under
+`/host/volume1`); `inferDriveLogFiles` prepends `/host/shares` first.
 
-### WAL and sender
+**Custom collector (`collector/custom.go`)** — polls `custom_metric_schedules`
+every 60s, claims due rows with an optimistic lock, and executes the scheduled
+shell command. Output is stored in `custom_metric_data`. Used for ad-hoc deep
+diagnostics and permanent nightly schedules (e.g. `nightly_disk_health` from
+migration 00040, which runs at 2am UTC on weekdays and collects `/proc/diskstats`,
+`/proc/mdstat`, and per-device inflight IOs).
 
-`sender/sender.go` buffers writes in `/app/data/wal.db` (SQLite), flushes every
-30s in per-table batches to Supabase's REST API. A `checkpoints` table in the same
-file stores named string values (log file byte offsets, collector cursors).
+### WAL and sender (`sender/sender.go`)
 
-**Poison-row isolation:** on a PostgREST `4xx`, the sender re-sends each row
-individually so good rows land and only the bad row accumulates retries. This was
-added after a single bad row silently froze ingestion (see incidents).
+The SQLite WAL at `/app/data/wal.db` holds two logical stores: per-table row
+queues (flushed to Supabase every 30s) and a `checkpoints` table (durable named
+string values such as log file byte offsets and collector cursors).
 
-**`package_status` is the only merge-duplicates upsert** — all other tables are
-append-only inserts.
+**Poison-row isolation:** on a PostgREST `4xx` batch failure, the sender
+re-sends each row individually so good rows land and only the bad row accumulates
+retries. This prevents a single malformed row from silently freezing an entire
+telemetry stream (as happened for ~19h/23d before the fix — see incidents).
 
-## NAS API (apps/nas-api)
+**`package_status` is the only merge-duplicates upsert.** Every other table is
+append-only inserts. The WAL is capped at `MAX_WAL_SIZE_MB` (default 100 MB);
+oldest entries are dropped when the cap is reached.
 
-Runs on each NAS as a Docker container on port 7734. Accepts bearer-authenticated
-POST requests from the web app and nas-mcp to execute shell commands.
+---
+
+## NAS API (`apps/nas-api`)
+
+Runs on each NAS as a Docker container on port 7734 (`network_mode: host`,
+`pid: host`). Accepts bearer-authenticated POST requests from the web app and
+nas-mcp to classify and execute shell commands.
+
+The service exposes three HTTP endpoints:
+
+| Method + Path | Purpose |
+|---|---|
+| `GET /health` | Liveness check; returns build SHA and time |
+| `POST /preview` | Classify a command's tier without executing it |
+| `POST /exec` | Execute a command; requires tier + optional approval token |
 
 ### Three-tier execution model
 
-| Tier | Label | Auto-executes | Examples |
+| Tier | Label | Approval required | Examples |
 |---|---|---|---|
-| 1 | read-only | Yes | `cat /proc/mdstat`, `df -h`, `smartctl -a`, `tail -n 100 /var/log/kern.log` |
-| 2 | service ops | Requires HMAC approval token | `synopkg restart SynologyDrive`, `docker compose restart` |
-| 3 | file ops (touches /volume*) | Requires HMAC approval token | `mv /volume1/file.old /volume1/file`, `btrfs scrub start` |
+| 1 | read-only | No — auto-executes | `cat /proc/mdstat`, `df -h`, `smartctl -a`, `tail -n 100 /var/log/kern.log` |
+| 2 | service ops | HMAC approval token | `synopkg restart SynologyDrive`, `docker compose restart` |
+| 3 | file ops | HMAC approval token | `mv /volume1/file.old /volume1/file`, `btrfs scrub start /volume1` |
 
-The validator (`internal/validator/validator.go`) classifies commands before
-execution. Hard-blocked commands (regardless of tier): disk destruction (`mkfs`,
-`fdisk`, `dd if=`), firmware writes, user account changes, shutdown/reboot, package
-install/remove, recursive grep on `@synologydrive`/`@SynologyDriveShareSync`, `gdb`,
-`lldb` (ptrace code-injection vectors), destructive `hdparm` flags.
+### Validator (`internal/validator/validator.go`)
 
-**Capabilities:**
-- `SYS_PTRACE` — enables `strace` for D-state/hung process diagnosis. `gdb` and
-  `lldb` are hard-blocked in the validator (they can call arbitrary functions via
-  `call system(...)`). The `strace_process` tool uses `-c` count mode only — no
-  argument printing, no sensitive data exposure.
-- `SYS_ADMIN` — required for btrfs subvolume, scrub, and snapshot operations.
-- `/dev/sda`–`/dev/sdh` and `/dev/md0`–`/dev/md3` are bind-mounted read-only for
-  `hdparm -I` and `hdparm -t`. These are individual named mounts — not the full
-  `/dev` tree. Comment out non-existent bay entries in the compose file; Docker
-  bind-mounts fail if the source device doesn't exist.
+`ClassifyTier(command)` returns the minimum required tier. `Validate(command, tier)`
+enforces that the requested tier is sufficient and that no hard-block patterns match.
 
-HMAC approval tokens are minted fresh at execution time — never persisted. The
-15-minute expiry bounds only the exec→exec window, not the operator's think time.
+**Hard-blocked regardless of tier:** disk destruction (`mkfs`, `fdisk`, `parted`,
+`dd if=`, `wipefs`), root filesystem destruction (`rm -rf /`), DSM binary writes,
+`synopkg install/uninstall`, firmware writes (`flash_eraseall`, `nandwrite`,
+`insmod`, `rmmod`), ptrace code-injection (`gdb`, `lldb`), destructive `hdparm`
+flags (`--security-`, `-y`, `-Y`, `-W`), user account changes (`useradd`,
+`userdel`, `passwd <user>`), shutdown/reboot/poweroff, package managers
+(`apt-get install`, `opkg install`, `pip install`), recursive grep on
+`@synologydrive`/`@SynologyDriveShareSync` (a 4-day runaway grep incident on
+production triggered this — see AGENTS.md §13), unrestricted `docker run/create`
+(only the monitor-stack compose subset is allowed).
 
-## NAS MCP (apps/nas-mcp)
+**Tier 1 enforcement:** `writePatterns` (regex list) is checked; any match elevates
+to tier 2+. Real output redirection (`> file`, not `>/dev/null` or `2>&1`) is also
+a write.
+
+**Tier 2 enforcement:** commands touching `/volume*/` paths outside the monitor
+stack are elevated to tier 3.
+
+**HMAC approval tokens** are minted fresh by the web app at execution time in
+`pipeline-v2.ts::executeApprovedAction` and `nas-api-client.ts::buildNasApiApprovalToken`.
+They are never persisted; the 15-minute expiry bounds only the exec→exec window,
+not the operator's think time. Persisting tokens would cause 403s after expiry.
+
+**Container capabilities:** `apparmor=unconfined` (DSM rejects the default AppArmor
+profile on container init), `SYS_ADMIN` (required for btrfs subvolume, scrub, and
+snapshot operations), `SYS_PTRACE` (enables `strace` for D-state process diagnosis;
+`gdb`/`lldb` are hard-blocked by the validator to prevent code injection).
+
+**Executor process group kill:** `executor.go` sets `Setpgid: true` and uses
+`syscall.Kill(-pid, SIGKILL)` with a `WaitDelay: 2s`. This kills the entire process
+group on timeout, not just the bash parent — preventing orphaned subprocesses
+(e.g. a `grep` forked by `grep ... | head`).
+
+---
+
+## NAS MCP (`apps/nas-mcp`)
 
 Node.js MCP server at `nas-mcp.designflow.app/mcp`. AI chat clients (claude.ai,
-Claude Desktop) connect over Streamable HTTP/SSE.
+Claude Desktop) connect over Streamable HTTP. The server is **fully stateless** —
+every request builds a new `McpServer`, handles the request, and discards it.
+No `mcp-session-id` is tracked. This eliminates stale-session 404s after redeploys
+and the 4-minute hang that stateful transport caused via the claude.ai proxy.
 
-**Always-on tools (5):** `tool_search`, `invoke_tool`, `run_command`,
-`check_disk_space`, `restart_nas_api`.
+### Tool surface
 
-**Tool registry:** 119 predefined tools (79 read + 40 write) in
-`packages/shared/src/nas-tools.ts`, enabled/disabled via
-`apps/nas-mcp/tools-config.json`. Clients discover tools via `tool_search`, execute
-via `invoke_tool`. The full registry is never loaded into a session (lazy-load design
-— see AGENTS.md §10).
+Five tools are registered eagerly on every request (`EAGER_TOOLS` in `src/index.ts`):
 
-**I/O diagnostic tools (added 2026-06-01):**
-
-| Tool | Purpose |
+| Always-on tool | Purpose |
 |---|---|
-| `check_psi_pressure` | Reads `/proc/pressure/io`, `cpu`, `memory` — PSI full.io >5% = complete saturation |
-| `check_io_scheduler` | Reports scheduler, nr_requests, read_ahead_kb, rotational flag per block device |
-| `check_nfs_client` | NFS mounts, RPC stats, kernel messages, active connections |
-| `check_process_io_detail` | Per-process wchan, `/proc/PID/stack`, open volume fds, ionice class; auto-detects D-state if no PIDs given |
-| `strace_process` | strace `-c` count mode only (5s window, syscall summary — no argument printing) |
-| `hdparm_device_info` | `hdparm -I` device identity + `hdparm -t` throughput test |
-| `set_io_scheduler` | Writes to `/sys/block/dev/queue/scheduler`; validates device and scheduler name |
-| `set_vm_dirty_ratios` | sysctl-sets dirty_ratio (1–80) and dirty_background_ratio (1–50); class 1 I/O rejected |
-| `set_ionice` | Sets process I/O class 2 (best-effort) or 3 (idle) only; class 1 realtime is hard-blocked |
+| `tool_search({ query, limit })` | Search the 119-tool registry by keyword; returns names, descriptions, and parameter shapes as text |
+| `invoke_tool({ name, target, args })` | Execute any registry tool by name |
+| `run_command({ target, command })` | Free-form tier-1-only shell command |
+| `check_disk_space({ target })` | Disk and inode usage across all volumes |
+| `restart_nas_api({ target, confirmed })` | Restart the NAS API container |
 
-## Web app (apps/web)
+The full 119-tool registry is in `packages/shared/src/nas-tools.ts` (the
+`ALL_TOOL_DEFS` array). Clients discover tools with `tool_search` and execute them
+with `invoke_tool`. The registry is never loaded eagerly — loading all 119 schemas
+put ~50k tokens into every session and degraded it after ~10–15 tool calls.
 
-Next.js 14 app at `mon.designflow.app`. Supabase for auth + data. Key subsystems:
+Tool enablement is controlled by `apps/nas-mcp/tools-config.json`. A tool present
+in `ALL_TOOL_DEFS` but absent from `enabled_read_tools` or `enabled_write_tools` is
+rejected by `invoke_tool` with a "disabled" message. Adding a new always-on tool
+requires adding it to the `EAGER_TOOLS` constant in `src/index.ts`.
 
-- **Issue detector** (`issue-detector.ts`): fingerprints alerts + logs into issues
-  by family (sharesync-metadata-corruption, drive-not-ready, sync-failure, I/O
-  pressure, backup-failure, etc.)
-- **3-stage issue-agent** (`ai/pipeline-v2.ts`): one job per turn, resumable from
-  DB state
-- **Copilot** (`copilot.ts`): legacy NAS assistant chat (uses OpenRouter/MiniMax)
-- **Resolution UI** (`/api/resolution/*`): operator interface over the issue-agent
-- **Metrics page** (`(dashboard)/metrics/page.tsx`): live telemetry charts including
-  Device Saturation section (util%, await_ms, queue_depth per block device with
-  color-coded health), Container I/O table (top containers by bytes/s), process table
-  with D-state badge (yellow when `state=D`, directly waiting on I/O), per-CPU
-  iowait breakdown
+### Approval flow for write tools
 
-## 3-stage AI pipeline
+For tier-2/3 write tools, `invoke_tool` calls `POST /preview` on the NAS API first.
+If the command requires approval and `args.confirmed` is not `true`, the tool
+returns a plain-text preview of the command. The client must call `invoke_tool`
+again with `confirmed: true`. On confirmation, `src/index.ts::buildApprovalToken`
+mints the HMAC token and passes it to `POST /exec`.
 
-The only active issue-agent pipeline as of 2026-05-30. Legacy 7-stage pipeline and
-OpenRouter inference path removed.
+### Network and timeout architecture
 
-### Stage 1 — Lossless Structurer (deterministic, no model call)
+- `Connection: close` on every nas-api request — prevents undici pool exhaustion
+  when timed-out requests do not return their socket (sub-ms Tailscale RTT makes
+  re-handshake cost negligible).
+- Node HTTP server: `keepAliveTimeout: 120s` / `headersTimeout: 125s` — above
+  Traefik's 90s idle timeout so Traefik never reuses a socket Node has already
+  closed.
+- Tool deadline: 45s hard cap per `invoke_tool` call, implemented in
+  `withToolDeadline`. Returns a clear timeout error rather than holding the
+  connection until Claude's 4-minute client timeout.
+- `/exec` AbortController: 25s command + 5s buffer = 30s, with `timeout_ms: 25000`
+  sent to the NAS API so it kills the subprocess first.
 
-Ingests raw telemetry for the issue window (alerts, logs, metrics, tasks, etc.),
-deduplicates byte-identical lines, classifies each row as in-scope/anomalous,
-persists the full deduped set to `issue_evidence_items`, and builds a bounded
-prioritized evidence slice for Stage 2's prompt.
+---
 
-Budget: 12,000 tokens (48,000 chars). 70% for in-scope/anomalous events in full;
-30% for noise summaries. Always includes the evidence index.
+## Web app (`apps/web`)
 
-**Evidence body rule:** Every field of every telemetry row goes into the evidence
-`body` (what Stage 2 sees via `fetch_evidence`). Do not restrict `bodyFields` —
-doing so pushes fields into `metadata`, which `fetch_evidence` never returns.
-The `TELEMETRY_SOURCES` mapping in `stage1-structurer.ts` controls this;
-`process_snapshots` and `container_io` were fixed to include `cpu_pct`, `state`,
-`read_bps`, `write_bps`, and related fields (previously invisible to the AI).
+Next.js 14 app at `mon.designflow.app`. Uses Supabase for auth and data. Server
+components and API routes call Supabase with the service role key via
+`createAdminClient()`. Client-side components use the anon key.
 
-### Stage 2 — Reasoning Core (strong model, agentic loop, resumable)
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are baked into the
+client bundle at `docker build` time via build args in `web-image.yml`. Changing
+them in Coolify after the image is built has no effect.
 
-One agentic turn per job invocation. Rebuilds its full context from the DB on every
-turn — resumable from any worker after any approval gate.
+Key subsystems:
 
-**Prompt order (stable → dynamic for cache correctness):**
-1. System prompt (stable)
-2. Output schema (stable)
-3. NAS taxonomy / DSM blind spots (stable)
-4. Whole-system snapshot — NAS reachability probe (3s), active alerts, open issues (semi-stable)
-5. Issue summary (semi-stable)
-6. Evidence slice from `issue_evidence_items` (dynamic)
-7. Per-turn instruction (dynamic)
+| File | Purpose |
+|---|---|
+| `lib/server/issue-detector.ts` | Fingerprints alerts + logs into issues by family |
+| `lib/server/ai/pipeline-v2.ts` | 3-stage pipeline orchestrator, one job per turn |
+| `lib/server/issue-workflow.ts` | Job queue and status state machine |
+| `lib/server/issue-agent.ts` | `gatherTelemetryContext` — queries 13+ tables in parallel |
+| `lib/server/nas-api-client.ts` | HTTP client for nas-api; mints HMAC tokens |
+| `lib/server/ai-settings.ts` | Model selection + fallback chain from `ai_settings` table |
+| `lib/server/copilot.ts` | Legacy NAS assistant chat (OpenRouter/MiniMax) |
 
-**Tool catalog (all tier-1, auto-execute):**
-- `fetch_evidence` — reads `issue_evidence_items` for this issue; works offline
-- `run_command` — free-form read-only shell command; validated by nas-api; useful
-  for raw log files, `/proc/mdstat`, `/sys/block/*/inflight`, etc.
-- 119 predefined NAS tools (SMART, BTRFS, ShareSync, Docker, process/network/storage,
-  I/O diagnostics including PSI pressure, per-CPU iowait, NFS client, strace)
+The issue worker mode is controlled by `ISSUE_WORKER_MODE` (`inline` = drains on
+API requests; `background` = dedicated loop). The worker polls `issue_jobs` and
+calls `runIssueAgentV2` for each pending job.
 
-**NAS taxonomy:** The Stage 2 system prompt includes a `NAS_TAXONOMY` constant with
-an iowait interpretation guide: RAID resync check-order, disk_io_stats thresholds
-(util_pct ≥80% = saturated, await_ms HDD vs SSD), D-state processes as direct
-iowait sources, IRQ affinity detection from per-CPU concentration, PSI full.io
-threshold, vm.dirty burst flush pattern, NFS as invisible iowait source, I/O
-scheduler recommendations.
+---
 
-Every tool result is persisted to `issue_evidence_items` so later turns can page it.
+## 3-stage AI issue-agent pipeline
 
-**Terminals per turn:** `continue` (enqueue next turn) | `propose_remediation`
-(persist intent, wait for approval) | `ask_user` | `blocked_on_issue` |
-`resolved` | `stuck`.
+The only active pipeline as of 2026-05-30. The legacy 7-stage pipeline and
+OpenRouter inference path were removed. Entrypoint: `pipeline-v2.ts::runIssueAgentV2`.
 
-**Re-chew guard:** hashes the evidence slice text each turn. After ≥2 turns on
-unchanged evidence with `decision=continue`, forces `decision=ask_user`.
+One invocation of `runIssueAgentV2` is one job = one resumable step:
 
-### Stage 3 — Explainer / Memory (cheap model, single-shot)
+```
+runIssueAgentV2(supabase, userId, issueId)
+  │
+  ├─ 1. executeApprovedAction — execute any pending tier-2/3 action,
+  │      persist result to issue_evidence_items, post system message
+  │
+  ├─ 2. Stage 1 (first turn only) — gather telemetry, dedupe, persist
+  │      lossless set to issue_evidence_items
+  │
+  ├─ 3. Stage 2 — one agentic reasoning turn with read-only tool loop
+  │      → one of: continue | propose_remediation | ask_user |
+  │                blocked_on_issue | resolved | stuck
+  │
+  └─ 4. Stage 3 (on resolved/stuck) — operator message + durable memories
+```
 
-Runs after Stage 2 reaches `resolved` or `stuck`. Produces:
-- Operator-facing message (2–5 sentences) posted to `issue_messages`
-- Up to 5 durable `agent_memory` entries (specific, non-obvious, durable facts)
+### Stage 1 — Lossless Structurer (`ai/stage1-structurer.ts`)
 
-Best-effort: Stage 3 failure never fails the issue resolution.
+Deterministic, no model call. Runs once per issue on the first turn.
 
-Reads from `issue_evidence_items` (in_scope=true, limit 30) and `issue_actions`
-(limit 20).
+**Input:** raw telemetry from `gatherTelemetryContext` (`issue-agent.ts`), which
+queries these tables in parallel: `alerts`, `nas_logs` (general + high-signal
+sources), `process_snapshots`, `disk_io_stats`, `scheduled_tasks`, `backup_tasks`,
+`snapshot_replicas`, `container_io`, `sync_task_snapshots`, `metrics`,
+`storage_snapshots`, `dsm_errors`.
 
-## Custom metric schedules
+**Processing:** `telemetryToRawItems` maps each table to a `RawEvidenceItem` using
+the `TELEMETRY_SOURCES` map. For structured rows (process snapshots, container I/O,
+disk I/O), the full JSON of the row becomes the evidence `body` — no fields are
+stripped into metadata, ensuring `cpu_pct`, `state`, `read_bps`, `write_bps`, and
+`queue_depth` are visible to Stage 2.
 
-`custom_metric_schedules` is a DB table the AI or operator can insert rows into.
-Each row specifies a shell command, interval, and NAS target. The Go agent's
-`custom` collector polls the table every 60s, claims due rows with an optimistic
-lock, and executes the command in the container. Output is stored in
-`custom_metric_data`.
+`dedupeEvidence` collapses byte-identical `(source, body)` pairs into groups with
+`{ dedup_count, first_ts, last_ts }`. Each distinct event is kept verbatim.
 
-Use cases: ad-hoc deep diagnostics, nightly disk health snapshots, anything the AI
-wants to observe over time without a code change.
+`classifyEvidence` marks each item `in_scope` (matches `affected_nas` or is
+severity ≥ error) and `anomalous` (severity ≥ error, or warning with a state-change
+keyword like "failed", "timeout", "crash").
 
-Current permanent schedule: `nightly_disk_health` (migration 00040) — runs at 2am
-UTC on weekdays on both NASes; collects `/proc/diskstats`, `/proc/mdstat`, and
-per-device inflight IOs.
+**Output:**
+1. Full deduped set persisted to `issue_evidence_items` (lossless store,
+   idempotent — deletes prior rows for the issue first).
+2. A bounded prioritized evidence slice for the Stage 2 prompt:
+   - Budget: 12,000 tokens / 48,000 chars.
+   - 70% of budget: in-scope/anomalous events rendered verbatim.
+   - 30% of budget: high-volume noise rendered as dedup-with-count summaries.
+   - Always includes the evidence index (source × hour bucket, sorted by event count).
+   - If the priority set exceeds budget, a visible truncation notice is appended
+     (never silent).
+
+Stage 2 can retrieve any item from the lossless store at any time via
+`fetch_evidence`, which reads `issue_evidence_items` — not the raw tables.
+
+### Stage 2 — Reasoning Core (`ai/stage2-reasoning.ts`)
+
+One agentic turn per job invocation. Model: operator-configured via `ai_settings`
+table (`stage_reasoning_model`); default `claude-sonnet-4-6` / medium effort.
+
+**Context is rebuilt from the DB on every turn** (resumable invariant): the worker
+that picks up a job may be a different process after an approval gate or restart.
+Three parallel loads:
+
+1. `getReasoningConfig()` — model + effort from `ai_settings`
+2. `loadEvidenceSlice(supabase, issueId)` — reads `issue_evidence_items`, rebuilds the
+   bounded slice without re-running ingestion
+3. `buildWholeSystemSnapshot(supabase, userId, issue)` — parallel: active alerts
+   (6h), open issues, NAS reachability probe (3s timeout to primary NAS)
+4. `loadTranscript(supabase, userId, issueId)` — last 60 `issue_messages` rows
+   mapped to `{role, content}` pairs
+
+**Prompt assembly (stable → dynamic for cache correctness):**
+
+| Block | Stability | Content |
+|---|---|---|
+| `system` | stable | `SYSTEM_PROMPT` constant — operating rules, tool inventory |
+| `output_schema` | stable | `OUTPUT_SCHEMA` constant — required JSON fields and decision values |
+| `taxonomy` | stable | `NAS_TAXONOMY` constant — issue families, iowait interpretation guide, DSM blind spots |
+| `snapshot` | semi-stable | NAS reachability, active alert counts, open sibling issues |
+| `issue` | semi-stable | Issue title, severity, status, affected_nas, current hypothesis |
+| `evidence` | dynamic | Bounded evidence slice from `loadEvidenceSlice` |
+| `instruction` | dynamic | Per-turn instruction; includes re-chew guard text when triggered |
+
+Stable blocks are passed to `context-compiler.ts::block.stable()`, which marks them
+for prefix caching. Only the last two blocks change per turn.
+
+**Tool catalog available to Stage 2 (all tier-1, auto-execute):**
+
+- `fetch_evidence` — queries `issue_evidence_items` for this issue; aggregation
+  (`group_by`) or pagination (`page`, `filter`). Works when NAS is offline.
+- `run_command` — free-form shell command validated at tier 1 by nas-api. Results
+  are persisted to `issue_evidence_items` with `source: "tool:run_command"`.
+- All `write:false` tools from `ALL_TOOL_DEFS` (packages/shared/src/nas-tools.ts)
+  with the `target` parameter removed from the schema (it is inferred from
+  `issue.affected_nas[0]`). Tool results are also persisted to
+  `issue_evidence_items` with `source: "tool:<name>"`.
+
+Write tools (`def.write === true`) are excluded entirely from Stage 2's tool
+catalog. The model proposes write actions via the `propose_remediation` terminal;
+the operator approves them; `executeApprovedAction` in `pipeline-v2.ts` runs them
+on the next job invocation.
+
+**Re-chew guard:** each turn, Stage 2 hashes the evidence slice text. If the hash
+matches the previous turn's hash and `decision=continue` is returned again, a
+`rechew_repeat` counter increments in `issue.metadata`. After ≥2 repeats the
+per-turn instruction becomes a re-chew guard message, and if the model still returns
+`continue` after 2 repeats, `toTurnOutcome` forces `decision=ask_user`.
+
+**Turn cap:** `TURN_CAP` (from `stage2-turn.ts`) bounds the total number of turns.
+If exceeded, Stage 2 returns `stuck` without calling the model.
+
+**Terminal mapping** (`applyTurnOutcome` in `stage2-turn.ts`):
+
+| `decision` | Outcome | Issue status |
+|---|---|---|
+| `continue` | enqueue next job | `running` |
+| `propose_remediation` | persist `issue_actions` row with command/tier/target/summary | `waiting_for_approval` |
+| `ask_user` | post `issue_messages` with question | `waiting_on_user` |
+| `blocked_on_issue` | record dependency | `waiting_on_issue` |
+| `resolved` | close issue; trigger Stage 3 | `resolved` |
+| `stuck` | close issue; trigger Stage 3 | `stuck` |
+
+### Stage 3 — Explainer / Memory (`ai/stage3-explainer.ts`)
+
+Single-shot, cheap, low-effort. Model: `stage_explainer_model` from `ai_settings`;
+default `claude-haiku-4-5-20251001` / low effort. Runs after Stage 2 reaches
+`resolved` or `stuck`. Best-effort — a Stage 3 failure never fails the resolution.
+
+**Input:** two parallel reads from Supabase:
+- `issue_evidence_items` where `in_scope=true`, ordered by `ts` desc, limit 30
+- `issue_actions` for this issue, limit 20 (command, summary, status, result excerpt)
+
+**Prompt:** three blocks:
+- `system` (stable): "write the closing operator update and extract durable knowledge"
+- `output_schema` (stable): JSON schema for `operator_message` and `memories[]`
+- `issue_context` (dynamic): JSON blob of issue title, final hypothesis, conversation
+  summary, evidence highlights, and action results
+
+**Output:**
+1. `operator_message` (2–5 sentences, plain language) posted to `issue_messages` as
+   role `agent`.
+2. Up to 5 `agent_memory` entries inserted into `agent_memory` table with
+   `source_issue_id`. Valid `memory_type` values: `nas_profile`, `issue_pattern`,
+   `calibration`, `institutional`. Empty memories are skipped. `nas_id: null` means
+   the lesson is universal across both NASes.
+
+Memories are loaded at the start of Stage 2 investigations via
+`agent-memory-store.ts::loadMemoriesForIssue`, classified by subject so only
+relevant topics are included (e.g. HyperBackup memories for backup issues).
+
+---
+
+## Data flow summary
+
+```
+NAS hardware / DSM APIs
+        │
+        │ (each collector at its interval)
+        ▼
+agent collectors (Go) ──────────────────────────────┐
+        │ Queue* methods                             │
+        ▼                                            │
+SQLite WAL (/app/data/wal.db)                        │
+        │ sender.go flush every 30s                  │
+        │ PostgREST batch insert                     │
+        ▼                                            │
+Supabase telemetry tables                            │
+  metrics, nas_logs, disk_io_stats,                  │
+  process_snapshots, backup_tasks, ...               │
+        │                                            │
+        │ issue-detector.ts (fingerprint)            │
+        ▼                                            │
+issues table (one row per grouped problem)           │
+        │                                            │
+        │ pipeline-v2.ts job                         │
+        ▼                                            │
+Stage 1: gatherTelemetryContext ─────────────────────┘
+  → telemetryToRawItems
+  → dedupeEvidence + classifyEvidence
+  → persistEvidenceItems (issue_evidence_items)
+  → buildEvidenceSlice
+        │
+        ▼
+Stage 2: runStage2Turn (agentic loop)
+  context: evidence slice + transcript + snapshot
+  tools: fetch_evidence, run_command, 100+ NAS tools
+  each tool result → issue_evidence_items
+  terminal → issue_actions (remediation) or status change
+        │
+        │ (on resolved/stuck)
+        ▼
+Stage 3: runStage3Explainer (single-shot)
+  → operator_message → issue_messages
+  → agent_memory entries
+```
+
+---
 
 ## Database
 
@@ -301,32 +518,124 @@ Supabase project `qnjimovrsaacneqkggsn`. 53 tables total (migrations 00001–000
 **Partitioned tables** (pg_partman, monthly, auto-retention): `metrics`,
 `nas_logs`, `storage_snapshots`, `container_status`, `drive_activities`.
 
-**Lossless evidence store:** `issue_evidence_items` — written by Stage 1 and Stage
-2 tool calls; read by Stage 2 `fetch_evidence` and Stage 3. Not the same as
-`issue_evidence` (curated notes from copilot/resolution).
-
 **Key table groups:**
-- Telemetry: `metrics`, `nas_logs`, `disk_io_stats`, `process_snapshots`, `net_connections`, `container_io`, `backup_tasks`, `scheduled_tasks`, `snapshot_replicas`, `service_health`, `dsm_errors`, `package_status`, `security_events`, `drive_activities`, `sync_task_snapshots`, `drive_team_folders`
-- Issue pipeline: `issues`, `issue_messages`, `issue_evidence`, `issue_evidence_items`, `issue_actions`, `issue_jobs`, `issue_stage_runs`, `issue_state_transitions`, `agent_memory`
-- AI config: `ai_settings`, `ai_model_calls`
-- Copilot/resolution: `copilot_sessions`, `copilot_messages`, `copilot_actions`, `sync_remediations`
-- Custom collection: `custom_metric_schedules`, `custom_metric_data`
+
+| Group | Tables |
+|---|---|
+| Telemetry | `metrics`, `nas_logs`, `disk_io_stats`, `process_snapshots`, `net_connections`, `container_io`, `backup_tasks`, `scheduled_tasks`, `snapshot_replicas`, `service_health`, `dsm_errors`, `package_status`, `security_events`, `drive_activities`, `sync_task_snapshots`, `drive_team_folders` |
+| Issue pipeline | `issues`, `issue_messages`, `issue_evidence`, `issue_evidence_items`, `issue_actions`, `issue_jobs`, `issue_stage_runs`, `issue_state_transitions`, `agent_memory` |
+| AI config | `ai_settings`, `ai_model_calls` |
+| Copilot / resolution | `copilot_sessions`, `copilot_messages`, `copilot_actions`, `sync_remediations` |
+| Custom collection | `custom_metric_schedules`, `custom_metric_data` |
+
+**`issue_evidence` vs `issue_evidence_items` — different tables, different purposes:**
+
+- `issue_evidence` (migration 00022): curated human-readable notes (title/detail)
+  written by the copilot, the resolution API, and `seedIssueFromOrigin`. Not used
+  by the 3-stage pipeline.
+- `issue_evidence_items` (migration 00038): the lossless telemetry store for the
+  3-stage pipeline. Written by Stage 1 and by every Stage 2 tool call. Read by
+  Stage 2 `fetch_evidence` and Stage 3. Do not query the wrong one.
+
+**`package_status`** is the only merge-duplicates upsert (current state, one row
+per NAS+package). All other telemetry tables are append-only inserts.
+
+**AI settings** (`ai_settings` table) must be read via `createAdminClient()`
+(service role). The issue agent runs as a background worker with no user session;
+the session client returns empty under RLS, silently falling back to hardcoded
+defaults.
+
+---
+
+## Key design constraints and intentional decisions
+
+### No source whitelists on `nas_logs` / `alerts`
+
+`CHECK` constraints that enumerated allowed source values were dropped in migration
+00035. They had to be hand-expanded every time a collector added a source, and one
+bad row failing the whole PostgREST batch silently froze ingestion for ~19h/23d.
+The agent governs what it writes; the sender isolates bad rows.
+
+### NAS MCP is fully stateless (per-request McpServer)
+
+Every HTTP request builds a new `McpServer`, handles the request, discards it.
+`sessionIdGenerator: undefined`, `enableJsonResponse: true`. Stateful mode brings
+back session-resume 404s after Coolify restarts, and the claude.ai proxy's
+4-minute hang was traced to a stateful `GET /mcp` without a session ID.
+
+### NAS MCP exposes 5 tools but has a 119-tool registry
+
+Pre-loading 119 schemas puts ~50k tokens into every session and degrades it after
+~10–15 calls. Lazy-load via `tool_search` + `invoke_tool` keeps the always-on
+surface ~3k tokens. `notifications/tools/list_changed` is not used because Claude
+clients cache the initial `tools/list` and do not re-fetch on the notification.
+
+### HMAC approval tokens are never persisted
+
+Stage 2 persists the action intent (command, tier, target, summary) in
+`issue_actions` but never the HMAC token. The token is minted fresh in
+`pipeline-v2.ts::executeApprovedAction` at execution time. Persisting tokens would
+cause 403s after the 15-minute expiry; the operator's approval window is often hours.
+
+### Stage 2 tool results go into `issue_evidence_items`
+
+Every `run_command` and predefined NAS tool call in Stage 2 inserts a row into
+`issue_evidence_items` with `source: "tool:<name>"`. This means later turns can
+page the result via `fetch_evidence` without re-running the command — and the
+Stage 3 explainer sees the full investigative trail without needing a separate
+transcript of tool outputs.
+
+### Prompt order: stable → dynamic
+
+`context-compiler.ts` enforces that system/output-schema/taxonomy blocks come
+before snapshot/issue/evidence/instruction blocks. This keeps the cacheable prefix
+maximally long (stable blocks are identical across all issues and all turns), so
+only the evidence slice and per-turn instruction incur full token costs.
+
+### `connection: close` on all NAS API HTTP calls
+
+Undici's keep-alive pool exhausts after ~10–15 calls when timed-out requests do
+not return their socket. NAS API is reached over Tailscale (sub-ms RTT), making
+re-handshake cost negligible.
+
+### Executor kills the process group
+
+`executor.go` uses `cmd.SysProcAttr{Setpgid: true}` and
+`syscall.Kill(-pid, SIGKILL)` on timeout. `exec.CommandContext` kills only the
+direct bash child; without process-group kill, `grep ... | head` orphans the
+`grep` subprocess. Combined with the hard-block on recursive grep against Synology
+internal stores, this prevents the runaway that ran for 4d11h on production.
+
+### `NEXT_PUBLIC_SUPABASE_*` baked at build time
+
+These variables are passed as Docker build args in `web-image.yml` and embedded
+into the Next.js client bundle at `docker build` time. Setting them in Coolify
+after the image is built has no effect. A new push to `main` is required to change
+them.
+
+---
 
 ## Known constraints and blind spots
 
 - `container_status` CPU/mem always reads 0 — use `container_io` instead
 - `scheduled_tasks` returns DSM error 103 on edgesynology1 (unsupported API version)
-- Some snapshot-replication APIs are unsupported on some DSM versions
+- Some snapshot-replication APIs are unsupported on certain DSM versions
 - Log-derived fields are regex-parsed — categorizations imperfect, raw text faithful
-- `NEXT_PUBLIC_SUPABASE_*` are baked at build time; changing them in Coolify after
-  build has no effect
+- `analyzeRecentLogs` in `log-analyzer.ts` has no callers; tables preserved for a
+  future AI clustering layer
+- `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not
+  wired to any pipeline stage
+- `drive_team_folders` is written by the agent but never queried by the web app
+- `drive_team_folders_partitioned` has no child partitions and receives no writes;
+  it is forward infrastructure — do not drop it
+- `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`
+  are superseded by the `issues` pipeline but not yet dropped
 
-## Incomplete features
+---
 
-| Feature | State | Location |
-|---|---|---|
-| `analyzeRecentLogs` | Orphaned writer — tables preserved for future AI clustering layer | `lib/server/log-analyzer.ts` |
-| Second-opinion model | Planned: second AI cross-check of Stage 2 diagnosis; not wired | `getSecondOpinionModel()` in `ai-settings.ts` |
-| `drive_team_folders` reader | Agent writes; no web query | `collector/drive.go` |
-| `drive_team_folders_partitioned` | Schema exists; no child partitions; no writes | Migration 00008 |
-| `issue_resolutions` + related | Superseded by `issues` pipeline; not yet dropped | Migrations 00016, 00021 |
+## Relay (`apps/relay`)
+
+A narrow named-action HTTP proxy for an external (Lovable) frontend. No CI
+workflow exists — there is no `.github/workflows/relay-*.yml`. The relay image is
+built and deployed manually on the VPS. Treat this as an exceptional deploy path,
+not the routine one. See `apps/relay/OPERATIONS.md`.
