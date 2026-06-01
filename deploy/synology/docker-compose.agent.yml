@@ -57,6 +57,7 @@ services:
       - "apparmor=unconfined"  # Synology DSM rejects default apparmor profile on container init
     cap_add:
       - SYS_ADMIN              # required for btrfs subvolume list, scrub, and snapshot operations
+      - SYS_PTRACE             # strace on D-state/hung processes — code-injection vectors (gdb, lldb) are hard-blocked in the NAS-API validator
     env_file:
       - .env
     environment:
@@ -96,6 +97,22 @@ services:
       - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/volume1/@appdata/HyperBackup:ro
       - ${MONITOR_STACK_PATH:-/volume1/docker/synology-monitor-agent}:/volume1/docker/synology-monitor-agent:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      # Block devices (read-only) — required for hdparm -I (device identity/features) and
+      # hdparm -t (throughput test). Individual named mounts only — NOT the full /dev tree.
+      # Docker bind-mounts fail if the source device doesn't exist. Comment out empty bays.
+      # Typical Synology layout: sda–sdh are drive bays; md0–md3 are RAID arrays.
+      - /dev/sda:/dev/sda:ro
+      - /dev/sdb:/dev/sdb:ro
+      - /dev/sdc:/dev/sdc:ro
+      - /dev/sdd:/dev/sdd:ro
+      - /dev/sde:/dev/sde:ro
+      - /dev/sdf:/dev/sdf:ro
+      - /dev/sdg:/dev/sdg:ro
+      - /dev/sdh:/dev/sdh:ro
+      - /dev/md0:/dev/md0:ro
+      - /dev/md1:/dev/md1:ro
+      - /dev/md2:/dev/md2:ro
+      - /dev/md3:/dev/md3:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
       interval: 30s

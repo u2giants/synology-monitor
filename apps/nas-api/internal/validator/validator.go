@@ -37,6 +37,19 @@ var hardBlocked = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bnandwrite\b`),
 	regexp.MustCompile(`(?i)\binsmod\b`),
 	regexp.MustCompile(`(?i)\brmmod\b`),
+	// Ptrace code-injection vectors — blocked even though CAP_SYS_PTRACE is granted.
+	// strace (read-only syscall tracing) remains unblocked and tier-1 executable.
+	// gdb/lldb can call arbitrary functions in a traced process via "call system(...)".
+	regexp.MustCompile(`(?i)\bgdb\b`),
+	regexp.MustCompile(`(?i)\blldb\b`),
+	// Destructive hdparm operations — security erase, standby/sleep, write-cache toggle.
+	// Safe read flags (-I device identity, -t throughput test) remain unblocked.
+	regexp.MustCompile(`(?i)\bhdparm\b.*--security-`),
+	regexp.MustCompile(`(?i)\bhdparm\b.*\s-[yYW]\b`),
+	// dd writing directly to a device or /proc — would be a memory/disk write vector.
+	// dd if= is already blocked above; this adds the of= form.
+	regexp.MustCompile(`(?i)\bdd\b.*\bof=/dev/`),
+	regexp.MustCompile(`(?i)\bdd\b.*\bof=/proc/`),
 	// User account manipulation
 	regexp.MustCompile(`(?i)\buseradd\b`),
 	regexp.MustCompile(`(?i)\buserdel\b`),
@@ -94,6 +107,9 @@ var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(echo|printf|tee)\b.*(>)`),       // redirections
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
 	regexp.MustCompile(`(?i)\bsync\b`),
+	regexp.MustCompile(`(?i)\bsysctl\s+-w\b`),
+	regexp.MustCompile(`(?i)\bionice\b.*-c`),  // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
+	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),   // dd writing anywhere (device/proc covered by hard-block above)
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
 	regexp.MustCompile(`(?i)\bdocker\s+(start|stop|restart|rm)\b`),
 	regexp.MustCompile(`(?i)\bdocker\s+compose\s+(restart|stop|up|pull|build)\b`),

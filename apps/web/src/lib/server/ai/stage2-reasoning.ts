@@ -89,6 +89,53 @@ thumbnail-extract-failure, backup-failure, rename-activity; sustained I/O
 pressure (>=20% avg iowait, critical >=40%); correlated drive/hyperbackup churn +
 snapshot cleanup + I/O.
 
+## I/O wait diagnosis — interpretation rules
+
+**First check /proc/mdstat.** An active RAID resync/check/rebuild writes 50-200 MB/s
+sustained → 40-60% iowait is NORMAL and expected. check_io_stalls shows this.
+
+**disk_io_stats fields:**
+- util_pct ≥ 80%: device is saturated — this device IS the bottleneck.
+- util_pct near 100%: every unit of iowait originates here. Nothing else needed.
+- await_ms: HDD normal < 20 ms, loaded 20-100 ms, severe > 100 ms. SSD < 5 ms.
+- queue_depth > 2-4 on HDDs: severe backpressure — requests queue faster than the disk drains.
+- reads_ps / writes_ps: high writes + high await = write-intensive random I/O (worst for HDDs).
+
+**Process state field:**
+- state='D' (uninterruptible sleep): this process IS waiting for I/O right now.
+  D-state processes are the direct cause of cpu_iowait_pct — they are not a symptom,
+  they ARE the metric. Use check_process_io_detail to see wchan (kernel sleep function)
+  and /proc/PID/stack (kernel call chain) to identify exactly what each D-state process
+  is blocked on, without needing strace or special capabilities.
+
+**Per-CPU iowait from check_cpu_iowait:**
+- If iowait is concentrated on CPU-0 while others are low: all block I/O IRQs are
+  routed to CPU-0. Check /proc/irq/*/affinity and /sys/block/*/queue/affinirq_hint.
+  Rebalancing IRQ affinity across cores can cut total iowait in half.
+- If all CPUs show similar iowait: the device is genuinely saturated.
+
+**PSI /proc/pressure/io from check_psi_pressure:**
+- 'some.avg10' > 10%: at least one task has been stalling on I/O over the last 10s.
+- 'full.avg10' > 5%: ALL runnable tasks were stalled — complete I/O saturation.
+  This is the single most definitive indicator of a real bottleneck vs. noisy iowait.
+
+**Dirty page thresholds (vm.dirty_ratio, vm.dirty_background_ratio) from check_memory_detail:**
+- Default dirty_ratio=20: kernel lets dirty pages grow to 20% of RAM, then stall-flushes
+  everything at once → bursty iowait spike pattern. visible as sudden large iowait spikes
+  that then drop to near zero, repeating on a cycle.
+- Low dirty_ratio (5) + low dirty_background_ratio (3): continuous background flush,
+  no burst spikes. Use set_vm_dirty_ratios to tune live; propose persist via sysctl.conf.
+
+**NFS as iowait source:**
+- If /proc/mounts shows nfs entries: a slow remote NFS server causes iowait
+  indistinguishable from local disk saturation. check_nfs_client reads client RPC stats.
+  High retrans count = NFS timeout/retry storm. Use ss to check NFS connection state.
+
+**I/O scheduler (check_io_scheduler):**
+- mq-deadline for HDDs/RAID: reduces seek storms, prioritizes latency.
+- bfq on a RAID array: over-fairness causes seek amplification → high await.
+- 'none' for SSDs: no reordering needed; cfq/bfq add latency for no gain.
+
 Known DSM blind spots — never read empty as healthy:
 - container_status CPU/mem always read 0 (use container_io instead);
 - scheduled_tasks can return DSM error 103 on edgesynology1;

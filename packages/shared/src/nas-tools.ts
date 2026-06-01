@@ -319,6 +319,9 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo ''",
       "echo '=== TOP SNAPSHOT ==='",
       "top -b -n2 -d0.3 2>/dev/null | grep 'Cpu(s)' | tail -1 || true",
+      "echo ''",
+      "echo '=== PER-CPU IOWAIT (2-second delta) ==='",
+      "paste <(grep '^cpu[0-9]' /proc/stat 2>/dev/null || grep '^cpu[0-9]' /host/proc/stat 2>/dev/null) <(sleep 2; grep '^cpu[0-9]' /proc/stat 2>/dev/null || grep '^cpu[0-9]' /host/proc/stat 2>/dev/null) 2>/dev/null | awk '{cpu=$1; t1=$2+$3+$4+$5+$6+$7+$8+$9; w1=$6; t2=$11+$12+$13+$14+$15+$16+$17+$18; w2=$15; dt=t2-t1; dw=w2-w1; if(dt>0) printf \"%s iowait=%.1f%%\\n\",cpu,(dw/dt)*100}' || echo 'Per-CPU iowait not available'",
     ].join("\n"),
   },
 
@@ -356,10 +359,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "check_io_stalls",
-    description: "Looks for processes stuck waiting on disk (D-state), measures I/O wait percentage, checks disk queue depth, and finds hung task kernel warnings. Run when the NAS feels slow or unresponsive.",
+    description: "Looks for processes stuck waiting on disk (D-state), measures I/O wait percentage, checks disk queue depth, RAID sync/rebuild status, and finds hung task kernel warnings. Run when the NAS feels slow or unresponsive.",
     write: false,
     params: { target },
     buildCommand: () => [
+      "echo '=== RAID SYNC / REBUILD STATUS ==='",
+      "cat /proc/mdstat 2>/dev/null | head -40 || echo 'mdstat not available'",
+      "grep -qE 'check|resync|recover|reshape' /proc/mdstat 2>/dev/null && echo '*** RAID operation in progress — this is a common cause of high iowait ***' || true",
+      "echo ''",
       "echo '=== PROCESSES IN D-STATE (I/O WAIT) ==='",
       "ps aux | awk '$8 ~ /D/ {print}' | head -30 || echo 'No D-state processes'",
       "echo ''",
@@ -378,6 +385,114 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "check_process_io_detail",
+    description: "Deep per-process I/O diagnostic without ptrace or extra capabilities. For each given PID (or auto-detected D-state processes if no PIDs given), shows: the kernel function the process is sleeping in (wchan), the full kernel call stack (/proc/PID/stack — readable with CAP_SYS_ADMIN), open file descriptors on volumes, I/O scheduling class (ionice -p), and current working directory. Use this to identify exactly what a D-state process is waiting for without strace.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const rawFilter = (input.filter as string | undefined)?.trim();
+      const pidSetup = rawFilter
+        ? `PIDS="${rawFilter.split(/\s+/).join(" ")}"`
+        : `PIDS=$(ps ax -o pid,stat | awk '$2 ~ /D/ {print $1}' | head -10 | tr '\\n' ' ')`;
+      return [
+        "echo '=== D-STATE PROCESSES (direct iowait source) ==='",
+        "ps ax -o pid,stat,comm,args | awk '$2 ~ /D/ {print}' | head -20 || echo 'No D-state processes'",
+        "echo ''",
+        "echo '=== PER-PROCESS KERNEL DETAIL ==='",
+        pidSetup,
+        `if [ -z "$PIDS" ]; then echo 'No target PIDs (no D-state processes or empty filter)'; exit 0; fi`,
+        "for pid in $PIDS; do",
+        "  [ -z \"$pid\" ] && continue",
+        "  echo \"--- PID $pid ---\"",
+        "  echo -n 'wchan (kernel sleep point): '",
+        "  cat /proc/$pid/wchan 2>/dev/null || cat /host/proc/$pid/wchan 2>/dev/null || echo 'n/a'",
+        "  echo ''",
+        "  echo 'kernel call stack (/proc/$pid/stack):'",
+        "  cat /proc/$pid/stack 2>/dev/null | head -20 || cat /host/proc/$pid/stack 2>/dev/null | head -20 || echo '  (not readable — needs CAP_SYS_ADMIN)'",
+        "  echo 'open volume/network fds:'",
+        "  ls -la /proc/$pid/fd 2>/dev/null | grep -E '(/volume|/btrfs|nfs|smb|socket)' | head -10 || echo '  none visible'",
+        "  echo -n 'ionice I/O priority class: '",
+        "  ionice -p $pid 2>/dev/null || echo 'ionice not available'",
+        "  echo -n 'cwd: '",
+        "  readlink /proc/$pid/cwd 2>/dev/null || echo 'n/a'",
+        "  echo ''",
+        "done",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "strace_process",
+    description: "Attaches strace to a running process for 5 seconds and returns a syscall-count summary. Uses -c (count mode) so individual syscall arguments are NOT printed — avoids exposing passwords or file contents in logs. Requires CAP_SYS_PTRACE (set in docker-compose). Especially useful for D-state processes: the top syscalls by time directly show what the process is waiting for (e.g. fsync, write, sendfile). Pass a PID in filter.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("strace_process: pass a numeric PID in filter.");
+      const pid = raw.split(/\s+/)[0];
+      if (!/^\d+$/.test(pid)) throw new Error("strace_process: filter must be a numeric PID.");
+      return [
+        `echo '=== PROCESS ==='`,
+        `ps -p ${pid} -o pid,stat,comm,args 2>/dev/null || echo 'PID ${pid} not found'`,
+        `echo ''`,
+        `echo '=== STRACE SYSCALL SUMMARY (5 seconds, count mode) ==='`,
+        `echo 'Sampling PID ${pid} for 5 seconds — count mode only, no argument data printed...'`,
+        `timeout 7 strace -p ${pid} -e trace=read,write,open,openat,close,ioctl,sync,fsync,fdatasync,pread64,pwrite64,sendfile,rename,unlink -c 2>&1; true`,
+        `echo ''`,
+        `echo '=== WCHAN ==='`,
+        `cat /proc/${pid}/wchan 2>/dev/null || echo 'n/a'`,
+        `echo ''`,
+        `echo '=== KERNEL STACK ==='`,
+        `cat /proc/${pid}/stack 2>/dev/null | head -20 || echo 'not readable'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "hdparm_device_info",
+    description: "Reads hard disk identity (model, firmware, ATA features, security state) and measures raw buffered-read throughput via hdparm. Requires /dev/sdX or /dev/mdX mounted in the container (configured in docker-compose). hdparm -I shows device capabilities; hdparm -t measures actual read speed (read-only, safe). Use to verify whether a disk is genuinely slow vs. just queue-saturated.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const device = ((input.filter as string | undefined)?.trim() || "sda").replace(/^\/dev\//, "");
+      if (!/^[a-z0-9]+$/.test(device)) throw new Error("hdparm_device_info: invalid device name — use e.g. sda, sdb, md0.");
+      return [
+        `echo '=== DEVICE IDENTITY (hdparm -I /dev/${device}) ==='`,
+        `hdparm -I /dev/${device} 2>/dev/null || echo 'hdparm not available or /dev/${device} not mounted in container (check docker-compose nas-api volumes)'`,
+        `echo ''`,
+        `echo '=== BUFFERED READ SPEED (hdparm -t /dev/${device}) ==='`,
+        `echo 'Expected: spinning HDD ~100-200 MB/s, SSD ~400-600 MB/s, RAID array varies by RAID level'`,
+        `hdparm -t /dev/${device} 2>/dev/null || echo 'hdparm not available or device not accessible'`,
+        `echo ''`,
+        `echo '=== /sys STATS (always available) ==='`,
+        `cat /host/sys/block/${device}/queue/scheduler 2>/dev/null | xargs echo 'scheduler:'`,
+        `cat /host/sys/block/${device}/queue/rotational 2>/dev/null | xargs echo 'rotational:'`,
+        `cat /host/sys/block/${device}/device/model 2>/dev/null | xargs echo 'model:'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "check_psi_pressure",
+    description: "Reads Linux PSI (Pressure Stall Information) — the most precise modern metric for resource contention. Reports what % of time tasks were stalled waiting for I/O, CPU, or memory. 'some' = at least one task stalled; 'full' = all runnable tasks stalled (device fully saturated). Any 'full io' value above 5% indicates serious I/O saturation. Available on DSM 7.x (kernel 4.20+).",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== I/O PRESSURE STALL (PSI) ==='",
+      "cat /host/proc/pressure/io 2>/dev/null || cat /proc/pressure/io 2>/dev/null || echo 'PSI not available (kernel < 4.20 or /proc/pressure not mounted)'",
+      "echo ''",
+      "echo '=== CPU PRESSURE STALL (PSI) ==='",
+      "cat /host/proc/pressure/cpu 2>/dev/null || cat /proc/pressure/cpu 2>/dev/null || echo 'CPU PSI not available'",
+      "echo ''",
+      "echo '=== MEMORY PRESSURE STALL (PSI) ==='",
+      "cat /host/proc/pressure/memory 2>/dev/null || cat /proc/pressure/memory 2>/dev/null || echo 'Memory PSI not available'",
+      "echo ''",
+      "echo 'FORMAT: avg10=<10s_%> avg60=<60s_%> avg300=<5min_%> total=<cumulative_us>'",
+      "echo \"'some' = >=1 task stalled; 'full' = 100% of runnable tasks stalled (complete device saturation)\"",
+    ].join("\n"),
+  },
+
+  {
     name: "check_memory_detail",
     description: "Detailed memory view: full /proc/meminfo, swap activity rates from vmstat, dirty/writeback pages, and OOM kill history from dmesg. Use when you suspect memory pressure or swap thrashing.",
     write: false,
@@ -391,6 +506,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo ''",
       "echo '=== KEY MEMINFO FIELDS ==='",
       "grep -E 'MemTotal|MemAvailable|MemFree|Buffers|Cached|SwapTotal|SwapFree|SwapCached|Dirty|Writeback|AnonPages|Mapped|Shmem|PageTables|VmallocUsed|HugePages' /proc/meminfo",
+      "echo ''",
+      "echo '=== VM DIRTY PAGE THRESHOLDS ==='",
+      "for f in dirty_ratio dirty_background_ratio dirty_expire_centisecs dirty_writeback_centisecs; do printf 'vm.%-38s %s\\n' \"$f\" \"$(cat /proc/sys/vm/$f 2>/dev/null || echo unavailable)\"; done",
+      "echo '(dirty_ratio: force-flush at this % of RAM; dirty_background_ratio: background flush starts at this %)'",
       "echo ''",
       "echo '=== TOP MEMORY CONSUMERS ==='",
       "ps aux --sort=-%mem | head -20",
@@ -898,6 +1017,52 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "echo ''",
       "echo '=== DOCKER STATS SNAPSHOT ==='",
       "docker stats --no-stream --format 'table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.BlockIO}}\\t{{.NetIO}}' 2>/dev/null | head -25 || echo 'docker stats unavailable'",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_io_scheduler",
+    description: "Shows the I/O scheduler, queue depth limit, and read-ahead for each block device. Also runs iostat -x for per-device await/util% if available. Wrong scheduler (e.g. bfq on a RAID array) inflates I/O await and contributes to high iowait. Recommended: mq-deadline for HDDs/RAID; none or mq-deadline for SSDs. Use set_io_scheduler to change.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== I/O SCHEDULER AND QUEUE SETTINGS ==='",
+      "for dev in /host/sys/block/*/; do",
+      "  name=$(basename \"$dev\")",
+      "  echo \"$name\" | grep -qE '^(sd|hd|nvme|md|xvd|vd)' || continue",
+      "  sched=$(cat \"${dev}queue/scheduler\" 2>/dev/null | grep -oE '\\[[^]]+\\]' | tr -d '[]')",
+      "  nr=$(cat \"${dev}queue/nr_requests\" 2>/dev/null || echo 'n/a')",
+      "  ra=$(cat \"${dev}queue/read_ahead_kb\" 2>/dev/null || echo 'n/a')",
+      "  rot=$(cat \"${dev}queue/rotational\" 2>/dev/null || echo '?')",
+      "  devtype=$([ \"$rot\" = '1' ] && echo 'HDD' || echo 'SSD/NVMe')",
+      "  printf '%-12s %-8s scheduler=%-14s nr_requests=%-6s read_ahead_kb=%s\\n' \"$name\" \"$devtype\" \"${sched:-unknown}\" \"$nr\" \"$ra\"",
+      "done 2>/dev/null || echo 'Could not read /host/sys/block/'",
+      "echo ''",
+      "echo '=== IOSTAT EXTENDED (3-second sample) ==='",
+      "iostat -x -d 3 2 2>/dev/null || { echo 'iostat not available — raw diskstats:'; awk 'NF>=14 && /sd|md/ {printf \"%-8s reads:%-8d writes:%-8d in_progress:%-4d\\n\",$3,$4,$8,$12}' /proc/diskstats 2>/dev/null; }",
+    ].join("\n"),
+  },
+
+  {
+    name: "check_nfs_client",
+    description: "Checks whether the NAS itself has NFS client mounts that could contribute to iowait. A slow or unreachable NFS server causes iowait indistinguishable from local disk saturation. Shows active NFS mounts, client-side RPC stats, and recent NFS-related kernel messages.",
+    write: false,
+    params: { target },
+    buildCommand: () => [
+      "echo '=== NFS CLIENT MOUNTS ==='",
+      "grep ' nfs' /proc/mounts 2>/dev/null || grep ' nfs' /host/proc/mounts 2>/dev/null || echo 'No NFS client mounts'",
+      "echo ''",
+      "echo '=== NFS CLIENT RPC STATS ==='",
+      "cat /proc/net/rpc/nfs 2>/dev/null || cat /host/proc/net/rpc/nfs 2>/dev/null || echo 'No NFS client RPC stats (no nfs client mounts active)'",
+      "echo ''",
+      "echo '=== NFS SERVER RPC STATS ==='",
+      "cat /proc/net/rpc/nfsd 2>/dev/null || cat /host/proc/net/rpc/nfsd 2>/dev/null || echo 'NFS server not running'",
+      "echo ''",
+      "echo '=== NFS-RELATED KERNEL MESSAGES ==='",
+      "dmesg -T 2>/dev/null | grep -i 'nfs\\|rpc\\|sunrpc' | tail -20 || dmesg | grep -i 'nfs\\|rpc' | tail -20 || echo 'No NFS kernel messages'",
+      "echo ''",
+      "echo '=== ACTIVE NFS CONNECTIONS ==='",
+      "ss -tnp 'sport = :2049 or dport = :2049' 2>/dev/null | head -20 || echo 'ss not available'",
     ].join("\n"),
   },
 
@@ -2446,6 +2611,94 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "set_io_scheduler",
+    description: "WRITE — Changes the I/O scheduler for a block device. mq-deadline is recommended for HDDs and RAID arrays (reduces seek storms, prioritises latency). none or mq-deadline for SSDs. Pass filter as 'device scheduler', e.g. 'sda mq-deadline' or 'md0 mq-deadline'. Not persistent across reboots.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("set_io_scheduler: pass filter as 'device scheduler', e.g. 'sda mq-deadline'.");
+      const parts = raw.split(/\s+/);
+      if (parts.length !== 2) throw new Error("set_io_scheduler: filter must be exactly two words: device then scheduler.");
+      const [device, scheduler] = parts;
+      if (!/^[a-z0-9]+$/.test(device)) throw new Error("set_io_scheduler: invalid device name — use e.g. sda, md0, nvme0n1.");
+      const valid = ["none", "noop", "mq-deadline", "deadline", "cfq", "bfq", "kyber"];
+      if (!valid.includes(scheduler)) throw new Error(`set_io_scheduler: scheduler must be one of: ${valid.join(", ")}.`);
+      return [
+        `echo '=== CURRENT SCHEDULER FOR ${device} ==='`,
+        `cat /host/sys/block/${device}/queue/scheduler 2>/dev/null || cat /sys/block/${device}/queue/scheduler 2>/dev/null || echo 'device not found'`,
+        `echo ''`,
+        `echo '=== SETTING ${device} scheduler → ${scheduler} ==='`,
+        `{ echo ${scheduler} > /host/sys/block/${device}/queue/scheduler 2>/dev/null && echo 'Written to /host/sys'; } || { echo ${scheduler} > /sys/block/${device}/queue/scheduler 2>/dev/null && echo 'Written to /sys'; } || { echo "Failed — device ${device} not found or scheduler ${scheduler} not supported"; exit 1; }`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `cat /host/sys/block/${device}/queue/scheduler 2>/dev/null || cat /sys/block/${device}/queue/scheduler 2>/dev/null`,
+        `echo ''`,
+        `echo 'Note: not persistent across reboots.'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "set_vm_dirty_ratios",
+    description: "WRITE — Tunes vm.dirty_ratio and vm.dirty_background_ratio via sysctl. Lowering these forces dirty pages to flush more aggressively, smoothing out iowait spikes from large write bursts. Default Linux values: dirty_ratio=20 dirty_background_ratio=10. Recommended for NAS: 5 and 3. Pass as 'dirty_ratio=N dirty_background_ratio=M' in filter. Not persistent across reboots.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim() ?? "dirty_ratio=5 dirty_background_ratio=3";
+      const drMatch = raw.match(/dirty_ratio=(\d+)/);
+      const dbrMatch = raw.match(/dirty_background_ratio=(\d+)/);
+      if (!drMatch && !dbrMatch) throw new Error("set_vm_dirty_ratios: filter must contain dirty_ratio=N and/or dirty_background_ratio=M.");
+      const dr = drMatch ? parseInt(drMatch[1], 10) : null;
+      const dbr = dbrMatch ? parseInt(dbrMatch[1], 10) : null;
+      if (dr !== null && (dr < 1 || dr > 80)) throw new Error("set_vm_dirty_ratios: dirty_ratio must be 1–80.");
+      if (dbr !== null && (dbr < 1 || dbr > 50)) throw new Error("set_vm_dirty_ratios: dirty_background_ratio must be 1–50.");
+      if (dr !== null && dbr !== null && dbr >= dr) throw new Error("set_vm_dirty_ratios: dirty_background_ratio must be less than dirty_ratio.");
+      const cmds = [
+        `echo '=== CURRENT DIRTY PAGE SETTINGS ==='`,
+        `sysctl vm.dirty_ratio vm.dirty_background_ratio vm.dirty_expire_centisecs vm.dirty_writeback_centisecs 2>&1`,
+        `echo ''`,
+        `echo '=== APPLYING CHANGES ==='`,
+      ];
+      if (dr !== null) cmds.push(`sysctl -w vm.dirty_ratio=${dr} 2>&1`);
+      if (dbr !== null) cmds.push(`sysctl -w vm.dirty_background_ratio=${dbr} 2>&1`);
+      cmds.push(`echo ''`, `echo '=== VERIFY ==='`, `sysctl vm.dirty_ratio vm.dirty_background_ratio 2>&1`, `echo 'Note: not persistent across reboots.'`);
+      return cmds.join("\n");
+    },
+  },
+
+  {
+    name: "set_ionice",
+    description: "WRITE — Changes a process's I/O scheduling class via ionice. Allowed classes: 2=best-effort (normal; pass optional priority 0-7 where 0=highest, 7=lowest), 3=idle (runs I/O only when no other process needs the disk). Class 1 (realtime) is not permitted. Use to deprioritize a heavy background process (indexer, backup daemon) crowding out foreground I/O. Pass filter as 'PID class [priority]', e.g. '1234 3' or '1234 2 6'.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("set_ionice: pass filter as 'PID class [priority]', e.g. '1234 3' or '1234 2 6'.");
+      const parts = raw.split(/\s+/);
+      const pid = parts[0];
+      const cls = parts[1];
+      const prio = parts[2];
+      if (!pid || !/^\d+$/.test(pid)) throw new Error("set_ionice: first field must be a numeric PID.");
+      if (!cls || !["2", "3"].includes(cls)) throw new Error("set_ionice: class must be 2 (best-effort) or 3 (idle). Class 1 (realtime) is not permitted — it would give the process unconditional disk priority.");
+      if (prio !== undefined && !/^[0-7]$/.test(prio)) throw new Error("set_ionice: priority must be 0–7 (0=highest within class, 7=lowest).");
+      const clsLabel: Record<string, string> = { "2": "best-effort", "3": "idle" };
+      const prioArg = (cls === "2" && prio !== undefined) ? `-n ${prio}` : "";
+      return [
+        `echo '=== CURRENT STATE ==='`,
+        `ps -p ${pid} -o pid,stat,comm,args 2>/dev/null | head -3 || echo 'PID ${pid} not found'`,
+        `echo -n 'current ionice: '; ionice -p ${pid} 2>/dev/null || echo 'n/a'`,
+        `echo ''`,
+        `echo '=== APPLYING: class=${cls} (${clsLabel[cls]})${prio !== undefined ? ` priority=${prio}` : ""} ==='`,
+        `ionice -c ${cls} ${prioArg} -p ${pid} 2>&1 && echo 'Applied' || echo 'Failed'`,
+        `echo ''`,
+        `echo '=== VERIFY ==='`,
+        `echo -n 'new ionice: '; ionice -p ${pid} 2>/dev/null || echo 'n/a'`,
+      ].join("\n");
+    },
+  },
+
+  {
     name: "clear_package_lockfiles",
     description: "WRITE — Removes stale lock files for a named DSM package that are preventing it from starting or updating. Pass the package name in filter (e.g. 'SynologyDrive'). Lists all lock files found before removing them.",
     write: true,
@@ -2831,8 +3084,14 @@ export const TOOL_GROUPS: Record<string, string> = {
   check_cpu_iowait: "performance",
   get_resource_snapshot: "performance",
   check_io_stalls: "performance",
+  check_process_io_detail: "performance",
+  strace_process: "performance",
+  hdparm_device_info: "performance",
+  check_psi_pressure: "performance",
   check_memory_detail: "performance",
   check_container_io: "performance",
+  check_io_scheduler: "performance",
+  check_nfs_client: "performance",
 
   // network
   check_network_health: "network",
@@ -2931,6 +3190,9 @@ export const TOOL_GROUPS: Record<string, string> = {
   create_prechange_snapshot: "write_storage",
   set_vm_overcommit_memory: "write_storage",
   persist_vm_overcommit_memory: "write_storage",
+  set_io_scheduler: "write_storage",
+  set_vm_dirty_ratios: "write_storage",
+  set_ionice: "write_storage",
 
   // write_files
   rename_file_to_old: "write_files",

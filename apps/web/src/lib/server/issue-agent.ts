@@ -103,14 +103,18 @@ export async function gatherTelemetryContext(supabase: SupabaseClient, userId: s
       // cmdline and pid are essential: without them the agent sees "grep" but
       // not what it's scanning for, making foreign/stuck processes invisible.
       // read_bps surfaces I/O-heavy processes that don't show up in CPU ranking.
-      .select("nas_id, captured_at, pid, name, cmdline, username, cpu_pct, mem_pct, read_bps, write_bps, parent_service")
+      // state='D' (uninterruptible sleep) means the process is directly waiting
+      // for I/O — these ARE the source of cpu_iowait_pct; never omit this field.
+      .select("nas_id, captured_at, pid, name, cmdline, username, state, cpu_pct, mem_pct, read_bps, write_bps, parent_service")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
 
     supabase
       .from("disk_io_stats")
-      .select("nas_id, captured_at, device, read_bps, write_bps, await_ms, util_pct")
+      // queue_depth: avg outstanding requests — >2 on HDDs = backpressure saturating device.
+      // reads_ps / writes_ps: IOPS breakdown shows random vs sequential workload pattern.
+      .select("nas_id, captured_at, device, read_bps, write_bps, reads_ps, writes_ps, await_ms, util_pct, queue_depth")
       .gte("captured_at", since6h)
       .order("captured_at", { ascending: false })
       .limit(20),
@@ -170,6 +174,10 @@ export async function gatherTelemetryContext(supabase: SupabaseClient, userId: s
         "drive_log_mac_hits",
         "nfs_read_bps", "nfs_write_bps", "nfs_calls_ps",
         "vm_pgpgout_ps", "vm_swap_out_ps", "vm_swap_in_ps",
+        // dirty_writeback_kb: dirty page backlog — large values precede iowait flush spikes.
+        // disk_inflight_ios: instantaneous in-progress I/O per device (per-device metadata).
+        // cpu_temp_c: thermal throttling causes CPU stalls that look like iowait.
+        "dirty_writeback_kb", "disk_inflight_ios", "cpu_temp_c",
       ])
       .order("recorded_at", { ascending: false })
       .limit(40),
