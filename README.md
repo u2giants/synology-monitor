@@ -13,7 +13,7 @@ Live at **[mon.designflow.app](https://mon.designflow.app)**.
 | [docs/development.md](docs/development.md) | Build, run, test, debug |
 | [docs/configuration.md](docs/configuration.md) | All environment variables |
 | [docs/deployment.md](docs/deployment.md) | CI/CD and release workflow |
-| [PLAN.md](PLAN.md) | Issue-agent pipeline design (built and live as of 2026-05-30) |
+| [PLAN.md](PLAN.md) | Historical issue-agent rebuild plan; current behavior is documented in `docs/architecture.md` |
 
 ## Prerequisites
 

@@ -121,7 +121,7 @@ Tools in the registry but not listed are compiled into the image but invisible t
 
 Changes take effect on the next image build (push to `main` → GitHub Actions → Coolify redeploy).
 
-## Registry catalog (108 tools)
+## Registry catalog
 
 The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All are invoked via `invoke_tool({ name, target, args })`, except `check_disk_space` / `restart_nas_api` / `run_command` which are also directly callable as always-on tools.
 
@@ -197,12 +197,13 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All a
 | `fetch_support_artifacts` | DSM support bundles, large log files, package log dirs, core dumps |
 | `check_kernel_io_errors` | Kernel log for disk errors, SCSI faults, filesystem corruption |
 
-### Group `storage` (8)
+### Group `storage`
 
 | Tool | What it does |
 |---|---|
 | `check_scrub_status` | Btrfs scrub status + RAID sync from mdstat |
 | `check_storage_pool_detail` | Detailed RAID array state, degraded arrays, rebuild progress |
+| `inspect_snapshot_replication` | Read-only Snapshot Replication package/config/DB/log inspection: schedules/retention-looking rows, snapshot counts, prune/delete events |
 | `check_btrfs_detail` | Btrfs filesystem usage, device error counters, balance status, subvolumes |
 | `check_disk_error_trends` | Compact SMART error table |
 | `check_volume_quota_and_inode_pressure` | Inode + Btrfs qgroup quota state |
@@ -227,14 +228,14 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All a
 | `compare_file_versions` | Compare two file paths by metadata, hashes, optional text diff |
 | `find_problematic_files` | Files with sync-breaking names (special chars, conflicts, long names) |
 
-### Group `recovery` (5)
+### Group `recovery`
 
 | Tool | What it does |
 |---|---|
-| `list_snapshot_candidates` | Btrfs snapshots with path, creation time, size |
+| `list_snapshot_candidates` | Btrfs snapshots and recent snapshot directories, without recursive size scans |
 | `list_drive_version_history` | Drive-managed version history for a file path |
 | `inspect_recycle_bin` | Recent files in share recycle bins across volumes |
-| `fetch_package_db` | Query a package SQLite DB — list tables or run a SQL query |
+| `fetch_package_db` | Query a package SQLite DB in read-only mode — list tables or run SELECT/WITH/safe PRAGMA queries |
 | `collect_incident_bundle` | Targeted diagnostic snapshot: drive, storage, network, permission, crash |
 
 ### Group `packages` (4)

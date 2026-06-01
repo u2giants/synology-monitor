@@ -87,38 +87,102 @@ var hardBlocked = []*regexp.Regexp{
 // - N>&M                        (fd-to-fd, e.g. 2>&1)
 var (
 	safeRedirectRe   = regexp.MustCompile(`\d*>>?\s*/dev/null|\d*>&\d*`)
-	singleQuotedRe   = regexp.MustCompile(`'[^']*'`)
 	outputRedirectRe = regexp.MustCompile(`>\s*\S`)
+	actualDockerRe   = regexp.MustCompile(`(?im)(^|[;&|(\$]\s*)(?:/(?:usr/)?(?:local/)?bin/)?docker(\s|$)`)
+	dockerInvokeRe   = regexp.MustCompile(`(?i)(?:/(?:usr/)?(?:local/)?bin/)?docker\b.*`)
 )
 
 // hasRealOutputRedirect returns true only when the command redirects output
 // to an actual file destination (not /dev/null, not fd-to-fd like 2>&1,
 // and not comparison operators inside quoted awk/shell strings).
 func hasRealOutputRedirect(command string) bool {
-	s := singleQuotedRe.ReplaceAllString(command, "")
+	s := stripQuotedStrings(command)
 	s = safeRedirectRe.ReplaceAllString(s, "")
 	return outputRedirectRe.MatchString(s)
+}
+
+func hasActualDockerCommand(command string) bool {
+	return actualDockerRe.MatchString(stripQuotedStrings(command))
+}
+
+func dockerInvocations(command string) []string {
+	clean := stripQuotedStrings(command)
+	var invocations []string
+	for _, line := range strings.Split(clean, "\n") {
+		for _, part := range strings.FieldsFunc(line, func(r rune) bool {
+			return r == ';' || r == '&' || r == '|'
+		}) {
+			if match := dockerInvokeRe.FindString(strings.TrimSpace(part)); match != "" {
+				invocation := strings.TrimSpace(match)
+				invocation = strings.TrimPrefix(invocation, "/usr/local/bin/")
+				invocation = strings.TrimPrefix(invocation, "/usr/bin/")
+				invocations = append(invocations, invocation)
+			}
+		}
+	}
+	return invocations
+}
+
+func dockerInvocationsAllowed(command string, allowed []*regexp.Regexp) bool {
+	invocations := dockerInvocations(command)
+	if len(invocations) == 0 {
+		return true
+	}
+	for _, invocation := range invocations {
+		if !matchesAny(invocation, allowed) {
+			return false
+		}
+	}
+	return true
+}
+
+func stripQuotedStrings(command string) string {
+	var b strings.Builder
+	b.Grow(len(command))
+	inSingle := false
+	inDouble := false
+	escaped := false
+	for _, r := range command {
+		switch {
+		case escaped:
+			if !inSingle && !inDouble {
+				b.WriteRune(r)
+			}
+			escaped = false
+		case r == '\\' && inDouble:
+			escaped = true
+		case r == '\'' && !inDouble:
+			inSingle = !inSingle
+		case r == '"' && !inSingle:
+			inDouble = !inDouble
+		case inSingle || inDouble:
+			// Quoted text is data or labels, not shell structure.
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // writePatterns identifies commands that modify state (tier 2+).
 // Used to prevent Tier 1 execution of write operations.
 var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b`),
-	regexp.MustCompile(`(?i)\b(echo|printf|tee)\b.*(>)`),       // redirections
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)tee\s+(-a\s+)?/(?!dev/null\b)\S+`),
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
-	regexp.MustCompile(`(?i)\bsync\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)sync(\s|$)`),
 	regexp.MustCompile(`(?i)\bsysctl\s+-w\b`),
 	regexp.MustCompile(`(?i)\bionice\b.*-c`),  // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
 	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),   // dd writing anywhere (device/proc covered by hard-block above)
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
-	regexp.MustCompile(`(?i)\bdocker\s+(start|stop|restart|rm)\b`),
-	regexp.MustCompile(`(?i)\bdocker\s+compose\s+(restart|stop|up|pull|build)\b`),
-	regexp.MustCompile(`(?i)\bssh-keygen\b`),
-	regexp.MustCompile(`(?i)\bkill\b`),
-	regexp.MustCompile(`(?i)\bpkill\b`),
-	regexp.MustCompile(`(?i)\bnohup\b`),
-	regexp.MustCompile(`(?i)\bat\b`),            // at-job scheduling
-	regexp.MustCompile(`(?i)\bcrontab\s+-[el]\b`), // crontab edit/list is write
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+(start|stop|restart|rm)\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+compose\s+(restart|stop|up|pull|build)\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)ssh-keygen\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)kill\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)pkill\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)nohup\b`),
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)at\b`),              // at-job scheduling
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)crontab\s+-[er]\b`), // crontab edit/remove
 	// DSM WebAPI write operations (package stop/start, backup trigger, task run/enable/disable)
 	regexp.MustCompile(`(?i)SYNO\.(Core\.Package|Backup\.Task|Core\.TaskScheduler).*method=(stop|start|run|run_now|trigger|delete|enable|disable)`),
 }
@@ -176,13 +240,13 @@ func Validate(command string, requestedTier int) error {
 		}
 	}
 
-	if strings.Contains(command, "docker") {
+	if hasActualDockerCommand(command) {
 		if requestedTier == TierRead {
-			if !matchesAny(command, allowedReadDockerCommands) {
+			if !dockerInvocationsAllowed(command, allowedReadDockerCommands) {
 				return errors.New("docker read command is not in the allowlist")
 			}
 		} else if requestedTier >= TierService {
-			if !matchesAny(command, allowedServiceCommands) {
+			if !matchesAny(command, allowedServiceCommands) && !dockerInvocationsAllowed(command, allowedServiceCommands) {
 				return errors.New("service command is not in the allowlist")
 			}
 		}

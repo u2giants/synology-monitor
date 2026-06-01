@@ -44,6 +44,23 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+function readOnlySql(value: string): string {
+  const sql = value.trim().replace(/;+\s*$/, "");
+  if (!sql || sql.length > 2000) {
+    throw new Error("SQL query must be a non-empty read-only statement under 2000 characters.");
+  }
+  if (/[;\x00]/.test(sql) || /--|\/\*/.test(sql)) {
+    throw new Error("SQL query must be a single read-only statement without comments.");
+  }
+  if (/\b(attach|detach|insert|update|delete|replace|create|drop|alter|vacuum|reindex|analyze|load_extension|pragma\s+(?!table_info\b|table_xinfo\b|index_list\b|index_info\b|database_list\b|foreign_key_list\b))/i.test(sql)) {
+    throw new Error("Only SELECT/WITH and safe schema PRAGMA queries are allowed.");
+  }
+  if (!/^(select|with)\b/i.test(sql) && !/^pragma\s+(table_info|table_xinfo|index_list|index_info|database_list|foreign_key_list)\s*\(/i.test(sql)) {
+    throw new Error("Only SELECT, WITH, or safe schema PRAGMA queries are allowed.");
+  }
+  return sql;
+}
+
 /**
  * Builds a shell command that makes a single authenticated DSM WebAPI call.
  * Handles login, the API call, result check, and logout.
@@ -2055,12 +2072,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "fetch_package_db",
-    description: "Queries a named DSM package's SQLite database. Pass the package name and optionally a SQL query in filter. Omit filter to list all tables and row counts. Use for deep investigation of Drive, HyperBackup, or scheduler internal state.",
+    description: "Queries a named DSM package's SQLite database in read-only mode. Pass the package name and optionally a read-only SQL query in filter (SELECT/WITH or safe schema PRAGMA only). Omit filter to list tables. Use for deep investigation of Drive, HyperBackup, or scheduler internal state.",
     write: false,
     params: { target, package_name: packageName, filter },
     buildCommand: (input) => {
       const pkg = (input.package_name as string).trim();
-      const query = (input.filter as string | undefined)?.trim();
+      const rawQuery = (input.filter as string | undefined)?.trim();
+      const query = rawQuery ? readOnlySql(rawQuery) : "";
       const pkgLower = pkg.toLowerCase();
       const findCmd = `find /volume[0-9]*/@${pkgLower}/ /volume[0-9]*/@syno${pkgLower}/ /host/var/packages/${quote(pkg)}/var/ -maxdepth 5 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null`;
       const lines: string[] = [
@@ -2074,14 +2092,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         lines.push(
           `echo '=== QUERY: ${query} ==='`,
           `dbfile=$(${findCmd} | head -1)`,
-          `[ -n "$dbfile" ] && echo "Using: $dbfile" && timeout 15 sqlite3 "$dbfile" ${quote(query)} 2>&1 | head -100 || echo 'No DB file found'`,
+          `[ -n "$dbfile" ] && echo "Using: $dbfile" && timeout 15 sqlite3 -readonly "$dbfile" ${quote(query)} 2>&1 | head -100 || echo 'No DB file found'`,
         );
       } else {
         lines.push(
           `echo '=== TABLE SUMMARY ==='`,
           `for dbfile in $(${findCmd} | head -3); do`,
           `  echo "--- $dbfile ---"`,
-          `  timeout 10 sqlite3 "$dbfile" '.tables' 2>&1 | head -10`,
+          `  timeout 10 sqlite3 -readonly "$dbfile" '.tables' 2>&1 | head -10`,
           `  echo ''`,
           `done || echo 'No DB files found for ${pkg}'`,
         );
@@ -2121,7 +2139,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "list_snapshot_candidates",
-    description: "Lists available Btrfs snapshots on all volumes that could be used for path recovery. Shows snapshot names, creation times. Optionally pass a name fragment in filter to narrow results.",
+    description: "Lists available Btrfs snapshots on all volumes that could be used for path recovery. Shows snapshot names and recent snapshot directories without recursively scanning snapshot sizes. Optionally pass a name fragment in filter to narrow results.",
     write: false,
     params: { target, filter },
     buildCommand: (input) => {
@@ -2152,16 +2170,64 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
           : `  ls -dt "$v"/@prechange_* 2>/dev/null | head -10`,
         "done 2>/dev/null || echo 'No @prechange snapshots found'",
         "echo ''",
-        "echo '=== BTRFS SNAPSHOT SIZES ==='",
+        "echo '=== NOTE ==='",
+        "echo 'Snapshot sizes are intentionally omitted here: recursive size scans can create heavy disk metadata I/O. Use targeted path/version tools for a specific restore candidate.'",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "inspect_snapshot_replication",
+    description: "Read-only Snapshot Replication inspection: package state, candidate DB tables, schedules/retention/task-looking rows, snapshot counts, and recent prune/delete events. Does not start/cancel scrubs, create/delete snapshots, or run DSM tasks.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const nameFilter = (input.filter as string | undefined)?.trim();
+      const grepFilter = nameFilter ? ` | grep -i ${quote(nameFilter)}` : "";
+      return [
+        "echo '=== SNAPSHOT REPLICATION PACKAGE ==='",
+        "ver=$(grep -m1 '^version=' /host/var/packages/SnapshotReplication/INFO /var/packages/SnapshotReplication/INFO 2>/dev/null | head -1 | cut -d= -f2-)",
+        "enabled=$([ -f /host/var/packages/SnapshotReplication/enabled ] || [ -f /var/packages/SnapshotReplication/enabled ] && echo enabled || echo disabled)",
+        "echo \"SnapshotReplication: ${ver:-not found} [$enabled]\"",
+        "/host/usr/syno/bin/synopkg status SnapshotReplication 2>&1 || /usr/syno/bin/synopkg status SnapshotReplication 2>&1 || true",
+        "echo ''",
+        "echo '=== SNAPSHOT COUNTS BY VOLUME ==='",
         "for v in /volume[0-9]*; do",
         "  [ -d \"$v\" ] || continue",
         "  fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
         "  [ \"$fstype\" = 'btrfs' ] || continue",
-        "  btrfs subvolume list -s \"$v\" 2>/dev/null | awk '{print $NF}' | while read -r rel; do",
-        "    path=\"$v/$rel\"",
-        "    [ -d \"$path\" ] && printf '%s\\t%s\\n' \"$(du -sh \"$path\" 2>/dev/null | awk '{print $1}')\" \"$path\"",
-        "  done | head -20",
-        "done 2>/dev/null || true",
+        "  count=$(btrfs subvolume list -s \"$v\" 2>/dev/null | wc -l | tr -d ' ')",
+        "  recent=$(find \"$v/@Recently-Snapshot\" -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' ')",
+        "  printf '%-16s btrfs_snapshots=%-6s recently_snapshot_dirs=%s\\n' \"$v\" \"${count:-0}\" \"${recent:-0}\"",
+        "done 2>/dev/null || echo 'No Btrfs volumes visible'",
+        "echo ''",
+        "echo '=== RECENT SNAPSHOT DIRECTORIES ==='",
+        `for v in /volume[0-9]*; do [ -d "$v/@Recently-Snapshot" ] || continue; echo "--- $v/@Recently-Snapshot ---"; find "$v/@Recently-Snapshot" -maxdepth 2 -type d 2>/dev/null${grepFilter} | head -40; done`,
+        "echo ''",
+        "echo '=== SNAPSHOT REPLICATION DATABASES ==='",
+        "dbs=$(find /host/var/packages/SnapshotReplication/var /var/packages/SnapshotReplication/var /volume[0-9]*/@appdata/SnapshotReplication -maxdepth 6 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null | head -10)",
+        "if [ -z \"$dbs\" ]; then echo 'No SnapshotReplication SQLite DBs found in known locations.'; fi",
+        "for dbfile in $dbs; do",
+        "  echo \"--- DB: $dbfile ---\"",
+        "  echo 'tables:'",
+        "  timeout 8 sqlite3 -readonly \"$dbfile\" '.tables' 2>&1 | head -20",
+        "  echo 'candidate schedule/retention/task tables:'",
+        "  tables=$(timeout 8 sqlite3 -readonly \"$dbfile\" '.tables' 2>/dev/null | tr ' ' '\\n' | grep -Ei 'snapshot|sched|retent|replica|task|share|folder|job|rule|rotation' | head -12)",
+        "  if [ -z \"$tables\" ]; then echo '  (no obvious candidate tables by name)'; fi",
+        "  for tbl in $tables; do",
+        "    echo \"--- table: $tbl schema ---\"",
+        "    timeout 8 sqlite3 -readonly \"$dbfile\" \".schema \\\"$tbl\\\"\" 2>&1 | head -20",
+        "    echo \"--- table: $tbl sample rows ---\"",
+        "    timeout 8 sqlite3 -readonly \"$dbfile\" \"SELECT * FROM \\\"$tbl\\\" LIMIT 10;\" 2>&1 | head -40",
+        "  done",
+        "done",
+        "echo ''",
+        "echo '=== RECENT SNAPSHOT / PRUNE / DELETE LOG EVENTS ==='",
+        "for f in /host/log/synolog/synosnapshot.log /host/log/synolog/synostorage.log /host/log/messages /host/var/packages/SnapshotReplication/var/*.log /var/packages/SnapshotReplication/var/*.log; do",
+        "  [ -f \"$f\" ] || continue",
+        "  echo \"--- $f ---\"",
+        "  grep -iE 'snapshot|replica|replication|retention|prune|delete|remove|rotate|schedule|task' \"$f\" 2>/dev/null | tail -80",
+        "done",
       ].join("\n");
     },
   },
@@ -3131,6 +3197,7 @@ export const TOOL_GROUPS: Record<string, string> = {
   check_scrub_status: "storage",
   check_storage_pool_detail: "storage",
   check_btrfs_detail: "storage",
+  inspect_snapshot_replication: "storage",
   check_disk_error_trends: "storage",
   check_volume_quota_and_inode_pressure: "storage",
   check_smart_detail: "storage",

@@ -5,7 +5,8 @@ references: [docs/architecture.md](docs/architecture.md),
 [docs/development.md](docs/development.md),
 [docs/configuration.md](docs/configuration.md),
 [docs/deployment.md](docs/deployment.md). The 3-stage issue-agent rebuild is
-complete (2026-05-30); [PLAN.md](PLAN.md) is the design reference.
+complete (2026-05-30); current behavior and durable rationale live in
+[docs/architecture.md](docs/architecture.md). [PLAN.md](PLAN.md) is historical.
 
 There is no universal ignore-file standard across AI coding tools.
 
@@ -59,7 +60,7 @@ deploy/synology/      NAS compose + per-NAS env examples           (we own)
 .github/workflows/    4 image-build workflows                      (we own)
 docs/                 architecture / development / configuration / deployment / mcp-incident
 scripts/              backfill-synobackup.mjs, check-dashboard-data.mjs
-PLAN.md               design doc for the 3-stage issue-agent rebuild (completed 2026-05-30)
+PLAN.md               historical design doc for the completed 3-stage issue-agent rebuild
 ```
 
 Generated / not-source: `apps/web/.next/`, `apps/*/dist/`, `apps/nas-mcp/dist/`,
@@ -300,7 +301,7 @@ AI clustering layer. The three former readers were migrated to `issues` (2026-05
 ### `getSecondOpinionModel` and `getClusterModel` are exported but have no callers
 Looks like: dead exports.
 Actually: planned features. `getSecondOpinionModel` is for a second AI model
-cross-checking Stage 2 diagnoses (PLAN.md §2/§13, explicitly deferred).
+cross-checking Stage 2 diagnoses; it is explicitly deferred.
 `getClusterModel` is the intended abstraction for `log-analyzer.ts`. Keep both.
 
 ### `/host/*` paths in agent container

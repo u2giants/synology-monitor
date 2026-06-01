@@ -96,6 +96,14 @@ All images are public in GHCR under the `u2giants` organization. Tags: `:latest`
 
 Tool availability is controlled by `apps/nas-mcp/tools-config.json` in the repo, not by env vars.
 
+**Shared tool catalog build invariant:** `packages/shared/src/nas-tools.ts` is the
+single source of truth for NAS tool definitions used by both the web issue-agent
+and nas-mcp. The nas-mcp image workflow must keep `packages/shared/**` in its
+`paths:` trigger and must build with the repo root as Docker context
+(`context: .`, `file: ./apps/nas-mcp/Dockerfile`). If the workflow is narrowed
+back to `context: ./apps/nas-mcp`, shared tool changes will not be visible to the
+Docker build and nas-mcp can silently deploy an old tool catalog.
+
 ## Deploying the agent to a NAS
 
 ### Normal path — Watchtower (fully automatic)

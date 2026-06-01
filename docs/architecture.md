@@ -367,6 +367,14 @@ keyword like "failed", "timeout", "crash").
 Stage 2 can retrieve any item from the lossless store at any time via
 `fetch_evidence`, which reads `issue_evidence_items` — not the raw tables.
 
+**Why Stage 1 is deterministic:** the previous issue-agent compressed logs with a
+model before the reasoner saw them. That made the pipeline lossy: raw log messages
+were shortened, repeated-but-distinct events were summarized away, and the
+reasoning stages could miss the evidence that would falsify a bad hypothesis.
+Stage 1 deliberately preserves every distinct `(source, body)` item and only
+deduplicates byte-identical repetitions. The prompt slice is bounded, but the DB
+store is the lossless source of truth.
+
 ### Stage 2 — Reasoning Core (`ai/stage2-reasoning.ts`)
 
 One agentic turn per job invocation. Model: operator-configured via `ai_settings`
@@ -415,6 +423,14 @@ catalog. The model proposes write actions via the `propose_remediation` terminal
 the operator approves them; `executeApprovedAction` in `pipeline-v2.ts` runs them
 on the next job invocation.
 
+**Tool-use discipline:** Stage 2 should prefer predefined read-only tools when
+they cover the question because they have tuned command shapes and timeouts. Use
+`run_command` only for precise read-only probes that are not covered by the catalog.
+Use `fetch_evidence` aggregation first (`group_by`) before paging raw rows when
+the evidence store may be large. Do not re-run a tool whose result is already in
+`issue_evidence_items` unless the live value is expected to have changed and the
+new sample is diagnostically meaningful.
+
 **Re-chew guard:** each turn, Stage 2 hashes the evidence slice text. If the hash
 matches the previous turn's hash and `decision=continue` is returned again, a
 `rechew_repeat` counter increments in `issue.metadata`. After ≥2 repeats the
@@ -434,6 +450,15 @@ If exceeded, Stage 2 returns `stuck` without calling the model.
 | `blocked_on_issue` | record dependency | `waiting_on_issue` |
 | `resolved` | close issue; trigger Stage 3 | `resolved` |
 | `stuck` | close issue; trigger Stage 3 | `stuck` |
+
+**Model fit:** Stage 2 needs the strongest reasoning model in the pipeline. The
+important capabilities are reliable tool calling, long-context coherence,
+structured JSON output, calibrated uncertainty, and the ability to form and test a
+ranked hypothesis across several resumable turns. Low-latency or prose quality is
+less important than converging in a small number of turns without proposing unsafe
+or vague remediations. Domain familiarity with Linux storage, Btrfs, `/proc`, and
+Synology DSM helps, but the taxonomy prompt is intended to make a strong general
+reasoner effective.
 
 ### Stage 3 — Explainer / Memory (`ai/stage3-explainer.ts`)
 
@@ -462,6 +487,12 @@ default `claude-haiku-4-5-20251001` / low effort. Runs after Stage 2 reaches
 Memories are loaded at the start of Stage 2 investigations via
 `agent-memory-store.ts::loadMemoriesForIssue`, classified by subject so only
 relevant topics are included (e.g. HyperBackup memories for backup issues).
+
+**Model fit:** Stage 3 is a communication and memory-distillation task, not a
+diagnostic task. It benefits from clear writing, good compression, and the ability
+to extract specific reusable lessons. It does not need live tools, long multi-turn
+state, or high reasoning effort. A cheaper model is acceptable because Stage 3 is
+best-effort and must never undo Stage 2's terminal outcome.
 
 ---
 
@@ -591,6 +622,31 @@ transcript of tool outputs.
 before snapshot/issue/evidence/instruction blocks. This keeps the cacheable prefix
 maximally long (stable blocks are identical across all issues and all turns), so
 only the evidence slice and per-turn instruction incur full token costs.
+
+### Provider cache observability matters
+
+The issue agent calls providers directly so provider-specific cache controls and
+usage fields remain visible. Do not route the cached inference path through an
+aggregator that flattens request/response shapes. A thin wrapper for timeouts,
+retry classification, and normalized accounting is fine, but raw provider usage
+must still be persisted or inspectable.
+
+Provider-specific details that have caused bugs in similar systems:
+- Anthropic explicit cache reads/writes are reported as
+  `cache_read_input_tokens` and `cache_creation_input_tokens`; extended thinking
+  requires the provider's required temperature shape.
+- OpenAI caches stable prefixes automatically; cache reads surface under
+  `prompt_tokens_details.cached_tokens`.
+- DeepSeek's cache fields are `prompt_cache_hit_tokens` and
+  `prompt_cache_miss_tokens`, not the OpenAI names.
+- Qwen/DashScope multi-turn cache behavior depends on preserving the provider's
+  response/session id between turns.
+- Gemini explicit cached content, if used, must have a tracked lifecycle so paid
+  caches are cleaned up even when workers restart.
+
+Cache is an optimization only. Every Stage 2 turn must rebuild its context from
+the database transcript, evidence store, issue state, and settings. A cache miss
+may cost more tokens, but must not change behavior.
 
 ### `connection: close` on all NAS API HTTP calls
 

@@ -170,6 +170,32 @@ hardcoded defaults.
 | `second_opinion_model` | Planned cross-check feature (not yet wired) | `anthropic/claude-sonnet-4` |
 | `cluster_model` | Log clustering (writer has no callers) | `diagnosis_model` → `minimax/minimax-m2.7` |
 
+### Model capability and effort controls
+
+The Settings UI stores a model and an effort/reasoning value per active stage, but
+"effort" is provider-specific. The provider client should map the abstract setting
+only when the selected model supports it and omit unsupported parameters rather
+than sending a no-op or invalid field.
+
+| Provider | Effort shape | Notes |
+|---|---|---|
+| Anthropic | extended thinking budget | Best fit for Stage 2 when tool use and reasoning are needed; cache usage has Anthropic-specific read/write fields. |
+| OpenAI | `reasoning_effort` on reasoning models | Prefix caching is automatic; non-reasoning models may not accept the effort parameter. |
+| Gemini | thinking config where supported | Explicit cached content needs lifecycle tracking if enabled. |
+| DeepSeek | usually model choice, not a generic knob | Cache usage fields differ from OpenAI-compatible defaults. |
+| Qwen/DashScope | model-specific; often OpenAI-style | Multi-turn cache behavior may require preserving provider response/session ids. |
+
+Stage 2 should be limited to models with reliable tool use, structured JSON output,
+long-context coherence, and strong multi-step reasoning. Stage 3 can use a cheaper
+model optimized for concise writing and memory extraction. If a model lacks an
+effort knob, keep the selected model and treat effort as disabled for that provider.
+
+`packages/shared/src/ai-capabilities.ts` is the source of truth for the curated
+model catalog, provider capability matrix, stage requirements, fallback models,
+and stage spec text. The Settings UI imports that shared data to filter model
+dropdowns and to build the copy-spec clipboard payload for asking another model
+which provider-native model best fits a stage.
+
 ---
 
 ## tools-config.json
