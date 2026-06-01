@@ -165,15 +165,16 @@ export function AiStagesSection() {
     const spec = [
       `# AI stage spec — ${d.label}`,
       ``,
-      `Purpose: ${d.purpose}`,
-      `Required capabilities: tool_use=${d.requires.toolUse}, structured_output=${d.requires.structuredOutput}`,
+      d.spec,
+      ``,
+      `--- Runtime config ---`,
       `Current model: ${model}${desc ? ` (provider: ${desc.provider})` : ""}`,
       `Current effort: ${values[d.effortKey]}`,
       `Effort control: ${desc?.effortControl ?? "unknown"}`,
+      `Required capabilities: tool_use=${d.requires.toolUse}, structured_output=${d.requires.structuredOutput}`,
       ``,
-      `Question for an external model: which available model best fits this stage,`,
-      `given the purpose and required capabilities above? Reply with a provider-native`,
-      `model id and a one-line rationale.`,
+      `Question: which available model best fits this stage given the spec above?`,
+      `Reply with a provider-native model id and a one-line rationale.`,
     ].join("\n");
     try {
       await navigator.clipboard.writeText(spec);
