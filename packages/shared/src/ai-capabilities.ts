@@ -92,121 +92,90 @@ const OPENAI_EFFORT: readonly EffortLevel[] = ["low", "medium", "high"];
  * to actually run — see PLAN.md §12. Listing a model here does not configure it.
  */
 export const MODEL_CATALOG: readonly ModelDescriptor[] = [
-  // --- Anthropic (explicit cache_control; extended-thinking budget) ---
-  {
-    id: "claude-opus-4-8",
-    provider: "anthropic",
-    label: "Claude Opus 4.8",
-    effortControl: "anthropic_budget",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "explicit_cache_control",
-  },
-  {
-    id: "claude-sonnet-4-6",
-    provider: "anthropic",
-    label: "Claude Sonnet 4.6",
-    effortControl: "anthropic_budget",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "explicit_cache_control",
-  },
-  {
-    id: "claude-haiku-4-5-20251001",
-    provider: "anthropic",
-    label: "Claude Haiku 4.5",
-    effortControl: "anthropic_budget",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "explicit_cache_control",
-  },
-  // --- OpenAI (automatic prefix cache; reasoning_effort enum) ---
-  {
-    id: "gpt-5.4",
-    provider: "openai",
-    label: "GPT-5.4",
-    effortControl: "openai_enum",
-    effortLevels: OPENAI_EFFORT,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "automatic_prefix",
-  },
-  {
-    id: "gpt-5.4-mini",
-    provider: "openai",
-    label: "GPT-5.4 mini",
-    effortControl: "openai_enum",
-    effortLevels: OPENAI_EFFORT,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "automatic_prefix",
-  },
-  // --- Google Gemini (implicit + explicit cachedContent; thinking config) ---
-  {
-    id: "gemini-3.1-pro-preview",
-    provider: "gemini",
-    label: "Gemini 3.1 Pro (preview)",
-    effortControl: "gemini_thinking",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "implicit_plus_explicit",
-  },
-  {
-    id: "gemini-3.1-flash-lite-preview",
-    provider: "gemini",
-    label: "Gemini 3.1 Flash-Lite (preview)",
-    effortControl: "gemini_thinking",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "implicit_plus_explicit",
-  },
-  {
-    id: "gemini-2.5-flash",
-    provider: "gemini",
-    label: "Gemini 2.5 Flash",
-    effortControl: "gemini_thinking",
-    effortLevels: GRADED,
-    toolUse: true,
-    structuredOutput: true,
-    cache: "implicit_plus_explicit",
-  },
-  // --- DeepSeek (automatic prefix cache; reasoner is a SEPARATE model) ---
-  {
-    id: "deepseek-chat",
-    provider: "deepseek",
-    label: "DeepSeek Chat (V3)",
-    effortControl: "none",
-    effortLevels: [],
-    toolUse: true,
-    structuredOutput: true,
-    cache: "automatic_prefix",
-  },
-  {
-    id: "deepseek-reasoner",
-    provider: "deepseek",
-    label: "DeepSeek Reasoner (R1)",
-    effortControl: "separate_model",
-    effortLevels: [],
-    toolUse: false, // reasoner historically does not support tool use
-    structuredOutput: true,
-    cache: "automatic_prefix",
-  },
-  // --- Qwen / DashScope (OpenAI-style markers + session id) ---
-  {
-    id: "qwen3.6-plus",
-    provider: "qwen",
-    label: "Qwen3.6 Plus",
-    effortControl: "none",
-    effortLevels: [],
-    toolUse: true,
-    structuredOutput: true,
-    cache: "markers_session",
-  },
+  // ─── Anthropic ────────────────────────────────────────────────────────────
+  // All Anthropic models: explicit cache_control breakpoints (§9.2).
+  // Models claude-3-7-sonnet+ support extended thinking (anthropic_budget).
+  // Older claude-3.x models have no thinking knob (effortControl: "none").
+  { id: "claude-opus-4-8",            provider: "anthropic", label: "Claude Opus 4.8",           effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-opus-4-7",            provider: "anthropic", label: "Claude Opus 4.7",           effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-opus-4-6",            provider: "anthropic", label: "Claude Opus 4.6",           effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-sonnet-4-6",          provider: "anthropic", label: "Claude Sonnet 4.6",         effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-haiku-4-5-20251001",  provider: "anthropic", label: "Claude Haiku 4.5",          effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-7-sonnet-20250219", provider: "anthropic", label: "Claude 3.7 Sonnet",         effortControl: "anthropic_budget", effortLevels: GRADED,         toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-5-sonnet-20241022", provider: "anthropic", label: "Claude 3.5 Sonnet",         effortControl: "none",             effortLevels: [],             toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-5-haiku-20241022",  provider: "anthropic", label: "Claude 3.5 Haiku",          effortControl: "none",             effortLevels: [],             toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-opus-20240229",     provider: "anthropic", label: "Claude 3 Opus",             effortControl: "none",             effortLevels: [],             toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-sonnet-20240229",   provider: "anthropic", label: "Claude 3 Sonnet",           effortControl: "none",             effortLevels: [],             toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+  { id: "claude-3-haiku-20240307",    provider: "anthropic", label: "Claude 3 Haiku",            effortControl: "none",             effortLevels: [],             toolUse: true,  structuredOutput: true, cache: "explicit_cache_control" },
+
+  // ─── OpenAI ───────────────────────────────────────────────────────────────
+  // Reasoning / o-series: openai_enum (reasoning_effort low/medium/high).
+  // Standard GPT: no effort knob (effortControl: "none").
+  // All OpenAI: automatic prefix cache (≥1024 tok stable prefix).
+  { id: "gpt-5.4",         provider: "openai", label: "GPT-5.4",          effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-5.4-mini",    provider: "openai", label: "GPT-5.4 mini",     effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "o4-mini",         provider: "openai", label: "o4 mini",          effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "o3",              provider: "openai", label: "o3",               effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "o3-mini",         provider: "openai", label: "o3 mini",          effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "o1",              provider: "openai", label: "o1",               effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "o1-mini",         provider: "openai", label: "o1 mini",          effortControl: "openai_enum", effortLevels: OPENAI_EFFORT, toolUse: false, structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4.1",         provider: "openai", label: "GPT-4.1",          effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4.1-mini",    provider: "openai", label: "GPT-4.1 mini",     effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4.1-nano",    provider: "openai", label: "GPT-4.1 nano",     effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4o",          provider: "openai", label: "GPT-4o",           effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4o-mini",     provider: "openai", label: "GPT-4o mini",      effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "gpt-4-turbo",     provider: "openai", label: "GPT-4 Turbo",      effortControl: "none",        effortLevels: [],            toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+
+  // ─── Google Gemini ────────────────────────────────────────────────────────
+  // Gemini 2.5+: implicit + explicit cachedContent; thinking config available.
+  // Gemini 2.0 flash (non-thinking) and 1.5: no thinking knob.
+  // All Gemini: implicit_plus_explicit cache style.
+  { id: "gemini-3.1-pro-preview",           provider: "gemini", label: "Gemini 3.1 Pro (preview)",          effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-3.1-flash-lite-preview",    provider: "gemini", label: "Gemini 3.1 Flash-Lite (preview)",   effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.5-pro",                   provider: "gemini", label: "Gemini 2.5 Pro",                    effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.5-pro-preview-05-06",     provider: "gemini", label: "Gemini 2.5 Pro Preview (05-06)",    effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.5-flash",                 provider: "gemini", label: "Gemini 2.5 Flash",                  effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.5-flash-preview-04-17",   provider: "gemini", label: "Gemini 2.5 Flash Preview (04-17)",  effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.0-flash-thinking-exp-01-21", provider: "gemini", label: "Gemini 2.0 Flash Thinking (exp)", effortControl: "gemini_thinking", effortLevels: GRADED, toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.0-flash",                 provider: "gemini", label: "Gemini 2.0 Flash",                  effortControl: "none",            effortLevels: [],     toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-2.0-flash-lite",            provider: "gemini", label: "Gemini 2.0 Flash-Lite",             effortControl: "none",            effortLevels: [],     toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-1.5-pro-002",               provider: "gemini", label: "Gemini 1.5 Pro",                    effortControl: "none",            effortLevels: [],     toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-1.5-flash-002",             provider: "gemini", label: "Gemini 1.5 Flash",                  effortControl: "none",            effortLevels: [],     toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+  { id: "gemini-1.5-flash-8b",              provider: "gemini", label: "Gemini 1.5 Flash 8B",               effortControl: "none",            effortLevels: [],     toolUse: true, structuredOutput: true, cache: "implicit_plus_explicit" },
+
+  // ─── DeepSeek ─────────────────────────────────────────────────────────────
+  // All DeepSeek: automatic disk-backed prefix cache.
+  // Chat/instruct models: tool use supported.
+  // Reasoner (R1) models: no tool use; effortControl "separate_model" (the
+  // reasoner is a distinct model, not a knob on the chat model).
+  { id: "deepseek-chat",                   provider: "deepseek", label: "DeepSeek Chat (V3)",                effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-v2.5",                   provider: "deepseek", label: "DeepSeek V2.5",                     effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-v2-chat",                provider: "deepseek", label: "DeepSeek V2 Chat",                  effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-reasoner",               provider: "deepseek", label: "DeepSeek Reasoner (R1)",            effortControl: "separate_model", effortLevels: [], toolUse: false, structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-r1-0528",                provider: "deepseek", label: "DeepSeek R1 (0528)",                effortControl: "separate_model", effortLevels: [], toolUse: false, structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-r1-distill-qwen-32b",    provider: "deepseek", label: "DeepSeek R1 Distill Qwen-32B",      effortControl: "separate_model", effortLevels: [], toolUse: false, structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-r1-distill-llama-70b",   provider: "deepseek", label: "DeepSeek R1 Distill LLaMA-70B",     effortControl: "separate_model", effortLevels: [], toolUse: false, structuredOutput: true, cache: "automatic_prefix" },
+  { id: "deepseek-coder-v2-instruct",      provider: "deepseek", label: "DeepSeek Coder V2 Instruct",        effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "automatic_prefix" },
+
+  // ─── Qwen / DashScope ─────────────────────────────────────────────────────
+  // All Qwen: OpenAI-style cache markers + previous_response_id for session
+  // continuity (§9.2). QwQ reasoning models: separate_model, no tool use.
+  { id: "qwen3.6-plus",            provider: "qwen", label: "Qwen3.6 Plus",            effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3.6-turbo",           provider: "qwen", label: "Qwen3.6 Turbo",           effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen-max",                provider: "qwen", label: "Qwen Max",                effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen-plus",               provider: "qwen", label: "Qwen Plus",               effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen-turbo",              provider: "qwen", label: "Qwen Turbo",              effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen-long",               provider: "qwen", label: "Qwen Long",               effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3-235b-a22b",         provider: "qwen", label: "Qwen3 235B-A22B (MoE)",   effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3-30b-a3b",           provider: "qwen", label: "Qwen3 30B-A3B (MoE)",     effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3-32b",               provider: "qwen", label: "Qwen3 32B",               effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3-14b",               provider: "qwen", label: "Qwen3 14B",               effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen3-8b",                provider: "qwen", label: "Qwen3 8B",                effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen2.5-72b-instruct",    provider: "qwen", label: "Qwen2.5 72B Instruct",    effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen2.5-32b-instruct",    provider: "qwen", label: "Qwen2.5 32B Instruct",    effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen2.5-14b-instruct",    provider: "qwen", label: "Qwen2.5 14B Instruct",    effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwen2.5-7b-instruct",     provider: "qwen", label: "Qwen2.5 7B Instruct",     effortControl: "none",           effortLevels: [], toolUse: true,  structuredOutput: true, cache: "markers_session" },
+  { id: "qwq-32b",                 provider: "qwen", label: "QwQ-32B",                 effortControl: "separate_model", effortLevels: [], toolUse: false, structuredOutput: true, cache: "markers_session" },
 ] as const;
 
 const MODEL_BY_ID = new Map(MODEL_CATALOG.map((m) => [m.id, m]));
