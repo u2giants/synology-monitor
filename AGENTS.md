@@ -99,7 +99,7 @@ images. If you ever patch a vendored file, record it here.
 | Add a NAS MCP tool | `packages/shared/src/nas-tools.ts` (def + `TOOL_GROUPS`), `apps/nas-mcp/tools-config.json` (enable) | `apps/nas-mcp/src/index.ts` (registry-driven; no registration needed) |
 | Add an agent collector | `apps/agent/internal/collector/<name>.go`, wire in `apps/agent/cmd/agent/main.go` with the `wg.Add(1)` pattern | existing collectors |
 | Send a new agent field to Supabase | `apps/agent/internal/sender/types.go` + a `Queue*` method, **and** a matching column via a new `supabase/migrations/*.sql` | applied migration files |
-| Allow a new NAS command tier | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`) | `executor.go` |
+| Allow a new NAS command tier | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`; Go/RE2 regex only, no lookaround/backrefs) | `executor.go` |
 | Change an AI pipeline stage | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts` | `issue-detector.ts` fingerprinting |
 | Change AI model per stage | Settings UI → `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
 | Add a new log source to the agent | `apps/agent/internal/logwatcher/watcher.go` (`defaultLogFiles`) | No source whitelist to update (migration 00035 dropped it) |
@@ -379,6 +379,14 @@ Fix: validator hard-block list + process-group kill in `executor.go`.
 ### 2026-05 — Claude MCP sessions hanging / failing
 Fix: stateless transport; `Connection: close`; `keepAliveTimeout 120s`.
 Full writeup: [docs/mcp-incident-2026-05.md](docs/mcp-incident-2026-05.md).
+
+### 2026-06 — NAS API crash-loop from invalid Go regexp
+Cause: validator used PCRE-style negative lookahead `(?!...)` inside
+`regexp.MustCompile`; Go RE2 does not support lookaround, so `nas-api` panicked
+at startup after Watchtower pulled the image. Symptom: MCP calls returned
+`ECONNREFUSED` to both NAS `:7734` endpoints. Fix: use RE2-safe positive regexes
+or Go helper code, add validator tests for both match and exception cases, then
+verify `/health` on both NASes after `nas-api-image.yml` publishes.
 
 ### 2026-05 — `check_backup_status` returning stale 2024 data
 Fix: multi-path freshest-by-mtime discovery + staleness banner.

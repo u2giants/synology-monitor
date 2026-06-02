@@ -205,6 +205,11 @@ production triggered this — see AGENTS.md §13), unrestricted `docker run/crea
 to tier 2+. Real output redirection (`> file`, not `>/dev/null` or `2>&1`) is also
 a write.
 
+The validator is compiled by Go's standard `regexp` package, so every regex must
+be valid RE2 syntax. Lookahead, lookbehind, and backreferences are not supported.
+Do not use patterns such as `(?!...)` in `regexp.MustCompile`; an invalid pattern
+panics at process startup and prevents the NAS API from binding port 7734.
+
 **Tier 2 enforcement:** commands touching `/volume*/` paths outside the monitor
 stack are elevated to tier 3.
 

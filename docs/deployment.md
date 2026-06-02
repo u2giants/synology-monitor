@@ -131,6 +131,30 @@ Docker build and nas-mcp can silently deploy an old tool catalog.
 
 No manual steps are needed. Allow up to 5 minutes for the update to propagate after the image push completes.
 
+Because Watchtower recreates the NAS API automatically, a bad image can put both
+NAS API containers into `Exited` or `Restarting` state at nearly the same time.
+`ECONNREFUSED` from the MCP host to `100.107.131.35:7734` and
+`100.107.131.36:7734` means TCP reached the NAS host but no process is listening.
+First check container state and logs, not Tailscale:
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+$DOCKER ps -a | grep synology-monitor-nas-api
+$DOCKER logs synology-monitor-nas-api --tail 100
+```
+
+If the logs show `panic: regexp: Compile(...)`, the NAS API validator contains an
+invalid Go/RE2 regex. Fix the code, push to `main`, wait for `nas-api-image.yml`,
+then pull/recreate only `nas-api`:
+
+```sh
+DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
+cd /volume1/docker/synology-monitor-agent
+$DOCKER compose -f compose.yaml pull nas-api
+$DOCKER compose -f compose.yaml up -d --no-deps nas-api
+curl http://127.0.0.1:7734/health
+```
+
 ### Checking the current version
 
 ```sh
@@ -311,6 +335,11 @@ curl http://100.107.131.36:7734/health   # NAS 2
 ```
 
 These endpoints require no auth. They are reachable from the VPS and any Tailscale-connected machine.
+
+If `/health` returns `ECONNREFUSED`, the NAS-side container is down or not bound to
+`:7734`; this is different from `ETIMEDOUT`, which would indicate network or
+firewall reachability. For `ECONNREFUSED`, inspect `synology-monitor-nas-api`
+container state and logs on each NAS.
 
 ### Watchtower update log
 
