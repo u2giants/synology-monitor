@@ -11,7 +11,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Bot, HardDrive, Loader2, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useResolution, type ResolutionFull } from "@/hooks/use-resolution";
-import { buildTimeline, isAgentThinking, thinkingLabel } from "@/lib/timeline-view";
+import { buildTimeline, hasActiveIssueJob, isAgentThinking, thinkingLabel } from "@/lib/timeline-view";
 import { IssueQueue } from "@/components/assistant/issue-queue";
 import { DecisionBar } from "@/components/assistant/decision-bar";
 import { Timeline } from "@/components/assistant/timeline";
@@ -81,7 +81,7 @@ export default function AssistantPage() {
   // Live polling while background jobs run (unchanged behavior).
   useEffect(() => {
     if (!current) return;
-    const active = current.jobs.some((j) => j.status === "queued" || j.status === "running");
+    const active = hasActiveIssueJob(current);
     if (!active) return;
     const t = window.setInterval(() => loadResolution(current.resolution.id), 3000);
     return () => window.clearInterval(t);
@@ -93,6 +93,8 @@ export default function AssistantPage() {
   );
   const timeline = useMemo(() => (current ? buildTimeline(current) : []), [current]);
   const thinking = current ? isAgentThinking(current, loading) : false;
+  const activeJob = current ? hasActiveIssueJob(current) : false;
+  const canResume = current ? current.resolution.status === "running" && !activeJob && !loading : false;
 
   const onApprove = useCallback(async (stepId: string) => {
     setExecuting(true);
@@ -136,7 +138,7 @@ export default function AssistantPage() {
       ) : (
         <main className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="flex flex-col gap-4">
-            <IssueHeader state={current} loading={loading} onPrimary={continueResolution} />
+            <IssueHeader state={current} loading={loading} canResume={canResume} onPrimary={continueResolution} />
             <DecisionBar
               status={current.resolution.status}
               step={proposedStep}
@@ -169,9 +171,9 @@ export default function AssistantPage() {
   );
 }
 
-function IssueHeader({ state, loading, onPrimary }: { state: ResolutionFull; loading: boolean; onPrimary: () => void }) {
+function IssueHeader({ state, loading, canResume, onPrimary }: { state: ResolutionFull; loading: boolean; canResume: boolean; onPrimary: () => void }) {
   const r = state.resolution;
-  const isOpen = r.status === "open" || r.status === "stuck";
+  const isOpen = r.status === "open" || r.status === "stuck" || canResume;
   return (
     <header className="flex items-start justify-between gap-5 rounded-[14px] border border-border bg-card p-[18px]">
       <div className="min-w-0">
@@ -193,7 +195,7 @@ function IssueHeader({ state, loading, onPrimary }: { state: ResolutionFull; loa
           {r.status === "open" ? "Start investigation" : "Resume"}
         </button>
       )}
-      {r.status === "running" && (
+      {r.status === "running" && !canResume && (
         <span className={cn("inline-flex shrink-0 items-center gap-1.5 text-[12.5px] font-semibold text-muted-foreground")}>
           <Loader2 className="h-3.5 w-3.5 animate-spin" /> Live
         </span>

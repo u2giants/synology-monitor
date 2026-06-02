@@ -116,9 +116,12 @@ export function buildTimeline(state: ResolutionFull): TimelineItem[] {
 }
 
 // Whether the thread should show the in-line "agent is typing" indicator.
+export function hasActiveIssueJob(state: ResolutionFull): boolean {
+  return state.jobs.some((j) => j.status === "queued" || j.status === "running");
+}
+
 export function isAgentThinking(state: ResolutionFull, loading: boolean): boolean {
-  const activeJob = state.jobs.some((j) => j.status === "queued" || j.status === "running");
-  return loading || activeJob || state.resolution.status === "running";
+  return loading || hasActiveIssueJob(state);
 }
 
 export function thinkingLabel(state: ResolutionFull): string {
