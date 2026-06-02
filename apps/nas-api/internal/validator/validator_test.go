@@ -42,7 +42,7 @@ func TestReadOnlyDiagnosticsStayTierRead(t *testing.T) {
 			}, "\n"),
 		},
 		{
-			name: "read-only docker command",
+			name:    "read-only docker command",
 			command: "docker ps --format 'table {{.Names}}\\t{{.Status}}'",
 		},
 		{
@@ -54,6 +54,10 @@ func TestReadOnlyDiagnosticsStayTierRead(t *testing.T) {
 				"name=$(docker inspect --format '{{.Name}}' \"$cid\" 2>/dev/null)",
 				"echo \"$name\"",
 			}, "\n"),
+		},
+		{
+			name:    "tee to dev null stays read tier",
+			command: "printf data | tee /dev/null",
 		},
 	}
 

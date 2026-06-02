@@ -168,12 +168,12 @@ func stripQuotedStrings(command string) string {
 // Used to prevent Tier 1 execution of write operations.
 var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b`),
-	regexp.MustCompile(`(?im)(^|[;&|]\s*)tee\s+(-a\s+)?/(?!dev/null\b)\S+`),
-	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`),  // in-place edit
+	regexp.MustCompile(`(?im)(^|[;&|]\s*)tee\s+(-a\s+)?/(tmp|var|volume\d+|home|root|etc|usr|lib|opt|run|mnt|btrfs)/\S+`),
+	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`), // in-place edit
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)sync(\s|$)`),
 	regexp.MustCompile(`(?i)\bsysctl\s+-w\b`),
-	regexp.MustCompile(`(?i)\bionice\b.*-c`),  // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
-	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),   // dd writing anywhere (device/proc covered by hard-block above)
+	regexp.MustCompile(`(?i)\bionice\b.*-c`), // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
+	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),  // dd writing anywhere (device/proc covered by hard-block above)
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+(start|stop|restart|rm)\b`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+compose\s+(restart|stop|up|pull|build)\b`),
@@ -193,7 +193,7 @@ var filePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b.*(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b.*(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(?i)\b(echo|printf|tee|cat)\b.*(>>?|\\|\\s*tee\\s+)(/volume\d+/|/home/\w|/root/)`),
-	regexp.MustCompile(`(>>?)\s*/volume`),              // redirect into volume
+	regexp.MustCompile(`(>>?)\s*/volume`), // redirect into volume
 	regexp.MustCompile(`(>>?)\s*/home/\w`),
 	regexp.MustCompile(`(>>?)\s*/root/`),
 	regexp.MustCompile(`(?i)\brename\b.*\.old\b`),
