@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Brain, Check, ClipboardCopy, Loader2, WifiOff, X, Zap } from "lucide-react";
+import { AlertTriangle, Brain, Check, ClipboardCopy, Loader2, WifiOff, X, Zap } from "lucide-react";
 import {
   AI_STAGES,
   STAGE_DESCRIPTORS,
@@ -345,6 +345,10 @@ export function AiStagesSection() {
               (acc[m.provider] ??= []).push(m);
               return acc;
             }, {});
+            // A model absent from the curated catalog has heuristically-derived
+            // capabilities (effort knob, tool use) — warn so the operator knows a
+            // catalog row is needed to tune it precisely (the silent case in §2).
+            const inferred = !!model && !getModelDescriptor(model);
             return (
               <div key={stage} className="rounded-lg border border-border bg-muted/10 p-4">
                 <div className="mb-2 flex items-center justify-between">
@@ -401,6 +405,20 @@ export function AiStagesSection() {
                     </select>
                   </div>
                 </div>
+
+                {inferred && (
+                  <div className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1.5 text-xs text-amber-600 dark:text-amber-500">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      <span className="font-medium">Inferred model.</span> &ldquo;{model}&rdquo; isn&apos;t in
+                      the curated catalog, so its effort knob and tool-use support are guessed from the
+                      model id and may be wrong (a reasoning model can show no effort options here). It
+                      will still run; to tune it precisely add a row to{" "}
+                      <code className="rounded bg-amber-500/10 px-1">MODEL_CATALOG</code> in{" "}
+                      <code className="rounded bg-amber-500/10 px-1">packages/shared/src/ai-capabilities.ts</code>.
+                    </span>
+                  </div>
+                )}
 
                 {stageStat && stageStat.calls > 0 && (
                   <div className="mt-2 text-xs text-muted-foreground">
