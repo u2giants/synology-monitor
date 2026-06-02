@@ -529,7 +529,12 @@ export async function runStage2Turn(
     metadata: { ...meta, turn_count: turnCount + 1, rechew_fingerprint: fingerprint, rechew_repeat: repeatCount },
   });
 
-  const outcome = toTurnOutcome(parsed, { reChewing, repeatCount, defaultTarget: issue.affected_nas[0] });
+  const outcome = toTurnOutcome(parsed, {
+    reChewing,
+    repeatCount,
+    toolCallCount: record.count,
+    defaultTarget: issue.affected_nas[0],
+  });
   const applied = await applyTurnOutcome(supabase, userId, issue, outcome);
   return { ...applied, reChewed: reChewing, toolCallCount: record.count };
 }
@@ -538,7 +543,7 @@ export async function runStage2Turn(
 
 export function toTurnOutcome(
   parsed: TurnOutput,
-  ctx: { reChewing: boolean; repeatCount: number; defaultTarget?: string },
+  ctx: { reChewing: boolean; repeatCount: number; toolCallCount?: number; defaultTarget?: string },
 ): TurnOutcome {
   const issuePatch: IssuePatch = {};
   if (parsed.hypothesis) issuePatch.current_hypothesis = parsed.hypothesis;
@@ -549,9 +554,10 @@ export function toTurnOutcome(
   const agentMessage = parsed.agent_message?.trim() || "(no message)";
   let decision = parsed.decision ?? "continue";
 
-  // Re-chew backstop: if the model keeps wanting to "continue" on unchanged
-  // evidence, force an operator question after 2 repeats so it can't loop.
-  if (decision === "continue" && ctx.reChewing && ctx.repeatCount >= 2) {
+  // Re-chew backstop: if repeated turns produce no tool calls, force an
+  // operator question after 2 repeats so it can't loop. If this turn did run
+  // tools, let the next queued turn pick up the newly persisted evidence.
+  if (decision === "continue" && ctx.reChewing && ctx.repeatCount >= 2 && (ctx.toolCallCount ?? 0) === 0) {
     decision = "ask_user";
   }
 
@@ -576,8 +582,11 @@ export function toTurnOutcome(
       }
       return { kind: "needs_approval", agentMessage, intent, issuePatch };
     }
-    case "ask_user":
-      return { kind: "needs_user", agentMessage, question: parsed.user_question?.trim() || agentMessage, issuePatch };
+    case "ask_user": {
+      const question = parsed.user_question?.trim() || agentMessage;
+      const message = question === agentMessage ? agentMessage : `${agentMessage}\n\n${question}`;
+      return { kind: "needs_user", agentMessage: message, question, issuePatch };
+    }
     case "blocked_on_issue":
       return parsed.depends_on_issue_id
         ? { kind: "blocked_on_issue", agentMessage, dependsOnIssueId: parsed.depends_on_issue_id, issuePatch }
