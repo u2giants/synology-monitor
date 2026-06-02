@@ -81,7 +81,10 @@ Operating rules:
 - If the NAS is unreachable, say so and diagnose from stored evidence
   (fetch_evidence still works — it reads the database, not the NAS).
 - If you've already seen this evidence and nothing changed, do not re-chew: fetch
-  more evidence, run a different diagnostic, widen scope, or ask the operator.`;
+  more evidence, run a different diagnostic, widen scope, or ask the operator.
+- decision=continue is only valid after you actually called at least one tool in
+  this turn. If you need more data, call the tool now; do not describe a future
+  tool call in agent_message.`;
 
 const NAS_TAXONOMY = `NAS issue families (from the detector): sharesync-metadata-corruption,
 sharesync-api-invalid, drive-not-ready, sync-failure, sync-conflict,
@@ -164,6 +167,7 @@ const OUTPUT_SCHEMA = `When you have investigated enough for this turn, return O
   "depends_on_issue_id": "uuid"                    // iff decision=blocked_on_issue
 }
 - decision=continue means you want another investigation turn.
+- decision=continue is invalid unless you called at least one tool this turn.
 - Do not narrate tool calls in agent_message; summarize findings.`;
 
 // ─── Turn output ─────────────────────────────────────────────────────────────
@@ -487,7 +491,8 @@ export async function runStage2Turn(
       `Do NOT repeat the same analysis. Either fetch_evidence you haven't seen, run a DIFFERENT ` +
       `read-only diagnostic, widen scope to a sibling issue, propose a remediation, or ask the ` +
       `operator a specific question. If genuinely nothing more can be learned without operator ` +
-      `input, decision=ask_user.`
+      `input, decision=ask_user. Do not return decision=continue unless you actually call a tool ` +
+      `in this turn.`
     : `Investigate this issue. Use read-only tools as needed, then return the JSON turn output.`;
 
   const blocks: PromptBlock[] = [
@@ -554,11 +559,12 @@ export function toTurnOutcome(
   const agentMessage = parsed.agent_message?.trim() || "(no message)";
   let decision = parsed.decision ?? "continue";
 
-  // Re-chew backstop: if repeated turns produce no tool calls, force an
-  // operator question after 2 repeats so it can't loop. If this turn did run
-  // tools, let the next queued turn pick up the newly persisted evidence.
-  if (decision === "continue" && ctx.reChewing && ctx.repeatCount >= 2 && (ctx.toolCallCount ?? 0) === 0) {
-    decision = "ask_user";
+  // A model sometimes says "ask_user" but only emits a progress sentence like
+  // "now let me inspect X". Treat that as a diagnostic continuation; otherwise
+  // the UI freezes on a non-question.
+  const userQuestion = parsed.user_question?.trim() || "";
+  if (decision === "ask_user" && !userQuestion && !looksLikeOperatorQuestion(agentMessage)) {
+    decision = "continue";
   }
 
   switch (decision) {
@@ -583,7 +589,7 @@ export function toTurnOutcome(
       return { kind: "needs_approval", agentMessage, intent, issuePatch };
     }
     case "ask_user": {
-      const question = parsed.user_question?.trim() || agentMessage;
+      const question = userQuestion || agentMessage;
       const message = question === agentMessage ? agentMessage : `${agentMessage}\n\n${question}`;
       return { kind: "needs_user", agentMessage: message, question, issuePatch };
     }
@@ -599,6 +605,12 @@ export function toTurnOutcome(
     default:
       return { kind: "diagnostic", agentMessage, issuePatch };
   }
+}
+
+function looksLikeOperatorQuestion(message: string): boolean {
+  const text = message.trim().toLowerCase();
+  if (text.includes("?")) return true;
+  return /\b(confirm|which|what|who|where|when|should i|should we|do you want|can you|please provide|please confirm)\b/.test(text);
 }
 
 async function loadTranscript(
