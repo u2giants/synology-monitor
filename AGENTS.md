@@ -145,7 +145,7 @@ on the VPS. Treat its deploy path as exceptional, not routine.
 ## 9. What to ignore
 
 Not relevant to active development; do not read or index (already in
-`.claudeignore` / `.cursorignore`): `node_modules/`, `apps/*/node_modules/`,
+`.claudeignore` / `.cursorignore` / `.copilotignore`): `node_modules/`, `apps/*/node_modules/`,
 `.next/`, `dist/`, `apps/*/dist/`, `.turbo/`, `.cache/`, `coverage/`,
 `*.tsbuildinfo`, `pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
 agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-monitor`.
@@ -461,6 +461,7 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 | done | Ingestion fix + partman repair + smon cleanup + secret redaction | Migrations 00034/00035 |
 | done | Deep iowait diagnostics: 9 new MCP tools (PSI, I/O scheduler, NFS client, strace, per-process IO detail, hdparm, set_io_scheduler, set_vm_dirty_ratios, set_ionice), Stage 1 evidence body fix, Stage 2 NAS taxonomy expansion, Metrics page Device Saturation + Container I/O + D-state + per-CPU iowait sections, `SYS_PTRACE` + individual `/dev` mounts in NAS API compose | 2026-06-01 |
 | done | Safe read-only MCP expansion: unblocked diagnostics, hardened validator regexes, restored NAS API containers, widened DSM 7 scheduler/snapshot discovery, and added Snapshot Replication read-only WebAPI/config discovery | Commits `ff73e58`, `a2ce0bd`, `2ad8f52`, `93b82b2` |
+| done | Compact `inspect_snapshot_replication` so the generated NAS API command stays under the 4096-byte `maxCommandLength`; split deeper work into separate read-only tools | Commit `d65047a` |
 
 ## 15. Non-negotiable rules
 

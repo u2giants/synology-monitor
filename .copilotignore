@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+apps/*/node_modules/
+
+# Build outputs
+dist/
+apps/*/dist/
+.next/
+**/next-env.d.ts
+**/*.tsbuildinfo
+out/
+apps/agent/synology-monitor-agent
+
+# Caches
+.cache/
+.turbo/
+.claude/
+
+# Lockfiles
+pnpm-lock.yaml
+package-lock.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local Supabase scratch
+supabase/.temp/
+
+# Local agent data
+apps/agent/data/
+
+# Backup / vestigial files
+**/*.bak
+ersahazan2Desktopsynology-monitor
+
+# Coverage
+coverage/
+
+# Evals
+evals/

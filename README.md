@@ -46,4 +46,6 @@ pnpm build
 
 ## Deployment
 
-Push to `main`. GitHub Actions builds and pushes images to GHCR. The web app and NAS MCP server redeploy automatically via Coolify webhook; the agent and NAS API are picked up by Watchtower on each NAS within 5 minutes. No manual steps required. See [docs/deployment.md](docs/deployment.md) for rollback and pinning instructions.
+Push to `main`. GitHub Actions builds and pushes images to GHCR. The web app and NAS MCP server redeploy automatically via Coolify webhook; the agent and NAS API are picked up by Watchtower on each NAS within 5 minutes.
+
+That covers ordinary image deploys. Compose changes such as new mounts, capabilities, or env keys require an explicit `docker compose up -d` on the NAS after the file is updated there, because Watchtower does not apply compose-file changes. See [docs/deployment.md](docs/deployment.md) for rollback, pinning, and the exceptional manual-compose path.
