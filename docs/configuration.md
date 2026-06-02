@@ -101,8 +101,8 @@ gating.
 | `GEMINI_API_KEY` | Google Gemini provider (default for Stage 1 & 3); `GOOGLE_API_KEY` is accepted as a fallback name |
 | `DEEPSEEK_API_KEY` | DeepSeek provider; `DEEPSEEK_BASE_URL` overrides the default `https://api.deepseek.com` |
 | `DASHSCOPE_API_KEY` | Qwen/DashScope provider; `DASHSCOPE_BASE_URL` overrides the default compatible-mode endpoint |
-| `OPENAI_CHAT_MODEL` | Default model ID when `ai_settings` is empty |
-| `MINIMAX_MODEL` | Default MiniMax model ID for copilot/clustering |
+| `OPENAI_CHAT_MODEL` | Env fallback for the copilot `remediation_model` when `ai_settings.remediation_model` is unset (→ `openai/gpt-5.4`). Does not affect the 3 pipeline stages |
+| `MINIMAX_MODEL` | Env fallback for the copilot `diagnosis_model` / `cluster_model` (→ `minimax/minimax-m2.7`) |
 
 ### Issue worker
 
