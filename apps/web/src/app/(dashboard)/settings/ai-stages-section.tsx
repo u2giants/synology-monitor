@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Brain, Check, ClipboardCopy, Loader2, WifiOff, X, Zap } from "lucide-react";
 import {
   AI_STAGES,
   STAGE_DESCRIPTORS,
   effortLevelsForModel,
   getModelDescriptor,
+  modelSatisfiesStage,
   modelsForStage,
   type AiStage,
+  type ModelDescriptor,
 } from "@synology-monitor/shared";
 
 type StageValues = Record<string, string>; // ai_settings key -> value
@@ -42,6 +44,15 @@ interface IssueOption {
   pipeline: string;
 }
 
+interface ProviderModelStatus {
+  provider: string;
+  keyPresent: boolean;
+  ok: boolean;
+  count: number;
+  source: "live" | "catalog" | "none";
+  error?: string;
+}
+
 export function AiStagesSection() {
   const [values, setValues] = useState<StageValues>({});
   const [loading, setLoading] = useState(true);
@@ -56,6 +67,8 @@ export function AiStagesSection() {
   const [selectedIssue, setSelectedIssue] = useState("");
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState<string | null>(null);
+  const [liveModels, setLiveModels] = useState<ModelDescriptor[] | null>(null);
+  const [providerStatus, setProviderStatus] = useState<ProviderModelStatus[]>([]);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -76,7 +89,33 @@ export function AiStagesSection() {
     fetch("/api/ai-usage").then((r) => r.json()).then(setStats).catch(() => {});
     fetch("/api/nas-health").then((r) => r.json()).then(setHealth).catch(() => {});
     fetch("/api/issues").then((r) => r.json()).then((d) => setIssues(d.issues ?? [])).catch(() => {});
+    fetch("/api/ai-models")
+      .then((r) => r.json())
+      .then((d) => {
+        setLiveModels((d.models as ModelDescriptor[]) ?? []);
+        setProviderStatus((d.providers as ProviderModelStatus[]) ?? []);
+      })
+      .catch(() => setLiveModels([]));
   }, []);
+
+  // Descriptors selectable for a stage. Live provider list (de-curation) when
+  // available; the static catalog is only a pre-fetch / all-keys-absent fallback.
+  // Either way the capability matrix still gates which models a stage may use.
+  function optionsForStage(stage: AiStage): ModelDescriptor[] {
+    const pool = liveModels && liveModels.length > 0 ? liveModels : [...modelsForStage(stage)];
+    return pool.filter((m) => modelSatisfiesStage(m, stage));
+  }
+
+  // Index live descriptors so the effort dropdown and copy-spec can read a
+  // selected live model's metadata; fall back to the shared resolver otherwise.
+  const liveById = useMemo(() => {
+    const map = new Map<string, ModelDescriptor>();
+    for (const m of liveModels ?? []) map.set(m.id, m);
+    return map;
+  }, [liveModels]);
+
+  const levelsFor = (modelId: string): readonly string[] =>
+    liveById.get(modelId)?.effortLevels ?? effortLevelsForModel(modelId);
 
   async function runV2() {
     if (!selectedIssue) return;
@@ -107,9 +146,9 @@ export function AiStagesSection() {
     setValues((cur) => {
       const next = { ...cur, [d.modelKey]: model };
       // If the new model doesn't support the current effort, snap to a valid one.
-      const levels = effortLevelsForModel(model);
-      if (levels.length > 0 && !levels.includes(next[d.effortKey] as never)) {
-        next[d.effortKey] = levels.includes("medium" as never) ? "medium" : levels[0];
+      const levels = levelsFor(model);
+      if (levels.length > 0 && !levels.includes(next[d.effortKey])) {
+        next[d.effortKey] = levels.includes("medium") ? "medium" : levels[0];
       }
       return next;
     });
@@ -161,7 +200,7 @@ export function AiStagesSection() {
   async function copySpec(stage: AiStage) {
     const d = STAGE_DESCRIPTORS[stage];
     const model = values[d.modelKey];
-    const desc = getModelDescriptor(model);
+    const desc = liveById.get(model) ?? getModelDescriptor(model);
     const spec = [
       `# AI stage spec — ${d.label}`,
       ``,
@@ -199,11 +238,51 @@ export function AiStagesSection() {
           </span>
         )}
       </div>
-      <p className="text-xs text-muted-foreground mb-4">
-        Model + reasoning effort for each of the three rebuild stages. Models are filtered to those
-        that support each stage&apos;s required capabilities; effort is disabled for models with no
-        reasoning knob.
+      <p className="text-xs text-muted-foreground mb-2">
+        Model + reasoning effort for each of the three rebuild stages. The dropdowns are populated
+        live from every connected provider (any provider with an API key set); models are still
+        gated to those that support each stage&apos;s required capabilities, and effort is disabled
+        for models with no reasoning knob.
       </p>
+      {liveModels !== null && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            {liveModels.length > 0
+              ? `${liveModels.length} models from ${providerStatus.filter((p) => p.keyPresent).length} connected provider(s)`
+              : "No connected providers — showing the built-in catalog as a fallback"}
+          </span>
+          {providerStatus
+            .filter((p) => p.keyPresent)
+            .map((p) => (
+              <span key={p.provider} className="inline-flex items-center gap-1">
+                {p.ok ? (
+                  <Check className="h-3 w-3 text-success" />
+                ) : (
+                  <X className="h-3 w-3 text-amber-500" />
+                )}
+                {p.provider}
+                <span className="text-muted-foreground/60">
+                  {p.source === "catalog" ? " (catalog fallback)" : ` (${p.count})`}
+                </span>
+              </span>
+            ))}
+          <button
+            type="button"
+            onClick={() =>
+              fetch("/api/ai-models?refresh=1")
+                .then((r) => r.json())
+                .then((dd) => {
+                  setLiveModels((dd.models as ModelDescriptor[]) ?? []);
+                  setProviderStatus((dd.providers as ProviderModelStatus[]) ?? []);
+                })
+                .catch(() => {})
+            }
+            className="underline hover:text-foreground"
+          >
+            refresh
+          </button>
+        </div>
+      )}
 
       <div className="mb-4">
         <button
@@ -258,10 +337,14 @@ export function AiStagesSection() {
           {AI_STAGES.map((stage) => {
             const d = STAGE_DESCRIPTORS[stage];
             const model = values[d.modelKey] ?? "";
-            const options = modelsForStage(stage);
-            const effortLevels = effortLevelsForModel(model);
+            const options = optionsForStage(stage);
+            const effortLevels = levelsFor(model);
             const stageStat = stats?.byStage?.[stage];
             const known = options.some((m) => m.id === model);
+            const byProvider = options.reduce<Record<string, ModelDescriptor[]>>((acc, m) => {
+              (acc[m.provider] ??= []).push(m);
+              return acc;
+            }, {});
             return (
               <div key={stage} className="rounded-lg border border-border bg-muted/10 p-4">
                 <div className="mb-2 flex items-center justify-between">
@@ -287,10 +370,14 @@ export function AiStagesSection() {
                       className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none"
                     >
                       {!known && <option value="">{model || "Select a model"}</option>}
-                      {options.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.label} ({m.provider})
-                        </option>
+                      {Object.entries(byProvider).map(([provider, ms]) => (
+                        <optgroup key={provider} label={provider}>
+                          {ms.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </div>

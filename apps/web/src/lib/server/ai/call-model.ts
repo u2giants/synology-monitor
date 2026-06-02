@@ -13,10 +13,11 @@
  * model call.
  */
 
-import { getModelDescriptor, type AiStage, type EffortLevel } from "@synology-monitor/shared";
+import { resolveModelDescriptor, type AiStage, type EffortLevel } from "@synology-monitor/shared";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { compileContext, type PromptBlock } from "./context-compiler";
 import { mapEffort } from "./effort";
+import { resolveLiveDescriptor } from "./provider-models";
 import { cacheHitRatio } from "./usage";
 import {
   getProviderClient,
@@ -49,11 +50,18 @@ export interface CallModelResult extends ModelCallResult {
 }
 
 export async function callModel(opts: CallModelOptions): Promise<CallModelResult> {
-  const descriptor = getModelDescriptor(opts.model);
+  // Catalog entries carry hand-verified metadata; catalog-miss ids are derived
+  // from the provider-native id (the dropdowns are live, not curated). When even
+  // that fails — an off-pattern id like a third-party model hosted on DashScope —
+  // recover the provider from the live provider-model map, which was built keyed
+  // by the endpoint that returned each id. We only fail when no connected
+  // provider offers the id at all, so the call genuinely can't be routed.
+  const descriptor =
+    resolveModelDescriptor(opts.model) ?? (await resolveLiveDescriptor(opts.model));
   if (!descriptor) {
     throw new Error(
-      `callModel: unknown model "${opts.model}". Add it to the capability matrix ` +
-        `(packages/shared/src/ai-capabilities.ts) before selecting it.`,
+      `callModel: "${opts.model}" is not offered by any connected provider. ` +
+        `Pick a model from the AI-stages dropdown, or confirm the provider's API key is set.`,
     );
   }
 

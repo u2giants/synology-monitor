@@ -186,7 +186,124 @@ export function getModelDescriptor(id: string): ModelDescriptor | undefined {
 
 /** Abstract effort levels a given model accepts (empty if it has no knob). */
 export function effortLevelsForModel(id: string): readonly EffortLevel[] {
-  return MODEL_BY_ID.get(id)?.effortLevels ?? [];
+  return resolveModelDescriptor(id)?.effortLevels ?? [];
+}
+
+// === Live model derivation (de-curation) ===
+//
+// The catalog above is the precise-metadata table: when a model id is in it we
+// use its hand-verified capabilities. But the admin dropdowns are now populated
+// LIVE from each connected provider's "list models" endpoint (see
+// apps/web/src/lib/server/ai/provider-models.ts), so an operator can select any
+// model a provider exposes — including ones newer than this catalog. For those
+// ids we DERIVE a descriptor from provider-level defaults plus light, conservative
+// id-pattern heuristics. The catalog always wins when an id is present in it.
+//
+// Heuristics are deliberately conservative on the effort knob: we only grant a
+// reasoning control to id patterns known to expose one, because sending an
+// unsupported reasoning parameter 400s the call (a missing one merely forgoes
+// thinking). Capabilities default to the common case (tool + structured output)
+// and the catalog overrides the exceptions.
+
+/** Provider-level prompt-cache style — uniform within a provider (§9.2). */
+export const PROVIDER_CACHE_STYLE: Record<AiProvider, CacheStyle> = {
+  anthropic: "explicit_cache_control",
+  openai: "automatic_prefix",
+  deepseek: "automatic_prefix",
+  gemini: "implicit_plus_explicit",
+  qwen: "markers_session",
+};
+
+/**
+ * Infer the provider from a provider-native model id by its naming prefix. The
+ * five providers we connect use disjoint id namespaces, so a bare id is
+ * unambiguous in practice. Returns null when nothing matches — the runtime then
+ * refuses rather than guessing wrong and mis-routing the call to the wrong API.
+ */
+export function inferProvider(id: string): AiProvider | null {
+  const s = id.toLowerCase();
+  if (s.startsWith("claude")) return "anthropic";
+  if (s.startsWith("gemini") || s.startsWith("models/gemini") || s.startsWith("gemma")) return "gemini";
+  if (s.startsWith("deepseek")) return "deepseek";
+  if (s.startsWith("qwen") || s.startsWith("qwq") || s.startsWith("qvq")) return "qwen";
+  if (/^(gpt|chatgpt)/.test(s) || /^o\d/.test(s)) return "openai";
+  return null;
+}
+
+/** Reasoning control derivable from a non-catalog model's provider + id. */
+function deriveEffortControl(provider: AiProvider, id: string): EffortControl {
+  const s = id.toLowerCase();
+  switch (provider) {
+    case "anthropic":
+      // Extended thinking landed with 3.7 Sonnet and is standard on 4.x+.
+      return /claude-3-7|claude-(opus|sonnet|haiku)-[4-9]|claude-[4-9]/.test(s)
+        ? "anthropic_budget"
+        : "none";
+    case "openai":
+      // o-series and gpt-5.x expose reasoning_effort; classic gpt-4* do not.
+      return /^o\d/.test(s) || /^gpt-5/.test(s) ? "openai_enum" : "none";
+    case "gemini":
+      // Thinking config is available on 2.5+ / 3.x (and any "thinking" variant).
+      return /gemini-(2\.5|[3-9])/.test(s) || s.includes("thinking") ? "gemini_thinking" : "none";
+    case "deepseek":
+      // The reasoner is a distinct model, not a knob on the chat model.
+      return /reasoner|r1/.test(s) ? "separate_model" : "none";
+    case "qwen":
+      return /qwq|qvq/.test(s) ? "separate_model" : "none";
+    default:
+      return "none";
+  }
+}
+
+function deriveEffortLevels(control: EffortControl): readonly EffortLevel[] {
+  if (control === "openai_enum") return OPENAI_EFFORT;
+  if (control === "anthropic_budget" || control === "gemini_thinking") return GRADED;
+  return []; // none / separate_model — no gradable knob
+}
+
+/** Whether a derived (non-catalog) model is assumed to support tool use. */
+function deriveToolUse(provider: AiProvider, id: string, control: EffortControl): boolean {
+  // Separate-model reasoners (DeepSeek R1, Qwen QwQ/QvQ) have no function calling.
+  if (control === "separate_model") return false;
+  // OpenAI's first reasoning preview models lacked tools; later o-series have them.
+  if (provider === "openai" && /^o1-(mini|preview)/.test(id.toLowerCase())) return false;
+  return true;
+}
+
+/**
+ * Build a ModelDescriptor for any model id. Catalog entries win (hand-verified
+ * metadata); otherwise the descriptor is derived from provider + id. Pass
+ * `provider` when the caller already knows it (live fetch keyed by endpoint);
+ * omit it to infer from the id. Returns null only when the provider cannot be
+ * determined for a non-catalog id.
+ */
+export function deriveDescriptor(id: string, provider?: AiProvider): ModelDescriptor | null {
+  const known = MODEL_BY_ID.get(id);
+  if (known) return known;
+  const prov = provider ?? inferProvider(id);
+  if (!prov) return null;
+  const effortControl = deriveEffortControl(prov, id);
+  return {
+    id,
+    provider: prov,
+    // The provider-native id is the most recognizable label for a live model.
+    label: id,
+    effortControl,
+    effortLevels: deriveEffortLevels(effortControl),
+    toolUse: deriveToolUse(prov, id, effortControl),
+    structuredOutput: true,
+    cache: PROVIDER_CACHE_STYLE[prov],
+  };
+}
+
+/**
+ * Resolve a descriptor for runtime use: catalog first, then derivation. Unlike
+ * getModelDescriptor (exact catalog lookup, used to ask "is this curated?"),
+ * this returns a usable descriptor for ANY routable id, and is what the
+ * inference path (call-model, effort) uses now that the dropdowns are de-curated.
+ */
+export function resolveModelDescriptor(id: string): ModelDescriptor | null {
+  return deriveDescriptor(id);
 }
 
 // === The three stages (PLAN.md §3, §8.1, §8.2) ===

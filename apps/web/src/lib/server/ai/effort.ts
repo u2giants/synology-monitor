@@ -9,7 +9,7 @@
  * unsupported parameter is never sent.
  */
 
-import { getModelDescriptor, type EffortLevel } from "@synology-monitor/shared";
+import { resolveModelDescriptor, type EffortLevel } from "@synology-monitor/shared";
 
 export interface AnthropicEffort {
   kind: "anthropic";
@@ -46,7 +46,7 @@ const THINKING_BUDGET: Record<EffortLevel, number> = {
 };
 
 export function mapEffort(modelId: string, level: EffortLevel): ProviderEffort {
-  const descriptor = getModelDescriptor(modelId);
+  const descriptor = resolveModelDescriptor(modelId);
   if (!descriptor) return { kind: "none" };
 
   switch (descriptor.effortControl) {
