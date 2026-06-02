@@ -65,6 +65,14 @@ export interface ModelCallParams {
   executeTool?: ToolExecutor;
   /** Max in-turn tool rounds before forcing a final answer (default 8). */
   maxToolIterations?: number;
+  /**
+   * OpenAI prompt-cache routing hint (§9.2). Requests sharing this key are routed
+   * to the same cache so the stable prefix (tools + system + schema + taxonomy)
+   * reused across turns/issues actually hits. Keep it STABLE across calls that
+   * share a prefix — key by stage, NOT by turn or issue. Honored only by the
+   * native OpenAI client; ignored by other OpenAI-compatible providers.
+   */
+  cacheKey?: string;
 }
 
 export interface ModelCallResult {

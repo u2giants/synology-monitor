@@ -81,6 +81,9 @@ export async function callModel(opts: CallModelOptions): Promise<CallModelResult
     tools: opts.tools,
     executeTool: opts.executeTool,
     maxToolIterations: opts.maxToolIterations,
+    // Key by stage (not turn/issue): every call for a stage shares the same
+    // stable prefix, so they should route to the same OpenAI prompt cache.
+    cacheKey: opts.stage ? `synmon-${opts.stage}` : undefined,
   });
 
   await recordUsage(opts, descriptor.provider, context.stablePrefixHash, result);

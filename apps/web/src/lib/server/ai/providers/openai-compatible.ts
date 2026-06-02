@@ -56,6 +56,12 @@ interface OpenAICompatConfig {
   normalize: (raw: unknown) => NormalizedUsage;
   /** Reasoning models want max_completion_tokens; classic chat wants max_tokens. */
   maxTokensField: "max_tokens" | "max_completion_tokens";
+  /**
+   * Send OpenAI's `prompt_cache_key` routing hint. Native OpenAI only — other
+   * OpenAI-compatible servers (DeepSeek, Qwen) may reject the unknown field, and
+   * their prefix caches don't use it.
+   */
+  sendPromptCacheKey?: boolean;
 }
 
 function makeClient(config: OpenAICompatConfig): ProviderClient {
@@ -112,6 +118,7 @@ function makeClient(config: OpenAICompatConfig): ProviderClient {
           };
           if (params.json) body.response_format = { type: "json_object" };
           if (effort.kind === "openai") body.reasoning_effort = effort.reasoningEffort;
+          if (config.sendPromptCacheKey && params.cacheKey) body.prompt_cache_key = params.cacheKey;
           if (tools) {
             body.tools = tools;
             body.tool_choice = forceFinal ? "none" : "auto";
@@ -198,6 +205,7 @@ export const openaiClient = makeClient({
   cacheStyle: "automatic_prefix",
   normalize: normalizeOpenAI,
   maxTokensField: "max_completion_tokens",
+  sendPromptCacheKey: true,
 });
 
 export const deepseekClient = makeClient({
