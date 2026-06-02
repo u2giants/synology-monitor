@@ -33,12 +33,14 @@ source of truth and are easy to audit.
 |---|---|---|---|
 | `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
 | `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
-| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes 119 NAS tools to AI chat clients over Streamable HTTP/SSE |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes a 118-definition NAS tool registry to AI chat clients over Streamable HTTP/SSE |
 | `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, 3-stage issue-agent loop, operator UI |
 | `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
 `packages/shared` holds shared TypeScript types and the NAS tool definitions
-(built with Turbo). **One branch: `main`.** Push to `main` → GitHub Actions builds
+(built with Turbo). `ALL_TOOL_DEFS` currently contains 118 registry definitions;
+`restart_nas_api` is an extra always-on MCP tool implemented in
+`apps/nas-mcp/src/index.ts`. **One branch: `main`.** Push to `main` → GitHub Actions builds
 per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api are
 picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 `qnjimovrsaacneqkggsn`) is the shared data layer between agent (writes) and web
@@ -50,7 +52,7 @@ picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 apps/
   agent/        Go — collectors + DSM client + SQLite WAL sender   (we own)
   nas-api/      Go — validator (allowlist/hard-blocks) + executor  (we own)
-  nas-mcp/      Node/TS — MCP server + 108-tool registry           (we own; dist/ generated)
+  nas-mcp/      Node/TS — MCP server + 118-definition tool registry           (we own; dist/ generated)
   web/          Next.js — dashboard + issue agent                  (we own src/; .next/ generated)
   relay/        Node .mjs — named-action proxy                     (we own)
 packages/shared/ shared TS types + NAS tool definitions            (we own src/; dist/ generated)
@@ -145,7 +147,7 @@ on the VPS. Treat its deploy path as exceptional, not routine.
 Not relevant to active development; do not read or index (already in
 `.claudeignore` / `.cursorignore`): `node_modules/`, `apps/*/node_modules/`,
 `.next/`, `dist/`, `apps/*/dist/`, `.turbo/`, `.cache/`, `coverage/`,
-`pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
+`*.tsbuildinfo`, `pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
 agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-monitor`.
 
 ## 10. Intentional quirks — do not "fix" these
@@ -160,15 +162,20 @@ session ID stopped the claude.ai proxy's 4-minute hang (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 
-### NAS MCP exposes 5 tools but has a 119-tool registry
+### NAS MCP exposes 5 tools but has a 118-definition registry
 Looks like: most tools are broken/unregistered.
 Actually: deliberate lazy-load. `tools/list` returns only `tool_search`,
 `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`. Clients
 discover via `tool_search`, execute via `invoke_tool({name,target,args})`.
-Why: pre-loading 119 schemas put ~50k tokens into every session and degraded it
+Why: pre-loading 118 schemas put ~50k tokens into every session and degraded it
 after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
+
+`tools-config.json` currently has 79 read entries and 40 write entries. That total
+(119) is not the same as `ALL_TOOL_DEFS` (118) because `restart_nas_api` is a
+special always-on write tool implemented in `apps/nas-mcp/src/index.ts`, not in
+the shared registry.
 
 ### `Connection: close` on every nas-api request (from nas-mcp/web)
 Looks like: throws away HTTP keep-alive.
@@ -311,6 +318,24 @@ mounted read-only at `/host/proc`, `/host/sys`, `/host/log`. Shared folders are
 at `/host/shares/<name>`. The `/host/` prefix keeps host and container namespaces
 distinct. See `deploy/synology/docker-compose.agent.yml`.
 
+### NAS API mount layout is not the same as the agent mount layout
+Looks like: a read-only diagnostic should find DSM package files at
+`/host/var/packages` or snapshots under `/volume1`.
+
+Actually: the NAS API compose mounts host `/var/packages` at `/host/packages`, not
+`/host/var/packages`. Full Btrfs data volumes are mounted at `/btrfs/volumeN` for
+subvolume/snapshot commands; individual shared folders are mounted separately
+under `/volume1/<share>` and may not expose system snapshot directories.
+
+Why: Synology Container Manager rejects some top-level volume binds during
+compose/UI recreates. The compose file uses narrower named mounts for shares,
+package state, host libraries, and Btrfs volumes.
+
+Do not change because: tools that only check `/volume1` or `/host/var/packages`
+will miss Snapshot Replication state and scheduler/package artifacts on one NAS.
+Read-only tools should check `/host/packages` and `/btrfs/volumeN`, and may use
+DSM WebAPI read methods as a fallback when SQLite/config paths are not mounted.
+
 ## 11. Credentials and environment
 
 Full reference: [docs/configuration.md](docs/configuration.md). No secret values
@@ -388,6 +413,21 @@ at startup after Watchtower pulled the image. Symptom: MCP calls returned
 or Go helper code, add validator tests for both match and exception cases, then
 verify `/health` on both NASes after `nas-api-image.yml` publishes.
 
+### 2026-06 — Read-only MCP probes missed DSM 7/NAS API paths
+What happened: `check_scheduled_tasks`, `list_snapshot_candidates`, and
+`inspect_snapshot_replication` were safe to run but reported missing data because
+they only checked legacy or agent-style paths.
+Impact: AI sessions could not confirm DSM scheduled tasks or Snapshot Replication
+schedule/retention rules even though the package/runtime existed.
+Root cause: NAS API mount layout differs from the telemetry agent: package state is
+under `/host/packages`, and the full Btrfs volume is under `/btrfs/volumeN`.
+Recovery: widened read-only path discovery, opened SQLite with `-readonly`, added
+DSM WebAPI read fallbacks for task and Snapshot/Replication API discovery, and
+kept writes/start/cancel operations separate.
+Rule added to prevent recurrence: read-only NAS tools must be narrow and
+allowlisted, but they must cover the actual compose mounts before assuming DSM data
+is absent.
+
 ### 2026-05 — `check_backup_status` returning stale 2024 data
 Fix: multi-path freshest-by-mtime discovery + staleness banner.
 
@@ -408,11 +448,15 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 | done | `backend-findings.ts` + `buildProblemPrompt` + `resolution/create` migrated from `analyzed_problems` to `issues` | 2026-05-31 |
 | done | Ingestion fix + partman repair + smon cleanup + secret redaction | Migrations 00034/00035 |
 | done | Deep iowait diagnostics: 9 new MCP tools (PSI, I/O scheduler, NFS client, strace, per-process IO detail, hdparm, set_io_scheduler, set_vm_dirty_ratios, set_ionice), Stage 1 evidence body fix, Stage 2 NAS taxonomy expansion, Metrics page Device Saturation + Container I/O + D-state + per-CPU iowait sections, `SYS_PTRACE` + individual `/dev` mounts in NAS API compose | 2026-06-01 |
+| done | Safe read-only MCP expansion: unblocked diagnostics, hardened validator regexes, restored NAS API containers, widened DSM 7 scheduler/snapshot discovery, and added Snapshot Replication read-only WebAPI/config discovery | Commits `ff73e58`, `a2ce0bd`, `2ad8f52`, `93b82b2` |
 
 ## 15. Non-negotiable rules
 
 - Commit only to `main`; never create feature branches.
-- Do not build Docker images or restart containers manually on the VPS/NAS.
+- Do not build Docker images manually on the VPS/NAS. Container restarts or
+  `docker compose up -d` are exceptional recovery/config-application steps only
+  (for example, applying compose mount/capability changes or recovering a crashed
+  NAS API) and must be reflected in the repo/docs.
 - Do not hotfix the live NAS/VPS and commit after the fact.
 - Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands, SSH, or server-side scripts (see `AI_OPERATING_RULES.md`).
 - Do not add a sender payload field without a matching Supabase column/migration.

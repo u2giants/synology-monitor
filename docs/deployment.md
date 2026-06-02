@@ -51,7 +51,7 @@ All workflows tag images three ways: `:latest`, `:sha-<short-sha>`, and `:main`.
 |---|---|---|
 | `ghcr.io/u2giants/synology-monitor-agent` | Go binary; telemetry collectors, SQLite WAL sender | Watchtower on each NAS |
 | `ghcr.io/u2giants/synology-monitor-nas-api` | Go binary; three-tier command validator and executor, port 7734 | Watchtower on each NAS |
-| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 108-tool registry | Coolify on VPS |
+| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 118-definition tool registry | Coolify on VPS |
 | `ghcr.io/u2giants/synology-monitor-web` | Next.js; dashboard, issue detector, issue-agent pipeline | Coolify on VPS |
 
 All images are public in GHCR under the `u2giants` organization. Tags: `:latest` (always the most recent main-branch build), `:sha-<short-sha>` (pinnable), `:main` (branch ref, same as latest on main).
@@ -206,10 +206,16 @@ $DOCKER compose -f compose.yaml up -d synology-monitor-agent
 |---|---|---|
 | `/proc` | `/host/proc` | Process stats, mdstat, network stats |
 | `/sys` | `/host/sys` | cgroup I/O stats, Btrfs counters, thermal |
+| `/usr/syno` | `/host/usr/syno` | DSM binaries/config used by NAS API diagnostics |
+| `/var/packages` | `/host/packages` | DSM package state; Snapshot Replication and scheduler probes rely on this path |
 | `/volume1/@SynologyDriveShareSync` | `/host/shares/@SynologyDriveShareSync` | ShareSync logs for the sharesync collector |
 | `/var/log` | `/host/log` | DSM logs, Drive logs, backup logs |
+| `/volume1` | `/btrfs/volume1` | Full Btrfs volume mount for subvolume/snapshot listing and scrub commands |
 
-The nas-api container also needs `pid: host` for commands that reference live process PIDs.
+The nas-api container also needs `pid: host` for commands that reference live
+process PIDs. Do not replace `/btrfs/volume1` with only individual share mounts:
+snapshot and Btrfs tools need the full volume mount, while file-inspection tools
+use the narrower `/volume1/<share>` mounts.
 
 ## Deploying the NAS API
 

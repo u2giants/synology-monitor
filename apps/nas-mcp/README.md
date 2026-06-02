@@ -28,7 +28,7 @@ Claude Desktop / claude.ai client config:
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 108 tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 108 were registered upfront).
+The server has a registry of 118 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 118 were registered upfront). `restart_nas_api` is one of the 5 always-on tools and is implemented directly in `src/index.ts`, so enabled-tool counts in `tools-config.json` can be one higher than `ALL_TOOL_DEFS`.
 
 | Always-on tool | Purpose |
 |---|---|
@@ -117,7 +117,7 @@ The Node HTTP server has `keepAliveTimeout: 120s` / `headersTimeout: 125s` — a
 }
 ```
 
-Tools in the registry but not listed are compiled into the image but invisible to `tool_search` and rejected by `invoke_tool` with a "disabled in tools-config.json" message. This lets you ship a tool dark and enable it without a code deploy — edit the JSON and push.
+Tools in the registry but not listed are compiled into the image but invisible to `tool_search` and rejected by `invoke_tool` with a "disabled in tools-config.json" message. This lets you ship a tool dark and enable it without a code deploy — edit the JSON and push. The special always-on `restart_nas_api` entry is enabled in this file but does not live in `ALL_TOOL_DEFS`.
 
 Changes take effect on the next image build (push to `main` → GitHub Actions → Coolify redeploy).
 

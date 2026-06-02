@@ -217,7 +217,7 @@ apps/nas-api/internal/
   auth/                — bearer token + HMAC verifier
 
 packages/shared/src/
-  nas-tools.ts         — 108 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
+  nas-tools.ts         — 118 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
 ```
 
 ## Database migrations
@@ -287,6 +287,15 @@ const TOOL_GROUPS: Record<string, string> = {
 If you skip `TOOL_GROUPS`, the tool falls into `"misc"` and startup logs a warning.
 It still works, but won't surface in group-based searches.
 
+Path rule for NAS tools: commands run inside the `synology-monitor-nas-api`
+container. Do not assume the telemetry agent's mount layout. Package state is
+mounted at `/host/packages`, DSM binaries at `/host/usr/syno`, DSM logs at
+`/host/log`, and the full Btrfs volume at `/btrfs/volumeN`. Individual shared
+folders are mounted under `/volume1/<share>`, but that is not enough for snapshot
+enumeration. If DSM 7 hides scheduler or Snapshot Replication details behind
+package state or WebAPI, prefer narrow read-only path discovery plus DSM WebAPI
+`list`/`query` methods over broad filesystem scans.
+
 ### Step 2 — Enable the tool in `apps/nas-mcp/tools-config.json`
 
 Add the tool name to `enabled_read_tools` (read-only) or `enabled_write_tools`
@@ -332,6 +341,14 @@ Run:
 cd apps/nas-api && go test ./internal/validator/...
 ```
 
+If the local machine lacks Go, use the same containerized test command as CI/debug
+sessions:
+
+```sh
+docker run --rm -v "$PWD/../..:/src" -w /src/apps/nas-api golang:1.23-alpine \
+  go test ./internal/validator/...
+```
+
 ### Step 4 — Stage 2 picks it up automatically
 
 Stage 2's `buildStage2Tools()` in `stage2-reasoning.ts` loads all
@@ -347,7 +364,8 @@ pnpm type-check
 ```
 
 Push to `main`. `nas-mcp-image.yml` triggers on changes to `apps/nas-mcp/**` and
-`packages/shared/**` and redeploys both the MCP server and the web app.
+`packages/shared/**` and redeploys the MCP server. `web-image.yml` also watches
+`packages/shared/**`, so shared tool changes may build/redeploy the web image too.
 
 ## Workflow: adding a new metric or telemetry type
 

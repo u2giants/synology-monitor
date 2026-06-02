@@ -210,8 +210,11 @@ the MCP server. Changes require a push to `main`.
 }
 ```
 
-Tool definitions live in `packages/shared/src/nas-tools.ts`. A tool must appear in
-both the definitions file and `tools-config.json` to be callable.
+Tool definitions live in `packages/shared/src/nas-tools.ts`. A normal registry
+tool must appear in both the definitions file and `tools-config.json` to be
+callable. `restart_nas_api` is the exception: it is an always-on MCP tool
+implemented in `apps/nas-mcp/src/index.ts`, so it appears in `tools-config.json`
+but not in `ALL_TOOL_DEFS`.
 
 ---
 
@@ -256,3 +259,24 @@ container's own `/proc` and `/sys`. Access host data at:
 | `/volume1/@SynologyDriveShareSync` | `/host/shares/@SynologyDriveShareSync` |
 | `/volume1/files` | `/host/shares/files` |
 | (other shares) | `/host/shares/<name>` |
+
+## Volume mount paths (NAS API container)
+
+Predefined MCP/NAS API diagnostic tools run in the `synology-monitor-nas-api`
+container. Its mount layout is different from the telemetry agent:
+
+| Host path | Container path | Notes |
+|---|---|---|
+| `/proc` | `/host/proc` | Host procfs without shadowing container `/proc` |
+| `/sys` | `/host/sys` | Host sysfs |
+| `/usr/syno` | `/host/usr/syno` | DSM binaries and config |
+| `/lib`, `/usr/lib` | `/host/lib`, `/host/usr/lib` | Host libraries for DSM binaries |
+| `/var/log` | `/host/log` | DSM logs |
+| `/var/packages` | `/host/packages` | DSM package state; tools should not assume `/host/var/packages` |
+| `/volume1` | `/btrfs/volume1` | Full Btrfs volume for subvolume/snapshot operations |
+| selected shared folders | `/volume1/<share>` | Narrow share mounts for file inspection |
+| selected block devices | `/dev/sd*`, `/dev/md*` | Individually mounted read-only; empty bays may be commented out |
+
+For DSM 7 scheduler and Snapshot Replication inspection, prefer `/host/packages`,
+`/host/usr/syno`, and `/btrfs/volumeN`, and fall back to DSM WebAPI read methods
+when package SQLite/config paths are not visible.
