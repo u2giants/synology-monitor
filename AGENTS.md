@@ -103,7 +103,8 @@ images. If you ever patch a vendored file, record it here.
 | Send a new agent field to Supabase | `apps/agent/internal/sender/types.go` + a `Queue*` method, **and** a matching column via a new `supabase/migrations/*.sql` | applied migration files |
 | Allow a new NAS command tier | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`; Go/RE2 regex only, no lookaround/backrefs) | `executor.go` |
 | Change an AI pipeline stage | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts` | `issue-detector.ts` fingerprinting |
-| Change AI model per stage | Settings UI → `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
+| Change AI model per stage | Settings UI (live dropdowns) → `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
+| Add a selectable model / fix its capabilities | nothing — dropdowns are live from connected providers (`provider-models.ts` → `/api/ai-models`). To **tune** a model's effort/tool-use precisely, add a row to `MODEL_CATALOG` in `packages/shared/src/ai-capabilities.ts` (overrides the heuristic) | the live-fetch list logic unless adding a provider |
 | Add a new log source to the agent | `apps/agent/internal/logwatcher/watcher.go` (`defaultLogFiles`) | No source whitelist to update (migration 00035 dropped it) |
 | Add an env var | `apps/web/.env.example` and `apps/web/src/app/api/settings/route.ts` if it's an AI setting, `docs/configuration.md` | production env (lives in Coolify or NAS `.env`) |
 | Add a DB migration | `supabase/migrations/000NN_description.sql` — next number after current max (00041) | applied migrations |
@@ -277,6 +278,24 @@ capabilities (`cap_add`), volume mounts, env keys, etc. do not take effect until
 Do not assume because: this is how Docker Compose restart semantics work — container
 recreation from a new image uses the last-applied compose spec, not the repo copy.
 
+### AI-stage model dropdowns are live; `MODEL_CATALOG` is an override, not the menu
+Looks like: `MODEL_CATALOG` in `packages/shared/src/ai-capabilities.ts` is the list
+of selectable models, so a model missing from it (e.g. a new DeepSeek release)
+can't be picked.
+Actually: since 2026-06-02 the dropdowns are populated **live** from every connected
+provider's list-models endpoint (`apps/web/src/lib/server/ai/provider-models.ts`,
+served by `/api/ai-models`). `MODEL_CATALOG` is now a precise-metadata override +
+offline/no-keys fallback. Catalog-miss ids get a *derived* descriptor (provider by
+id prefix, cache style by provider, effort/tool-use by conservative id heuristics);
+`callModel` resolves `catalog → derived → live-map` and only fails when no connected
+provider offers the id.
+Why: the curated list silently excluded any model not hand-added; the operator asked
+for every connected provider's models to be selectable.
+Do not change because: deleting `MODEL_CATALOG` or re-gating the dropdown to it
+breaks precise effort/cache/tool-use metadata for the curated models and the
+offline fallback. A selected model whose capabilities are derived is flagged with an
+amber "inferred model" warning in the UI; to tune it exactly, add a catalog row.
+
 ### `issue_evidence` and `issue_evidence_items` are different tables
 Looks like: `issue_evidence_items` is just the renamed `issue_evidence`.
 Actually: entirely different purposes.
@@ -353,10 +372,10 @@ each NAS `.env`).
 | `MCP_BEARER_TOKEN` | Nas-mcp client auth | Coolify | yes | yes |
 | `ANTHROPIC_API_KEY` | Stage 2 reasoning (Anthropic/Claude) | Coolify | yes | yes |
 | `OPENAI_API_KEY` | Stage 1/3 + copilot fallback | Coolify | yes | yes |
-| `GEMINI_API_KEY` | Stage 2 reasoning (Gemini option) | Coolify | optional | optional |
-| `DEEPSEEK_API_KEY` | Stage 2 reasoning (DeepSeek option) | Coolify | optional | optional |
-| `DASHSCOPE_API_KEY` | Stage 2 reasoning (Qwen/DashScope option) | Coolify | optional | optional |
-| `OPENROUTER_API_KEY` | Copilot chat + model catalog dropdown | Coolify | yes | yes |
+| `GEMINI_API_KEY` | Gemini provider — **seeded default for Stage 1 & 3**; selectable for any stage; key also lists Gemini models in the live dropdowns (`GOOGLE_API_KEY` accepted) | Coolify | yes (for seeded defaults) | yes (for seeded defaults) |
+| `DEEPSEEK_API_KEY` | DeepSeek provider — selectable for any stage; key lists DeepSeek models in the live dropdowns | Coolify | optional | optional |
+| `DASHSCOPE_API_KEY` | Qwen/DashScope provider — selectable for any stage; key lists Qwen (and DashScope-hosted) models in the live dropdowns | Coolify | optional | optional |
+| `OPENROUTER_API_KEY` | Copilot chat + the copilot model-picker (`/api/models`). NOT the 3-stage AI-stage dropdowns, which fetch each connected provider directly | Coolify | yes | yes |
 | `ISSUE_WORKER_MODE` / `RUN_ISSUE_WORKER` / `ISSUE_WORKER_TOKEN` | Issue worker mode/auth | Coolify | no | depends |
 | `COOLIFY_TOKEN` / `COOLIFY_WEBHOOK_UUID` | CI → Coolify redeploy | GitHub secrets | n/a | n/a |
 
@@ -462,6 +481,7 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 | done | Deep iowait diagnostics: 9 new MCP tools (PSI, I/O scheduler, NFS client, strace, per-process IO detail, hdparm, set_io_scheduler, set_vm_dirty_ratios, set_ionice), Stage 1 evidence body fix, Stage 2 NAS taxonomy expansion, Metrics page Device Saturation + Container I/O + D-state + per-CPU iowait sections, `SYS_PTRACE` + individual `/dev` mounts in NAS API compose | 2026-06-01 |
 | done | Safe read-only MCP expansion: unblocked diagnostics, hardened validator regexes, restored NAS API containers, widened DSM 7 scheduler/snapshot discovery, and added Snapshot Replication read-only WebAPI/config discovery | Commits `ff73e58`, `a2ce0bd`, `2ad8f52`, `93b82b2` |
 | done | Compact `inspect_snapshot_replication` so the generated NAS API command stays under the 4096-byte `maxCommandLength`; split deeper work into separate read-only tools | Commit `d65047a` |
+| done | De-curate AI-stage model dropdowns: live per-provider model lists (`provider-models.ts` → `/api/ai-models`), `MODEL_CATALOG` demoted to metadata override + fallback, runtime resolves `catalog → derived → live-map`, "inferred model" UI warning | Commits `4f8ee0e`, `4ea43f3` (2026-06-02) |
 
 ## 15. Non-negotiable rules
 

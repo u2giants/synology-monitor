@@ -85,17 +85,22 @@ Coolify after the image is built has no effect — a new image build is required
 | `NAS_EDGE2_API_URL` | NAS 2 API base URL | Runtime |
 | `NAS_EDGE2_API_SECRET` | Must match `NAS_API_SECRET` on NAS 2 | Runtime |
 | `NAS_EDGE2_API_SIGNING_KEY` | Must match `NAS_API_APPROVAL_SIGNING_KEY` on NAS 2 | Runtime |
-| `ANTHROPIC_API_KEY` | Anthropic / Claude provider for Stage 2 reasoning | Runtime |
-| `OPENAI_API_KEY` | OpenAI provider; also fallback signing key for copilot actions | Runtime |
-| `OPENROUTER_API_KEY` | Copilot chat + model catalog dropdown | Runtime |
+| `ANTHROPIC_API_KEY` | Anthropic / Claude provider for the 3-stage pipeline; presence lists its models in the live AI-stage dropdowns | Runtime |
+| `OPENAI_API_KEY` | OpenAI provider (3-stage pipeline + live dropdowns); also fallback signing key for copilot actions | Runtime |
+| `OPENROUTER_API_KEY` | Copilot chat + the **copilot** model-picker dropdown (`/api/models`, Settings page). Not used by the 3-stage AI-stage dropdowns | Runtime |
 
 ### Optional AI providers
 
+A provider counts as "connected" when its key is present; its models are then
+fetched live into the AI-stage dropdowns (see *Model capability and effort
+controls* below). Any provider can be selected for any stage subject to capability
+gating.
+
 | Variable | Purpose |
 |---|---|
-| `GEMINI_API_KEY` | Google Gemini provider for Stage 2 (if selected in AI settings) |
-| `DEEPSEEK_API_KEY` | DeepSeek provider for Stage 2 |
-| `DASHSCOPE_API_KEY` | Qwen/DashScope provider for Stage 2 |
+| `GEMINI_API_KEY` | Google Gemini provider (default for Stage 1 & 3); `GOOGLE_API_KEY` is accepted as a fallback name |
+| `DEEPSEEK_API_KEY` | DeepSeek provider; `DEEPSEEK_BASE_URL` overrides the default `https://api.deepseek.com` |
+| `DASHSCOPE_API_KEY` | Qwen/DashScope provider; `DASHSCOPE_BASE_URL` overrides the default compatible-mode endpoint |
 | `OPENAI_CHAT_MODEL` | Default model ID when `ai_settings` is empty |
 | `MINIMAX_MODEL` | Default MiniMax model ID for copilot/clustering |
 
@@ -152,8 +157,12 @@ Coolify after the image is built has no effect — a new image build is required
 ## AI model settings
 
 Model assignments are stored in the `ai_settings` Supabase table and read at
-runtime. The Settings UI exposes them. If `ai_settings` is empty, each stage falls
-back through env vars then hardcoded defaults.
+runtime. The Settings UI exposes them. For the **3 pipeline stages**, an empty
+value falls back directly to the hardcoded `STAGE_DESCRIPTORS` default in
+`packages/shared/src/ai-capabilities.ts` (no env-var layer); these defaults match
+the migration 00036 seed. The **copilot** models (`diagnosis_model`,
+`remediation_model`, `cluster_model`) fall back through env vars then a hardcoded
+default.
 
 **Non-obvious:** `ai_settings` must be read via `createAdminClient()` (service
 role), not the session client. The issue agent runs as a background worker with no
@@ -162,9 +171,9 @@ hardcoded defaults.
 
 | Key | Stage / feature | Fallback |
 |---|---|---|
-| `stage_structurer_model` / `stage_structurer_effort` | Stage 1 | `claude-haiku-4-5-20251001` / `low` |
-| `stage_reasoning_model` / `stage_reasoning_effort` | Stage 2 | `claude-sonnet-4-6` / `medium` |
-| `stage_explainer_model` / `stage_explainer_effort` | Stage 3 | `claude-haiku-4-5-20251001` / `low` |
+| `stage_structurer_model` / `stage_structurer_effort` | Stage 1 | `gemini-3.1-flash-lite-preview` / `minimal` |
+| `stage_reasoning_model` / `stage_reasoning_effort` | Stage 2 | `claude-sonnet-4-6` / `high` |
+| `stage_explainer_model` / `stage_explainer_effort` | Stage 3 | `gemini-3.1-flash-lite-preview` / `low` |
 | `diagnosis_model` | Copilot (MiniMax) | `MINIMAX_MODEL` env → `minimax/minimax-m2.7` |
 | `remediation_model` | Copilot (OpenAI) | `OPENAI_CHAT_MODEL` env → `openai/gpt-5.4` |
 | `second_opinion_model` | Planned cross-check feature (not yet wired) | `anthropic/claude-sonnet-4` |
@@ -190,11 +199,36 @@ long-context coherence, and strong multi-step reasoning. Stage 3 can use a cheap
 model optimized for concise writing and memory extraction. If a model lacks an
 effort knob, keep the selected model and treat effort as disabled for that provider.
 
-`packages/shared/src/ai-capabilities.ts` is the source of truth for the curated
-model catalog, provider capability matrix, stage requirements, fallback models,
-and stage spec text. The Settings UI imports that shared data to filter model
-dropdowns and to build the copy-spec clipboard payload for asking another model
-which provider-native model best fits a stage.
+**Model dropdowns are live, not curated.** As of 2026-06-02 the AI-stage model
+dropdowns are populated from every connected provider's list-models endpoint
+(`apps/web/src/lib/server/ai/provider-models.ts`, served by `/api/ai-models`,
+cached ~10 min). So any model a connected provider exposes — including ones newer
+than this repo — is selectable. A provider is "connected" when its key env is set.
+
+`packages/shared/src/ai-capabilities.ts` remains the source of truth for the
+provider capability matrix, stage requirements, fallback models, and stage spec
+text — but its `MODEL_CATALOG` is now a precise-metadata **override and offline
+fallback**, not the menu:
+
+- A model id in `MODEL_CATALOG` uses its hand-verified metadata (effort control,
+  effort levels, cache style, tool use).
+- A catalog-miss id gets a **derived** descriptor: provider from the id prefix
+  (`inferProvider`), cache style from the provider, and effort/tool-use from
+  conservative id-pattern heuristics. Derivation is intentionally cautious about
+  enabling an effort knob, because sending an unsupported reasoning param 400s the
+  call while omitting one merely forgoes thinking.
+- The runtime resolves ids `catalog → derived → live-map` (`resolveModelDescriptor`
+  then `resolveLiveDescriptor`); it only fails when no connected provider offers
+  the id.
+
+The Settings UI still gates the live list per stage (Stage 2 needs tool use; all
+stages need structured output), shows an amber **"inferred model"** warning when a
+selected model's capabilities are derived rather than catalog-backed, and builds
+the copy-spec clipboard payload for asking another model which provider-native
+model best fits a stage. **To tune a specific model precisely** (its effort knob or
+tool-use), add a row to `MODEL_CATALOG` — the catalog always overrides the
+heuristic. The `OPENROUTER_API_KEY`-backed `/api/models` route is a *separate*
+dropdown for the copilot, not the 3-stage pipeline.
 
 ---
 

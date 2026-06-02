@@ -404,7 +404,7 @@ store is the lossless source of truth.
 ### Stage 2 — Reasoning Core (`ai/stage2-reasoning.ts`)
 
 One agentic turn per job invocation. Model: operator-configured via `ai_settings`
-table (`stage_reasoning_model`); default `claude-sonnet-4-6` / medium effort.
+table (`stage_reasoning_model`); default `claude-sonnet-4-6` / high effort.
 
 **Context is rebuilt from the DB on every turn** (resumable invariant): the worker
 that picks up a job may be a different process after an approval gate or restart.
@@ -489,7 +489,7 @@ reasoner effective.
 ### Stage 3 — Explainer / Memory (`ai/stage3-explainer.ts`)
 
 Single-shot, cheap, low-effort. Model: `stage_explainer_model` from `ai_settings`;
-default `claude-haiku-4-5-20251001` / low effort. Runs after Stage 2 reaches
+default `gemini-3.1-flash-lite-preview` / low effort. Runs after Stage 2 reaches
 `resolved` or `stuck`. Best-effort — a Stage 3 failure never fails the resolution.
 
 **Input:** two parallel reads from Supabase:
@@ -513,6 +513,35 @@ default `claude-haiku-4-5-20251001` / low effort. Runs after Stage 2 reaches
 Memories are loaded at the start of Stage 2 investigations via
 `agent-memory-store.ts::loadMemoriesForIssue`, classified by subject so only
 relevant topics are included (e.g. HyperBackup memories for backup issues).
+
+### Stage model selection (live, de-curated)
+
+The per-stage model dropdowns in the AI Stages settings panel are populated
+**live** from every connected provider — a provider counts as connected when its
+API key env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`) is present. `provider-models.ts` calls
+each connected provider's list-models endpoint (cached in-process ~10 min) and the
+`/api/ai-models` route serves the union to the UI. `MODEL_CATALOG` in
+`packages/shared/src/ai-capabilities.ts` is no longer the menu — it is a
+precise-metadata **override** (hand-verified effort/cache/tool-use per model) and
+the offline/no-keys fallback.
+
+At runtime, `callModel` resolves a model id through a three-step chain
+(`resolveModelDescriptor` → `resolveLiveDescriptor`):
+
+1. **catalog** — exact match in `MODEL_CATALOG` (verified metadata),
+2. **derived** — for catalog-miss ids, a descriptor inferred from the id (provider
+   by prefix; cache style per provider; effort/tool-use by conservative id
+   patterns),
+3. **live map** — for off-pattern ids (e.g. third-party models hosted on
+   DashScope), the provider recovered from the live provider→models map.
+
+It only throws when no connected provider offers the id. A selected model whose
+capabilities are *derived* (not catalog-backed) is flagged with an amber "inferred
+model" warning in the UI, because its effort knob and tool-use support are
+best-guess until a catalog row is added. Capability gating per stage (Stage 2
+requires tool use; all stages require structured output) still applies to the live
+list.
 
 **Model fit:** Stage 3 is a communication and memory-distillation task, not a
 diagnostic task. It benefits from clear writing, good compression, and the ability
