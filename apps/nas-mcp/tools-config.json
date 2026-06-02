@@ -256,7 +256,7 @@
     "create_prechange_snapshot": "WRITE: Creates a read-only Btrfs snapshot as a recovery point before changes — always asks your approval first",
     "list_snapshot_candidates": "PHASE-3: Lists Btrfs snapshots under all volumes without recursive size scans — find restore candidates",
     "summarize_snapshots_by_share": "PHASE-3: Groups visible Btrfs snapshots by share and timestamp bucket — inspect Snapshot Replication retention density without raw lists",
-    "inspect_snapshot_replication": "PHASE-3: Read-only Snapshot Replication inspection — package state, schedules/retention-looking DB tables, snapshot counts, prune/delete events",
+    "inspect_snapshot_replication": "PHASE-3: Compact read-only Snapshot Replication inspection under the NAS API command-size limit — package state, snapshot counts, DSM task clues, prune/delete events",
     "list_drive_version_history": "PHASE-3: Shows Drive-managed version history for a file path — lists available versions and their timestamps",
     "inspect_recycle_bin": "PHASE-3: Lists recent files in share recycle bins (#recycle) across all volumes — find deleted files for recovery",
     "check_smart_test_progress": "PHASE-4: Shows in-progress SMART self-test completion percentage and ETA for all or a specific disk",

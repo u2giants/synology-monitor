@@ -203,7 +203,7 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All a
 |---|---|
 | `check_scrub_status` | Btrfs scrub status + RAID sync from mdstat |
 | `check_storage_pool_detail` | Detailed RAID array state, degraded arrays, rebuild progress |
-| `inspect_snapshot_replication` | Read-only Snapshot Replication package/config/DB/log inspection: schedules/retention-looking rows, snapshot counts, prune/delete events |
+| `inspect_snapshot_replication` | Compact read-only Snapshot Replication package/runtime/config/log inspection that stays below the NAS API command-size limit |
 | `check_btrfs_detail` | Btrfs filesystem usage, device error counters, balance status, subvolumes |
 | `check_disk_error_trends` | Compact SMART error table |
 | `check_volume_quota_and_inode_pressure` | Inode + Btrfs qgroup quota state |

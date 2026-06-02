@@ -428,6 +428,18 @@ Rule added to prevent recurrence: read-only NAS tools must be narrow and
 allowlisted, but they must cover the actual compose mounts before assuming DSM data
 is absent.
 
+### 2026-06 — Snapshot Replication probe exceeded NAS API command limit
+What happened: `inspect_snapshot_replication` was read-only, but it bundled too
+much DSM WebAPI/config/SQLite discovery into one generated shell probe. The NAS
+API rejects commands over 4096 bytes, so the MCP tool failed before reaching
+either NAS.
+Recovery: keep `inspect_snapshot_replication` as a compact first-pass probe and
+push deeper follow-up into separate read-only tools such as
+`summarize_snapshots_by_share`, `check_scheduled_tasks`, and `fetch_package_db`.
+Rule added to prevent recurrence: every generated NAS MCP command must stay under
+the NAS API `maxCommandLength`; split broad diagnostics into smaller named tools
+instead of raising the limit or packing everything into one shell command.
+
 ### 2026-05 — `check_backup_status` returning stale 2024 data
 Fix: multi-path freshest-by-mtime discovery + staleness banner.
 
