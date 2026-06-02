@@ -77,6 +77,7 @@
     "fetch_support_artifacts",
     "run_command",
     "list_snapshot_candidates",
+    "summarize_snapshots_by_share",
     "list_drive_version_history",
     "inspect_recycle_bin",
     "check_smart_test_progress"
@@ -254,6 +255,7 @@
     "start_smart_test": "WRITE: Starts a SMART short or long self-test on a specific disk — always asks your approval first",
     "create_prechange_snapshot": "WRITE: Creates a read-only Btrfs snapshot as a recovery point before changes — always asks your approval first",
     "list_snapshot_candidates": "PHASE-3: Lists Btrfs snapshots under all volumes without recursive size scans — find restore candidates",
+    "summarize_snapshots_by_share": "PHASE-3: Groups visible Btrfs snapshots by share and timestamp bucket — inspect Snapshot Replication retention density without raw lists",
     "inspect_snapshot_replication": "PHASE-3: Read-only Snapshot Replication inspection — package state, schedules/retention-looking DB tables, snapshot counts, prune/delete events",
     "list_drive_version_history": "PHASE-3: Shows Drive-managed version history for a file path — lists available versions and their timestamps",
     "inspect_recycle_bin": "PHASE-3: Lists recent files in share recycle bins (#recycle) across all volumes — find deleted files for recovery",

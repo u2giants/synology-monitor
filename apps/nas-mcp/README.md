@@ -28,7 +28,7 @@ Claude Desktop / claude.ai client config:
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 118 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 118 were registered upfront). `restart_nas_api` is one of the 5 always-on tools and is implemented directly in `src/index.ts`, so enabled-tool counts in `tools-config.json` can be one higher than `ALL_TOOL_DEFS`.
+The server has a registry of 119 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 119 were registered upfront). `restart_nas_api` is one of the 5 always-on tools and is implemented directly in `src/index.ts`, so enabled-tool counts in `tools-config.json` can be one higher than `ALL_TOOL_DEFS`.
 
 | Always-on tool | Purpose |
 |---|---|
@@ -233,6 +233,7 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All a
 | Tool | What it does |
 |---|---|
 | `list_snapshot_candidates` | Btrfs snapshots and recent snapshot directories, without recursive size scans |
+| `summarize_snapshots_by_share` | Snapshot count and density by share/time bucket without giant raw lists |
 | `list_drive_version_history` | Drive-managed version history for a file path |
 | `inspect_recycle_bin` | Recent files in share recycle bins across volumes |
 | `fetch_package_db` | Query a package SQLite DB in read-only mode — list tables or run SELECT/WITH/safe PRAGMA queries |

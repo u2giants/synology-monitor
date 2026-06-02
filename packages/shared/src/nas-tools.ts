@@ -930,11 +930,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const lines = clamp((input.lookback_hours as number ?? 4) * 10, 20, 80);
       return [
         "echo '=== SCHEDULED TASKS ==='",
-        "scheduler_roots='/host/usr/syno/etc /host/usr/syno/etc/schedule /host/usr/syno/etc/synotask /host/etc /host/etc/synotask /host/packages /host/packages/SnapshotReplication /host/packages/ReplicationService /host/log /usr/syno/etc /usr/syno/etc/schedule /usr/syno/etc/synotask /etc /etc/synotask /var/services /var/packages'",
+        "scheduler_roots='/host/usr/syno/etc/esynoscheduler /host/usr/syno/etc /host/usr/syno/etc/schedule /host/usr/syno/etc/synotask /host/etc /host/etc/synotask /host/packages /host/packages/SnapshotReplication /host/packages/ReplicationService /host/log /usr/syno/etc/esynoscheduler /usr/syno/etc /usr/syno/etc/schedule /usr/syno/etc/synotask /etc /etc/synotask /var/services /var/packages'",
         "dbs=$(",
         "  for root in $scheduler_roots; do",
         "    [ -d \"$root\" ] || continue",
-        "    find \"$root\" -maxdepth 5 \\( -iname '*scheduler*.db' -o -iname '*synoscheduler*.db' -o -iname '*task*.db' -o -iname '*schedule*.db' \\) 2>/dev/null",
+        "    find \"$root\" -maxdepth 5 \\( -iname '*scheduler*.db' -o -iname '*esynoscheduler*.db' -o -iname '*synoscheduler*.db' -o -iname '*task*.db' -o -iname '*schedule*.db' \\) 2>/dev/null",
         "  done | grep -Ei 'sched|task|cron' | sort -u | head -20",
         ")",
         "if [ -z \"$dbs\" ]; then",
@@ -980,8 +980,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "  if [ -z \"$SID\" ]; then",
         "    echo 'DSM WebAPI login failed; check DSM credentials/port.'",
         "  else",
-        "    curl -sfG \"$DSM_BASE\" --data-urlencode 'api=SYNO.Core.TaskScheduler' --data-urlencode 'version=4' --data-urlencode 'method=list' --data-urlencode 'offset=0' --data-urlencode 'limit=200' --data-urlencode \"_sid=$SID\" 2>/dev/null | head -c 20000",
-        "    echo ''",
+        "    for api_version in 3 2 1 4; do",
+        "      echo \"--- SYNO.Core.TaskScheduler v${api_version} list ---\"",
+        "      result=$(curl -sfG \"$DSM_BASE\" --data-urlencode 'api=SYNO.Core.TaskScheduler' --data-urlencode \"version=$api_version\" --data-urlencode 'method=list' --data-urlencode 'offset=0' --data-urlencode 'limit=200' --data-urlencode \"_sid=$SID\" 2>/dev/null)",
+        "      echo \"$result\" | head -c 20000",
+        "      echo ''",
+        "      echo \"$result\" | grep -q '\"success\":true' && break",
+        "    done",
         "    curl -sfG \"$DSM_BASE\" --data-urlencode 'api=SYNO.API.Auth' --data-urlencode 'version=7' --data-urlencode 'method=logout' --data-urlencode \"_sid=$SID\" >/dev/null 2>&1 || true",
         "  fi",
         "fi",
@@ -2166,7 +2171,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const rawQuery = (input.filter as string | undefined)?.trim();
       const query = rawQuery ? readOnlySql(rawQuery) : "";
       const pkgLower = pkg.toLowerCase();
-      const findCmd = `find /volume[0-9]*/@${pkgLower}/ /volume[0-9]*/@syno${pkgLower}/ /host/var/packages/${quote(pkg)}/var/ -maxdepth 5 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null`;
+      const findCmd = `find /volume[0-9]*/@${pkgLower}/ /volume[0-9]*/@syno${pkgLower}/ /host/packages/${quote(pkg)}/var/ /host/packages/${quote(pkg)}/target/ /host/var/packages/${quote(pkg)}/var/ /var/packages/${quote(pkg)}/var/ -maxdepth 6 \\( -name '*.db' -o -name '*.sqlite' \\) 2>/dev/null`;
       const lines: string[] = [
         `echo '=== PACKAGE DB: ${pkg} ==='`,
         `echo ''`,
@@ -2258,6 +2263,47 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "echo ''",
         "echo '=== NOTE ==='",
         "echo 'Snapshot sizes are intentionally omitted here: recursive size scans can create heavy disk metadata I/O. Use targeted path/version tools for a specific restore candidate.'",
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "summarize_snapshots_by_share",
+    description: "Summarizes visible Btrfs snapshots by share and creation-time bucket without dumping giant raw lists. Use to inspect Snapshot Replication retention density per shared folder. Optional filter narrows to a share/path fragment.",
+    write: false,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const nameFilter = (input.filter as string | undefined)?.trim();
+      const grepFilter = nameFilter ? ` | grep -i ${quote(nameFilter)}` : "";
+      return [
+        "echo '=== SNAPSHOT SUMMARY BY SHARE ==='",
+        "snapshot_rows=$(",
+        "  for v in /btrfs/volume[0-9]* /volume[0-9]*; do",
+        "    [ -d \"$v\" ] || continue",
+        "    fstype=$(findmnt -no FSTYPE \"$v\" 2>/dev/null)",
+        "    [ \"$fstype\" = 'btrfs' ] || continue",
+        "    btrfs subvolume list -s \"$v\" 2>/dev/null | sed -n 's/.* path //p' | head -5000 | while IFS= read -r rel; do",
+        "      [ -n \"$rel\" ] || continue",
+        "      share=$(printf '%s\\n' \"$rel\" | awk -F/ '",
+        "        $1==\"@sharesnap\" && NF>=2 {print $2; next}",
+        "        $1==\"@Recently-Snapshot\" && NF>=2 {print $2; next}",
+        "        $1 ~ /^@/ && NF>=2 {print $2; next}",
+        "        {print $1}",
+        "      ')",
+        "      stamp=$(printf '%s\\n' \"$rel\" | grep -oE 'GMT-[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-[0-9]{2}\\.[0-9]{2}\\.[0-9]{2}|[0-9]{4}[._-][0-9]{2}[._-][0-9]{2}[-_][0-9]{2}' | head -1)",
+        "      if [ -z \"$stamp\" ] && [ -e \"$v/$rel\" ]; then stamp=$(stat -c '%y' \"$v/$rel\" 2>/dev/null | cut -c1-13); fi",
+        "      [ -n \"$stamp\" ] || stamp='unknown-time'",
+        "      printf '%s|%s|%s|%s\\n' \"$v\" \"$share\" \"$stamp\" \"$rel\"",
+        "    done",
+        "  done",
+        ")",
+        `printf '%s\\n' "$snapshot_rows"${grepFilter} | awk -F'|' 'NF>=4 { total[$2]++; bucket[$2\"|\"$3]++; if (!first[$2] || $3 < first[$2]) first[$2]=$3; if (!last[$2] || $3 > last[$2]) last[$2]=$3 } END { if (length(total)==0) { print \"No visible snapshots matched.\"; exit } printf \"%-28s %8s %-22s %-22s\\n\", \"share\", \"count\", \"oldest_bucket\", \"newest_bucket\"; for (s in total) printf \"%-28s %8d %-22s %-22s\\n\", s, total[s], first[s], last[s] }' | sort`,
+        "echo ''",
+        "echo '=== SNAPSHOT DENSITY BY SHARE/TIME BUCKET ==='",
+        `printf '%s\\n' "$snapshot_rows"${grepFilter} | awk -F'|' 'NF>=4 { bucket[$2\"|\"$3]++ } END { for (k in bucket) { split(k, a, \"|\"); printf \"%-28s %-22s %6d\\n\", a[1], a[2], bucket[k] } }' | sort | head -200`,
+        "echo ''",
+        "echo '=== RECENT SAMPLE PATHS ==='",
+        `printf '%s\\n' "$snapshot_rows"${grepFilter} | sort -t'|' -k3,3r | head -80 | awk -F'|' '{printf \"%-16s %-24s %-22s %s\\n\", $1, $2, $3, $4}'`,
       ].join("\n");
     },
   },
@@ -3367,6 +3413,7 @@ export const TOOL_GROUPS: Record<string, string> = {
 
   // recovery
   list_snapshot_candidates: "recovery",
+  summarize_snapshots_by_share: "recovery",
   list_drive_version_history: "recovery",
   inspect_recycle_bin: "recovery",
   fetch_package_db: "recovery",

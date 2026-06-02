@@ -42,7 +42,7 @@ failures.
                          ┌───────────────────────────────────┐
                          │ nas-mcp (Node.js)                  │
                          │ nas-mcp.designflow.app/mcp         │
-                         │ 118-definition registry (lazy-load)      │
+                         │ 119-definition registry (lazy-load)      │
                          │ 5 always-on tools per session      │
                          └───────────────────────────────────┘
 ```
@@ -244,19 +244,19 @@ Five tools are registered eagerly on every request (`EAGER_TOOLS` in `src/index.
 
 | Always-on tool | Purpose |
 |---|---|
-| `tool_search({ query, limit })` | Search the 118-definition registry by keyword; returns names, descriptions, and parameter shapes as text |
+| `tool_search({ query, limit })` | Search the 119-definition registry by keyword; returns names, descriptions, and parameter shapes as text |
 | `invoke_tool({ name, target, args })` | Execute any registry tool by name |
 | `run_command({ target, command })` | Free-form tier-1-only shell command |
 | `check_disk_space({ target })` | Disk and inode usage across all volumes |
 | `restart_nas_api({ target, confirmed })` | Restart the NAS API container |
 
-The full 118-definition registry is in `packages/shared/src/nas-tools.ts` (the
+The full 119-definition registry is in `packages/shared/src/nas-tools.ts` (the
 `ALL_TOOL_DEFS` array). Clients discover tools with `tool_search` and execute them
-with `invoke_tool`. The registry is never loaded eagerly — loading all 118 schemas
+with `invoke_tool`. The registry is never loaded eagerly — loading all 119 schemas
 put ~50k tokens into every session and degraded it after ~10–15 tool calls.
 `restart_nas_api` is a special always-on MCP tool implemented in
-`apps/nas-mcp/src/index.ts`, so `tools-config.json` can have 119 enabled entries
-while `ALL_TOOL_DEFS` has 118 definitions.
+`apps/nas-mcp/src/index.ts`, so `tools-config.json` can have 120 enabled entries
+while `ALL_TOOL_DEFS` has 119 definitions.
 
 Tool enablement is controlled by `apps/nas-mcp/tools-config.json`. A tool present
 in `ALL_TOOL_DEFS` but absent from `enabled_read_tools` or `enabled_write_tools` is
@@ -620,9 +620,9 @@ Every HTTP request builds a new `McpServer`, handles the request, discards it.
 back session-resume 404s after Coolify restarts, and the claude.ai proxy's
 4-minute hang was traced to a stateful `GET /mcp` without a session ID.
 
-### NAS MCP exposes 5 tools but has a 118-definition registry
+### NAS MCP exposes 5 tools but has a 119-definition registry
 
-Pre-loading 118 schemas puts ~50k tokens into every session and degrades it after
+Pre-loading 119 schemas puts ~50k tokens into every session and degrades it after
 ~10–15 calls. Lazy-load via `tool_search` + `invoke_tool` keeps the always-on
 surface ~3k tokens. `notifications/tools/list_changed` is not used because Claude
 clients cache the initial `tools/list` and do not re-fetch on the notification.

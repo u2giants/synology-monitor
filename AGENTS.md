@@ -33,12 +33,12 @@ source of truth and are easy to audit.
 |---|---|---|---|
 | `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
 | `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
-| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes a 118-definition NAS tool registry to AI chat clients over Streamable HTTP/SSE |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes a 119-definition NAS tool registry to AI chat clients over Streamable HTTP/SSE |
 | `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, 3-stage issue-agent loop, operator UI |
 | `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
 `packages/shared` holds shared TypeScript types and the NAS tool definitions
-(built with Turbo). `ALL_TOOL_DEFS` currently contains 118 registry definitions;
+(built with Turbo). `ALL_TOOL_DEFS` currently contains 119 registry definitions;
 `restart_nas_api` is an extra always-on MCP tool implemented in
 `apps/nas-mcp/src/index.ts`. **One branch: `main`.** Push to `main` → GitHub Actions builds
 per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api are
@@ -52,7 +52,7 @@ picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 apps/
   agent/        Go — collectors + DSM client + SQLite WAL sender   (we own)
   nas-api/      Go — validator (allowlist/hard-blocks) + executor  (we own)
-  nas-mcp/      Node/TS — MCP server + 118-definition tool registry           (we own; dist/ generated)
+  nas-mcp/      Node/TS — MCP server + 119-definition tool registry           (we own; dist/ generated)
   web/          Next.js — dashboard + issue agent                  (we own src/; .next/ generated)
   relay/        Node .mjs — named-action proxy                     (we own)
 packages/shared/ shared TS types + NAS tool definitions            (we own src/; dist/ generated)
@@ -162,18 +162,18 @@ session ID stopped the claude.ai proxy's 4-minute hang (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 
-### NAS MCP exposes 5 tools but has a 118-definition registry
+### NAS MCP exposes 5 tools but has a 119-definition registry
 Looks like: most tools are broken/unregistered.
 Actually: deliberate lazy-load. `tools/list` returns only `tool_search`,
 `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`. Clients
 discover via `tool_search`, execute via `invoke_tool({name,target,args})`.
-Why: pre-loading 118 schemas put ~50k tokens into every session and degraded it
+Why: pre-loading 119 schemas put ~50k tokens into every session and degraded it
 after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
 
-`tools-config.json` currently has 79 read entries and 40 write entries. That total
-(119) is not the same as `ALL_TOOL_DEFS` (118) because `restart_nas_api` is a
+`tools-config.json` currently has 80 read entries and 40 write entries. That total
+(120) is not the same as `ALL_TOOL_DEFS` (119) because `restart_nas_api` is a
 special always-on write tool implemented in `apps/nas-mcp/src/index.ts`, not in
 the shared registry.
 

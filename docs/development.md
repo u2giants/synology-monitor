@@ -217,7 +217,7 @@ apps/nas-api/internal/
   auth/                — bearer token + HMAC verifier
 
 packages/shared/src/
-  nas-tools.ts         — 118 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
+  nas-tools.ts         — 119 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
 ```
 
 ## Database migrations

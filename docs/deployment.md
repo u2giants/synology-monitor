@@ -51,7 +51,7 @@ All workflows tag images three ways: `:latest`, `:sha-<short-sha>`, and `:main`.
 |---|---|---|
 | `ghcr.io/u2giants/synology-monitor-agent` | Go binary; telemetry collectors, SQLite WAL sender | Watchtower on each NAS |
 | `ghcr.io/u2giants/synology-monitor-nas-api` | Go binary; three-tier command validator and executor, port 7734 | Watchtower on each NAS |
-| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 118-definition tool registry | Coolify on VPS |
+| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 119-definition tool registry | Coolify on VPS |
 | `ghcr.io/u2giants/synology-monitor-web` | Next.js; dashboard, issue detector, issue-agent pipeline | Coolify on VPS |
 
 All images are public in GHCR under the `u2giants` organization. Tags: `:latest` (always the most recent main-branch build), `:sha-<short-sha>` (pinnable), `:main` (branch ref, same as latest on main).
