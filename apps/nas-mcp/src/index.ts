@@ -384,7 +384,7 @@ const httpServer = createServer(async (req, res) => {
 httpServer.keepAliveTimeout = 120_000;
 httpServer.headersTimeout = 125_000;
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`NAS MCP server listening on port ${PORT}`);
   console.log(`Registry: ${ALL_TOOL_DEFS.length} tools (${enabledRead.size} read + ${enabledWrite.size} write enabled)`);
   console.log(`Always-on: tool_search, invoke_tool, run_command, ${EAGER_TOOLS.join(", ")}`);

@@ -16,6 +16,7 @@ RUN npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app/apps/nas-mcp
+RUN apk add --no-cache curl
 COPY --from=builder /app/apps/nas-mcp/dist ./dist
 COPY --from=builder /app/apps/nas-mcp/node_modules ./node_modules
 # tools-config.json is copied at build time.
