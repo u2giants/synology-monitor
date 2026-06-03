@@ -118,6 +118,45 @@ func TestWriteAndUnsafeCommandsStillBlockedOrElevated(t *testing.T) {
 	}
 }
 
+func TestBlockExplanationIsActionableAndStateless(t *testing.T) {
+	// Non-blocked commands get no explanation.
+	if got := BlockExplanation("grep -i error /host/log/synolog/synostorage.log"); got != "" {
+		t.Fatalf("BlockExplanation on allowed command = %q, want empty", got)
+	}
+
+	// The recurring real case: recursive grep on a Drive store. The explanation
+	// must say it is permanent/stateless (not a rate/session limit) and point at
+	// the alternative, since this string is the only signal an MCP session gets.
+	driveGrep := "grep -r ERROR /host/shares/@synologydrive"
+	got := BlockExplanation(driveGrep)
+	if got == "" {
+		t.Fatal("BlockExplanation on blocked drive grep was empty")
+	}
+	for _, want := range []string{"permanent and stateless", "NOT a rate limit", "log file"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("drive-grep explanation missing %q; got: %s", want, got)
+		}
+	}
+
+	// Every hard-blocked command must produce a non-empty explanation (no silent
+	// blocks), and every one must carry the stateless footer.
+	for _, cmd := range []string{
+		"mkfs.ext4 /dev/sda1",
+		"reboot",
+		"useradd hacker",
+		"pip install requests",
+		"docker run --rm alpine true",
+	} {
+		exp := BlockExplanation(cmd)
+		if exp == "" {
+			t.Fatalf("hard-blocked %q produced empty explanation", cmd)
+		}
+		if !strings.Contains(exp, "NOT a rate limit") {
+			t.Fatalf("explanation for %q missing stateless footer; got: %s", cmd, exp)
+		}
+	}
+}
+
 func TestDockerAllowlistStillAppliesToActualDockerCommands(t *testing.T) {
 	if err := Validate("echo 'docker-compose.agent.yml is documentation text'", TierRead); err != nil {
 		t.Fatalf("quoted docker text should not trigger docker allowlist: %v", err)

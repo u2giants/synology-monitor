@@ -31,7 +31,7 @@ var (
 type execRequest struct {
 	Command       string `json:"command"`
 	Tier          int    `json:"tier"`
-	TimeoutMs     int64  `json:"timeout_ms,omitempty"`    // 0 → DefaultTimeout
+	TimeoutMs     int64  `json:"timeout_ms,omitempty"`     // 0 → DefaultTimeout
 	ApprovalToken string `json:"approval_token,omitempty"` // required for tier 2/3
 }
 
@@ -158,9 +158,17 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tier := validator.ClassifyTier(req.Command)
+	// On a hard-block, return WHY (actionable, and explicit that the block is
+	// permanent/stateless) instead of just echoing the command — that summary is
+	// the only signal an MCP session gets, and a bare echo is what makes sessions
+	// misread a refusal as "rate limit" / "session degradation".
+	summary := validator.Summary(req.Command)
+	if tier == -1 {
+		summary = validator.BlockExplanation(req.Command)
+	}
 	writeJSON(w, http.StatusOK, previewResponse{
 		Tier:    tier,
-		Summary: validator.Summary(req.Command),
+		Summary: summary,
 		Blocked: tier == -1,
 	})
 }

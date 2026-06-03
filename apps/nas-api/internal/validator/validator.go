@@ -14,6 +14,14 @@ const (
 	TierFile    = 3 // file ops: touches user data volumes; approval required
 )
 
+// driveRecursiveGrep matches a recursive grep/find against a Synology internal
+// data store. Extracted to named vars so BlockExplanation can describe exactly
+// this case without the pattern drifting from the hard-block below.
+var (
+	driveRecursiveGrepA = regexp.MustCompile(`(?i)\bgrep\b.*-[a-zA-Z]*[rR][a-zA-Z]*\s.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive)`)
+	driveRecursiveGrepB = regexp.MustCompile(`(?i)\bgrep\b.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive).*-[a-zA-Z]*[rR]`)
+)
+
 // hardBlocked is a list of patterns that are NEVER permitted regardless of tier.
 // These could brick the NAS, destroy data, modify the OS, or lock out admins.
 var hardBlocked = []*regexp.Regexp{
@@ -72,8 +80,8 @@ var hardBlocked = []*regexp.Regexp{
 	// These directories contain millions of opaque file objects; a recursive
 	// grep never returns useful results and will thrash disk I/O for days.
 	// Use targeted find -maxdepth or a database query instead.
-	regexp.MustCompile(`(?i)\bgrep\b.*-[a-zA-Z]*[rR][a-zA-Z]*\s.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive)`),
-	regexp.MustCompile(`(?i)\bgrep\b.*(@synologydrive|@SynologyDriveShareSync|/var/packages/SynologyDrive).*-[a-zA-Z]*[rR]`),
+	driveRecursiveGrepA,
+	driveRecursiveGrepB,
 	// Mount destructive operations
 	regexp.MustCompile(`(?i)\bumount\s+/volume`),
 	regexp.MustCompile(`(?i)\bmount\s+.*--bind.*/volume`),
@@ -323,6 +331,56 @@ func IsHardBlocked(command string) bool {
 		}
 	}
 	return false
+}
+
+// BlockExplanation returns a client-facing reason a command is hard-blocked.
+// Unlike Summary (which echoes the command), it states WHY, that the block is
+// permanent and stateless, and what to do instead. This is the only signal an
+// MCP session receives on a refusal — without it, sessions misread the block as
+// a "rate limit" or "session degradation" and give up. Returns "" if the command
+// is not hard-blocked.
+func BlockExplanation(command string) string {
+	if !IsHardBlocked(command) {
+		return ""
+	}
+	// This guard is stateless and pure: the same command is refused identically on
+	// every call. It is not a per-session quota and not a degradation symptom.
+	const footer = " This block is permanent and stateless — it is NOT a rate limit, quota, or session-degradation symptom, and it fired on the command pattern alone. Retrying it or starting a fresh session will return the exact same result; change the command instead."
+
+	switch {
+	case driveRecursiveGrepA.MatchString(command), driveRecursiveGrepB.MatchString(command):
+		return "Recursive grep against a Synology internal data store (@synologydrive / @SynologyDriveShareSync / the SynologyDrive package dir) is blocked: these hold millions of opaque objects and one such grep ran 4d11h on production before it was caught. Do this instead: grep a specific named log file non-recursively (e.g. @synologydrive/log/*.log or syncfolder.log), or query the monitoring database for historical data." + footer
+	case matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(mkfs|fdisk|parted|wipefs|flash_eraseall|nandwrite)\b`),
+		regexp.MustCompile(`(?i)\bdd\b.*\b(if=|of=/dev/|of=/proc/)`),
+		regexp.MustCompile(`(?i)\bmdadm\s+--fail\b`),
+		regexp.MustCompile(`(?i)\bhdparm\b`),
+	}):
+		return "This is a destructive disk/firmware operation that could brick the NAS or destroy an array, so it is blocked at every tier. There is no safe way to run it through this interface — use the DSM UI for planned maintenance." + footer
+	case matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(shutdown|reboot|poweroff|halt)\b`),
+		regexp.MustCompile(`(?i)\bsystemctl\s+(poweroff|halt|reboot)\b`),
+	}):
+		return "Powering off or rebooting the NAS is blocked here — do planned maintenance from the DSM UI so the shutdown is graceful." + footer
+	case matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(useradd|userdel|usermod|groupadd|groupdel)\b`),
+		regexp.MustCompile(`(?i)\bpasswd\s+\S`),
+	}):
+		return "User/group account changes are blocked to avoid locking out admins — manage accounts in DSM Control Panel." + footer
+	case matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(apt(-get)?|opkg)\s+(install|remove|purge)\b`),
+		regexp.MustCompile(`(?i)\bpip\s+install\b`),
+		regexp.MustCompile(`(?i)\bnpm\s+install\s+-g\b`),
+		regexp.MustCompile(`(?i)\bsynopkg\s+(install|uninstall|remove)\b`),
+	}):
+		return "Installing or removing packages on the host is blocked — it would mutate the NAS OS outside the monitored deploy path." + footer
+	case matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\bdocker\s+(run|create|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
+	}):
+		return "This docker subcommand grants host-level control and is outside the small monitor-stack allowlist, so it is blocked. Read-only docker (ps/stats/inspect/logs) and the monitor-agent compose ops are permitted." + footer
+	default:
+		return "This command matches a permanent safety rule (it could destroy data, modify the OS/firmware, manage accounts, or take the NAS offline)." + footer
+	}
 }
 
 // Summary returns a human-readable description of what a command does,
