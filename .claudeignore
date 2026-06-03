@@ -15,6 +15,7 @@ apps/agent/synology-monitor-agent
 .cache/
 .turbo/
 .claude/
+!.claude/settings.json
 
 # Lockfiles (read only when explicitly debugging dependency resolution)
 pnpm-lock.yaml
