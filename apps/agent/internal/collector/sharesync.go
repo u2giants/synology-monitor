@@ -41,9 +41,15 @@ const (
 )
 
 // path-extraction patterns, tried in order of specificity.
+// Quoted forms are tried first so that paths with spaces (e.g. 'Generic Decor/...') are
+// captured in full; the unquoted fallback handles paths without spaces.
 var (
-	rePathKeyword   = regexp.MustCompile(`(?:path|file)\s*[:=]\s*['"]?(/[^\s'">,\n]+)`)
-	reCheckBasis    = regexp.MustCompile(`Check basis file\s+['"]?(/[^\s'">,\n]+)`)
+	rePathKeywordQ  = regexp.MustCompile(`(?:path|file)\s*[:=]\s*'(/[^']+)'`)
+	rePathKeywordDQ = regexp.MustCompile(`(?:path|file)\s*[:=]\s*"(/[^"]+)"`)
+	rePathKeyword   = regexp.MustCompile(`(?:path|file)\s*[:=]\s*(/[^\s'">,\n]+)`)
+	reCheckBasisQ   = regexp.MustCompile(`Check basis file\s+'(/[^']+)'`)
+	reCheckBasisDQ  = regexp.MustCompile(`Check basis file\s+"(/[^"]+)"`)
+	reCheckBasis    = regexp.MustCompile(`Check basis file\s+(/[^\s'">,\n]+)`)
 	reVolumePath    = regexp.MustCompile(`(?:^|\s)(/volume\d+/[^\s'">,\n]+)`)
 )
 
@@ -194,12 +200,17 @@ func readNewLogLines(path, rotatedPath string, offset int64) (lines []string, ne
 }
 
 // extractPath returns the first absolute path found in a dscc.log line.
+// Quoted patterns are tried first to preserve spaces in folder names.
 func extractPath(line string) string {
-	if m := rePathKeyword.FindStringSubmatch(line); len(m) > 1 {
-		return strings.TrimRight(m[1], ".,;")
+	for _, re := range []*regexp.Regexp{rePathKeywordQ, rePathKeywordDQ, rePathKeyword} {
+		if m := re.FindStringSubmatch(line); len(m) > 1 {
+			return strings.TrimRight(m[1], ".,;")
+		}
 	}
-	if m := reCheckBasis.FindStringSubmatch(line); len(m) > 1 {
-		return strings.TrimRight(m[1], ".,;")
+	for _, re := range []*regexp.Regexp{reCheckBasisQ, reCheckBasisDQ, reCheckBasis} {
+		if m := re.FindStringSubmatch(line); len(m) > 1 {
+			return strings.TrimRight(m[1], ".,;")
+		}
 	}
 	if m := reVolumePath.FindStringSubmatch(line); len(m) > 1 {
 		return strings.TrimRight(m[1], ".,;")
