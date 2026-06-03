@@ -35,6 +35,17 @@ const TOOL_DEADLINE_MS = 45_000;
  */
 const EAGER_TOOLS = ["check_disk_space", "restart_nas_api"] as const;
 
+const MCP_INSTRUCTIONS = `
+This server intentionally exposes only 5 always-on tools per session:
+tool_search, invoke_tool, run_command, check_disk_space, restart_nas_api.
+
+For any NAS diagnostic or admin task, call tool_search first unless the task is exactly disk-space checking, free-form read-only shell diagnosis, or restarting nas-api. Most NAS tools are hidden from tools/list by design and must be discovered with tool_search, then executed with invoke_tool({ name, target, args }).
+
+Use target "edgesynology1", "edgesynology2", or "both". Write tools require a preview first; execute only by calling again with confirmed: true inside args after approval.
+
+HTTP access requires Authorization: Bearer <MCP_BEARER_TOKEN>. Do not invent or expose token values.
+`.trim();
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const configPath = resolve(__dirname, "../tools-config.json");
 const toolsConfig = JSON.parse(readFileSync(configPath, "utf8")) as {
@@ -181,7 +192,10 @@ function registerToolDef(server: McpServer, tool: McpToolDef): void {
 // ─── MCP server factory ───────────────────────────────────────────────────────
 
 function createMcpServer(): McpServer {
-  const server = new McpServer({ name: "synology-nas", version: "1.0.0" });
+  const server = new McpServer(
+    { name: "synology-nas", version: "1.0.0" },
+    { instructions: MCP_INSTRUCTIONS },
+  );
 
   // ── Always-on tool 1: tool_search ─────────────────────────────────────────
   server.tool(
