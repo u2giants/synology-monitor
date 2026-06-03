@@ -258,7 +258,7 @@ function createMcpServer(): McpServer {
   if (enabledRead.has("run_command")) {
     server.tool(
       "run_command",
-      "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution.",
+      "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution. A small set of commands is permanently hard-blocked regardless of how many you have run (e.g. recursive grep over @synologydrive/@SynologyDriveShareSync — grep a specific log file instead); a block is a stateless rule on the command pattern, never a rate limit or session limit, so retrying or reconnecting will not change it.",
       {
         target: z
           .enum(["edgesynology1", "edgesynology2", "both"])
