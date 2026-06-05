@@ -1,6 +1,6 @@
 # NAS MCP Server
 
-Exposes Synology NAS diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop) via the Model Context Protocol over Streamable HTTP at `/mcp`. Legacy SSE remains served at `/sse`.
+FastMCP server that exposes Synology NAS diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop) via the Model Context Protocol over Streamable HTTP at `/mcp`. Legacy SSE remains served at `/sse`.
 
 ## Connection
 
@@ -24,15 +24,15 @@ Claude Desktop / claude.ai client config:
 }
 ```
 
-**After any redeploy** (Coolify restarts the container), all in-memory MCP sessions are gone. Existing conversations holding a `mcp-session-id` will see a 404. Start a new conversation to get a fresh session.
+The server runs FastMCP in stateless HTTP Stream mode, so it does not rely on persistent `mcp-session-id` state across requests or redeploys.
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 119 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 119 were registered upfront). `restart_nas_api` is one of the 5 always-on tools and is implemented directly in `src/index.ts`, so enabled-tool counts in `tools-config.json` can be one higher than `ALL_TOOL_DEFS`.
+The server has a registry of 119 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 119 were registered upfront). FastMCP session-level instructions also tell clients to use `tool_search` before most NAS tasks, then `invoke_tool` with the exact operation name.
 
 | Always-on tool | Purpose |
 |---|---|
-| `tool_search({ query, limit })` | Search the registry by keyword. Returns names, descriptions, and parameter shapes as text. **Call this first** to discover the right tool. |
+| `tool_search({ query, limit })` | Search the registry by keyword. Returns names, descriptions, safety class, group, parameter shapes, and exact `invoke_tool` call shape as text. **Call this first** to discover the right tool. |
 | `invoke_tool({ name, target, args })` | Execute any registry tool by name. For write tools, include `confirmed: true` inside `args`. |
 | `run_command({ target, command })` | Free-form tier-1-only shell. Write commands are blocked by the NAS API validator. |
 | `check_disk_space({ target })` | Eager freebie — disk + inode usage across volumes. |
@@ -66,7 +66,7 @@ Multi-word queries require a tool to match **all** words (AND, not OR). When a q
 
 MCP supports `notifications/tools/list_changed`, but Claude clients cache the initial `tools/list` and do not re-fetch on the notification. So `tool_search` cannot register new tools mid-session. Returning schemas as text (which Claude then uses to construct an `invoke_tool` call) is the only mechanism that actually delivers the context savings on real clients.
 
-The server is also fully stateless (no `mcp-session-id`), so any dynamic registration would be discarded at the end of the request anyway.
+The server is also fully stateless, so dynamic registration would not provide durable context savings across requests anyway.
 
 ## NAS targets
 
@@ -117,7 +117,7 @@ The Node HTTP server has `keepAliveTimeout: 120s` / `headersTimeout: 125s` — a
 }
 ```
 
-Tools in the registry but not listed are compiled into the image but invisible to `tool_search` and rejected by `invoke_tool` with a "disabled in tools-config.json" message. This lets you ship a tool dark and enable it without a code deploy — edit the JSON and push. The special always-on `restart_nas_api` entry is enabled in this file but does not live in `ALL_TOOL_DEFS`.
+Tools in the registry but not listed are compiled into the image but invisible to `tool_search` and rejected by `invoke_tool` with a "disabled in tools-config.json" message. This lets you ship a tool dark and enable it without a code deploy — edit the JSON and push.
 
 Changes take effect on the next image build (push to `main` → GitHub Actions → Coolify redeploy).
 

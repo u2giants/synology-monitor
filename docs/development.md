@@ -95,7 +95,7 @@ curl http://localhost:7734/health
 # → {"status":"ok","build_sha":"dev","build_time":"unknown"}
 ```
 
-### NAS MCP server (Node.js)
+### NAS MCP server (Node.js + FastMCP)
 
 ```sh
 cd apps/nas-mcp
@@ -112,8 +112,12 @@ pnpm build            # compile TypeScript to dist/
 pnpm start            # runs dist/index.js on port 3001
 ```
 
-The MCP server is fully stateless. Every HTTP request builds a new `McpServer`,
-handles it, and discards state. Do not add session state.
+The MCP server uses TypeScript FastMCP with stateless HTTP Stream transport. Do
+not add persistent MCP session state. The always-on tool list should stay small:
+`tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, and
+`restart_nas_api`. Add registry capabilities in `packages/shared/src/nas-tools.ts`
+and let `tool_search` describe them clearly instead of registering all tools
+eagerly.
 
 ## Running tests
 

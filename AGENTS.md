@@ -153,13 +153,13 @@ agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-mon
 
 ## 10. Intentional quirks — do not "fix" these
 
-### NAS MCP is fully stateless (per-request McpServer)
-Looks like: a bug — every HTTP request builds a new `McpServer`, registers tools,
-handles the request, discards. No session map.
-Actually: deliberate (`sessionIdGenerator: undefined`, `enableJsonResponse: true`).
-Why: Coolify restarts wipe in-memory sessions; statelessness eliminates "stale
-session 404" after redeploys, and a stateless transport for `GET /mcp` without a
-session ID stopped the claude.ai proxy's 4-minute hang (see incidents).
+### NAS MCP is fully stateless (FastMCP HTTP Stream)
+Looks like: a bug — the server refuses to rely on persistent MCP session state.
+Actually: deliberate. `apps/nas-mcp` uses TypeScript FastMCP with
+`transportType: "httpStream"` and `stateless: true`.
+Why: Coolify restarts wipe in-memory sessions; statelessness eliminates stale
+session problems after redeploys, and avoids the claude.ai proxy's old 4-minute
+hang class (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 

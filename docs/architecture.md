@@ -232,11 +232,12 @@ group on timeout, not just the bash parent — preventing orphaned subprocesses
 
 ## NAS MCP (`apps/nas-mcp`)
 
-Node.js MCP server at `nas-mcp.designflow.app/mcp`. AI chat clients (claude.ai,
-Claude Desktop) connect over Streamable HTTP. The server is **fully stateless** —
-every request builds a new `McpServer`, handles the request, and discards it.
-No `mcp-session-id` is tracked. This eliminates stale-session 404s after redeploys
-and the 4-minute hang that stateful transport caused via the claude.ai proxy.
+FastMCP Node.js server at `nas-mcp.designflow.app/mcp`. AI chat clients
+(claude.ai, Claude Desktop) connect over Streamable HTTP. The server is
+**fully stateless** (`transportType: "httpStream"`, `stateless: true`) and does
+not rely on persistent `mcp-session-id` state. This eliminates stale-session
+problems after redeploys and avoids the 4-minute hang class that stateful
+transport caused via the claude.ai proxy.
 
 ### Tool surface
 
@@ -244,7 +245,7 @@ Five tools are registered eagerly on every request (`EAGER_TOOLS` in `src/index.
 
 | Always-on tool | Purpose |
 |---|---|
-| `tool_search({ query, limit })` | Search the 119-definition registry by keyword; returns names, descriptions, and parameter shapes as text |
+| `tool_search({ query, limit })` | Search the 119-definition registry by keyword; returns names, descriptions, safety class, groups, parameter shapes, and exact `invoke_tool` call shape as text |
 | `invoke_tool({ name, target, args })` | Execute any registry tool by name |
 | `run_command({ target, command })` | Free-form tier-1-only shell command |
 | `check_disk_space({ target })` | Disk and inode usage across all volumes |
@@ -254,9 +255,8 @@ The full 119-definition registry is in `packages/shared/src/nas-tools.ts` (the
 `ALL_TOOL_DEFS` array). Clients discover tools with `tool_search` and execute them
 with `invoke_tool`. The registry is never loaded eagerly — loading all 119 schemas
 put ~50k tokens into every session and degraded it after ~10–15 tool calls.
-`restart_nas_api` is a special always-on MCP tool implemented in
-`apps/nas-mcp/src/index.ts`, so `tools-config.json` can have 120 enabled entries
-while `ALL_TOOL_DEFS` has 119 definitions.
+FastMCP session-level instructions tell clients to call `tool_search` before most
+NAS tasks and then call `invoke_tool` with the exact returned operation name.
 
 Tool enablement is controlled by `apps/nas-mcp/tools-config.json`. A tool present
 in `ALL_TOOL_DEFS` but absent from `enabled_read_tools` or `enabled_write_tools` is
