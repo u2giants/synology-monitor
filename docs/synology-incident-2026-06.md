@@ -240,3 +240,221 @@ The incident evidence supports this working conclusion:
 - the investigated April 27 update itself was normal on `edgesynology2`
 - `edgesynology1` later presented the same content through broken local directory metadata
 - broader Decor discrepancies also exist and should not be collapsed into the same root cause without further evidence
+
+---
+
+# Additional Incidents — Catalogue (Past 2 Months)
+
+The sections above focus on a single investigation cluster: "missing files" that turned out
+to be local metadata corruption plus broader Decor tree discrepancies. For completeness, this
+catalogue records the **other distinct problems** seen on either NAS in the April–June 2026
+window that are not covered above. Each is a separate root cause and is listed with its own
+symptom / cause / fix / status. Source of record for the May entries is the
+`u2giants/albert-standards` issue history; the two June entries were verified by live
+`synology-monitor` MCP inspection.
+
+Quick index:
+
+| # | Incident | Unit(s) | Class | Status |
+|---|----------|---------|-------|--------|
+| A | Aquantia AQC107 `eth0` driver instability → bond migrated to `eth1`+`eth2` | both | Network / NIC | Resolved (bond on Intel i210 ports) |
+| B | `eth2` acquired unexpected DHCP IP `192.168.0.115` | edgesynology2 | Network config | Resolved |
+| C | BTRFS `corruption_errs 25` (cumulative counter) | edgesynology2 | Storage / BTRFS | Resolved (not a current concern) |
+| D | `/volume1/mac` share root mode `0000` → ShareSync `SynoEAStream` errors | edgesynology1 | Permissions / ShareSync | Resolved |
+| E | `IML\eperestrelo` denied access to `styleguides` (Disney/Mickey) | edgesynology1 | Sharing / Drive Team Folder | **Open** |
+| F | ShareSync repeated-download / re-index loop on a 204 MB Decor `.tif` | edgesynology1 (peer: edgesynology2) | Sync convergence | **Open** |
+
+---
+
+## Incident A — Aquantia AQC107 `eth0` driver instability; bond migrated off `eth0`
+
+**Units affected:** both (root cause identical on each)
+**Date:** identified 2026-05-14
+**Status:** Resolved — bond rebuilt on `eth1`+`eth2`; `eth0` excluded
+
+### Symptom
+`edgesynology2` `eth1` intermittently showed `NO-CARRIER`; `edgesynology1` `eth0` accumulated a
+rising Link Failure Count in `/proc/net/bonding/bond0`. ShareSync `bio error` entries (codes
+-1, -2, -3) appeared in `/volume1/@synologydrive/log/syncfolder.log` clustered around the
+network-instability events.
+
+### Root cause
+The DS1621xs+ has three NICs: one Aquantia AQC107 (`eth0`, 10GbE, `atlantic` driver) and two
+Intel i210 (`eth1`/`eth2`, 1GbE, `igb` driver). The `atlantic` driver spontaneously drops link
+on `eth0` on **both** units. `dmesg` confirmed repeated `atlantic: link change old 1000 new 0`
+cycles. Four brand-new cables were tried and ruled out a physical-cable fault — the link-failure
+count kept incrementing during the swaps. The Aquantia chip/driver combination is inherently
+unstable on this DSM version.
+
+### Fix applied
+`eth0` removed from the bond on both units; bond rebuilt using `eth1`+`eth2` only (both Intel
+i210, which are reliable). Done via DSM Control Panel → Network → Bond edit.
+
+### Outcome / notes
+The ShareSync `bio errors` correlate directly with the bond link drops, so they should stop once
+the bond is stable on the Intel ports. DSM's bond UI hides individual slave failures (it shows
+"Connected" as long as one slave is up) — always read `/proc/net/bonding/bond0` directly rather
+than trusting the UI.
+
+---
+
+## Incident B — `eth2` acquired an unexpected DHCP IP (`192.168.0.115`)
+
+**Units affected:** edgesynology2
+**Date:** 2026-05-14
+**Status:** Resolved
+
+### Symptom
+`ip addr show eth2` on `edgesynology2` showed `192.168.0.115/22` on a standalone, non-bonded
+interface.
+
+### Root cause
+`eth2` was configured for DHCP in DSM and had been left uncabled. When a cable was plugged into
+it during the bond-migration work (Incident A), it pulled a DHCP lease.
+
+### Fix applied
+`eth2` added to the bond — DSM automatically strips the standalone DHCP IP once an interface
+becomes a bond slave.
+
+### Outcome / notes
+Harmless side effect of the bond work, but worth clearing whenever `eth2` is cabled before it is
+enslaved to the bond.
+
+---
+
+## Incident C — BTRFS `corruption_errs 25` on `edgesynology2`
+
+**Units affected:** edgesynology2
+**Date:** 2026-05-14
+**Status:** Resolved — not a current concern
+
+### Symptom
+`btrfs device stats /volume1` reported `corruption_errs 25` on `edgesynology2`.
+
+### Root cause
+Old, already-repaired errors. The BTRFS `corruption_errs` counter is **cumulative and never
+resets**, even after a scrub repairs the affected blocks. A scrub had completed ~12 hours earlier
+with a clean result (no errors found).
+
+### Fix applied
+None needed.
+
+### Outcome / notes
+The authoritative health signal is the **scrub result**, not the cumulative counter. A non-zero
+`corruption_errs` value after a clean scrub is expected and benign. (For reference, the baseline
+is `edgesynology1` = 0, `edgesynology2` = 25.)
+
+---
+
+## Incident D — `/volume1/mac` share root at mode `0000` → ShareSync `SynoEAStream` errors
+
+**Units affected:** edgesynology1
+**Date:** 2026-05-14
+**Status:** Resolved
+
+### Symptom
+ShareSync logs showed `mac@SynoEAStream` errors; `/volume1/mac` on `edgesynology1` was
+inaccessible.
+
+### Root cause
+`/volume1/mac` (the share root) had permissions `0000` and incorrect ownership, which prevented
+ShareSync from reading the extended attributes it needs.
+
+### Fix applied
+Permissions set to `0777` and ownership set to `1024:users` (matching the healthy state on
+`edgesynology2`).
+
+### Outcome / notes
+`mac@SynoEAStream` errors cleared. **Related:** this share-root `0000` corruption is very likely
+the same failure mechanism as the subfolder `0000` / unresolved-numeric-owner corruption
+documented in the "missing files" cluster above (e.g. `PPS Photos`, `_old`) — same unit, same
+mode, same `mac` share — just at a different scope and date. The open question of *what process
+rewrites this metadata to `0000`* (see Open Questions above) applies to this incident too.
+
+---
+
+## Incident E — `IML\eperestrelo` denied access to `styleguides` (Disney/Mickey)
+
+**Units affected:** edgesynology1
+**Date:** investigated 2026-06 (live)
+**Status:** OPEN — action proposed but not executed; root cause not fully confirmed
+
+### Symptom
+User `eperestrelo` cannot reach content under the `styleguides` Team Folder (specifically
+`Disney/Mickey/` and other brand folders). The user is real and Synology Drive did log activity
+for them — `eperestrelo` appears in `/volume1/@synologydrive/log/cloud-workerd.log`.
+
+### Investigation findings (live MCP)
+- `/volume1/styleguides` is a **Windows-ACL-mode share**. `ls` shows the share root as
+  `d---------` (000) and the brand folders as `drwx------` — this is the normal *cosmetic*
+  display for an AD-joined ACL-mode share; the **real** permissions live in the Windows ACLs
+  (synoacl), not in the POSIX bits.
+- Therefore the earlier diagnosis's central inference — "POSIX shows owner-only, so the block must
+  be at the Drive Team Folder layer, not the filesystem" — **does not hold**. On an ACL-mode
+  share the POSIX bits are not authoritative, so a deny could equally live at the share/ACL layer.
+- The earlier diagnosis's specific internals (`styleguides = ViewId 18`; `eperestrelo` has
+  `view_id = 51`; ViewId 18 membership = only the `@styleguides` service account) **could not be
+  verified**: there is no `psql`/sqlite client on the NAS to read the Drive membership DB, and the
+  MCP session degraded before deeper log inspection completed.
+
+### Proposed (unverified) fix
+Add `IML\eperestrelo` as a member of the `styleguides` Team Folder in Drive Admin Console →
+Team Folder → styleguides → Members (Read-Only or Read & Write per role). This is a reasonable,
+low-risk action and matches how Drive Team Folder access works — but because this is an ACL-mode
+share, the **actual Windows ACL on the folder should also be checked**, since if the block is at
+the ACL layer, adding a Drive member alone will not fix it.
+
+### Open items
+- Verify real ACL (synoacl) on `Disney/Mickey` and the `styleguides` root.
+- Confirm/deny the ViewId/membership claims via the Drive DB once a tool is available.
+- This is an access-control change → must be performed by Albert in the admin console, not by
+  the assistant.
+
+---
+
+## Incident F — ShareSync repeated-download / re-index loop on a 204 MB Decor `.tif`
+
+**Units affected:** edgesynology1 (active loop); peer `edgesynology2` (192.168.3.101) and client
+`10.0.5.5` are the repeat requesters
+**Date:** files created 2026-06-01 ~20:28; loop still active 2026-06-02 21:40 at time of review
+**Status:** OPEN — real and active; root cause not yet pinned; earlier proposed fix would NOT
+have resolved it
+
+### Symptom
+A single file loops endlessly through ShareSync:
+`/volume1/mac/Decor/Generic Decor/_New structure/AA1/16x16/AA166MSFSH06/ART/AA166MSFSH06_16x16x1_Printed Canvas w Foil_Chanel Perfume Bottle Gold Heart_ART.tif`
+(204 MB, `node 1224283`, `sync_id 1909890`). The file has 7 zero-byte `*_Conflict.tif` siblings
+created simultaneously on 2026-06-01 ~20:28 from 7 client machines (DESKTOP-FFV7J81,
+DESKTOP-R78HRI5, JESS-ASUS, MSI, PEREGRINE, SANGEL, ZAR-LAPTOP) — a 7-way simultaneous-save
+collision.
+
+### Investigation findings (live MCP) — corrects the earlier diagnosis
+- The loop is a **download / re-index loop**, not an upload-failure loop. The log shows
+  `download-handler` running `PrepareWholeFile ... success` and `Download Done`, immediately
+  followed by `<RepeatedDownloadReq> ... re-index it`, repeating roughly every few seconds.
+- The earlier diagnosis described an **upload** mechanism (NativeUpload worker, reverse-delta
+  failure, whole-file upload failure, "File not modified … fake event"). **None of those strings
+  appear in the log for this file** ("fake event", "NativeUpload", "reverse delta", "upload" =
+  zero matches). That mechanism is not what is happening.
+- The repeat requesters are the **peer NAS** `192.168.3.101` (= edgesynology2) and a client at
+  `10.0.5.5`, under user `ahazan (1033)`, `view 'mac' (20)`, `serversync(DiskStation)` — i.e. a
+  server-to-server ShareSync convergence problem between the two units plus one client, that never
+  settles.
+- **The 7 conflict files are referenced ZERO times in the entire log.** They are a *symptom* of
+  the same original 7-way save collision, but they are not driving the loop.
+- Volume: ~1,178 `RepeatedDownloadReq` events on this one file in a two-hour window (445 in the
+  20:00 hour, 733 in the 21:00 hour), still firing at review time.
+
+### Why the earlier proposed fix was rejected
+The earlier proposal was "delete the 7 zero-byte `*_Conflict.tif` files and the queue jam will
+clear." Since the conflict files are never referenced in the loop and the loop is on the main
+`.tif`, deleting the conflict files is reasonable hygiene but has **no evidentiary basis for
+stopping the loop**. No deletion was performed.
+
+### Open items / recommended next steps
+- Trace `sync_id 1909890` / `node 1224283` to find why this file never converges between the two
+  units and the `10.0.5.5` client (index/hash mismatch, or a two-NAS sync ping-pong).
+- Note this lives in the same `Generic Decor` tree as the static "70 files missing" comparison
+  documented in the June 2026 entry above, but it is a **distinct** problem (a live sync loop on
+  one file, not a static old-vs-current diff).
+- Any file deletion here must be performed by Albert, not the assistant.
