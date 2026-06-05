@@ -244,11 +244,11 @@ the MCP server. Changes require a push to `main`.
 }
 ```
 
-Tool definitions live in `packages/shared/src/nas-tools.ts`. A normal registry
-tool must appear in both the definitions file and `tools-config.json` to be
-callable. `restart_nas_api` is the exception: it is an always-on MCP tool
-implemented in `apps/nas-mcp/src/index.ts`, so it appears in `tools-config.json`
-but not in `ALL_TOOL_DEFS`.
+Tool definitions live in `packages/shared/src/nas-tools.ts`. A registry tool must
+appear in both the definitions file and `tools-config.json` to be callable through
+`invoke_tool`. `check_disk_space` and `restart_nas_api` are also registered
+eagerly by `apps/nas-mcp/src/index.ts`, so they are directly callable even though
+they remain normal shared registry definitions.
 
 ---
 

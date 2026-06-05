@@ -1,6 +1,6 @@
 # NAS MCP Server
 
-FastMCP server that exposes Synology NAS diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop) via the Model Context Protocol over Streamable HTTP at `/mcp`. Legacy SSE remains served at `/sse`.
+FastMCP server that exposes Synology NAS diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop, Codex) via the Model Context Protocol over Streamable HTTP at `/mcp`.
 
 ## Connection
 
@@ -8,8 +8,6 @@ FastMCP server that exposes Synology NAS diagnostic + remediation tools to AI ch
 |---|---|
 | **URL** | `https://nas-mcp.designflow.app/mcp` |
 | **Transport** | Streamable HTTP |
-| **Legacy URL** | `https://nas-mcp.designflow.app/sse` |
-| **Legacy transport** | SSE (still served, but prefer `/mcp`) |
 | **Auth** | `Authorization: Bearer <MCP_BEARER_TOKEN>` |
 
 Claude Desktop / claude.ai client config:
@@ -104,8 +102,6 @@ Three layers protect against NAS-side hangs:
 
 HTTP client uses `AbortController` + `setTimeout` (not `AbortSignal.timeout()`) and sets `Connection: close` to prevent undici keep-alive pool exhaustion.
 
-The Node HTTP server has `keepAliveTimeout: 120s` / `headersTimeout: 125s` — above Traefik's 90s idle — so Traefik never reuses a connection Node has already closed.
-
 ## Enabling / disabling tools
 
 `tools-config.json` controls which registry tools are invokable:
@@ -123,7 +119,7 @@ Changes take effect on the next image build (push to `main` → GitHub Actions �
 
 ## Registry catalog
 
-The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All are invoked via `invoke_tool({ name, target, args })`, except `check_disk_space` / `restart_nas_api` / `run_command` which are also directly callable as always-on tools.
+The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All registry tools are invoked via `invoke_tool({ name, target, args })`; `check_disk_space` and `restart_nas_api` are also directly callable because `apps/nas-mcp/src/index.ts` registers them eagerly. `run_command` is a separate always-on free-form read-only shell tool.
 
 ### Group `system` (11)
 

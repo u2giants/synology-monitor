@@ -294,9 +294,6 @@ mints the HMAC token and passes it to `POST /exec`.
 - `Connection: close` on every nas-api request — prevents undici pool exhaustion
   when timed-out requests do not return their socket (sub-ms Tailscale RTT makes
   re-handshake cost negligible).
-- Node HTTP server: `keepAliveTimeout: 120s` / `headersTimeout: 125s` — above
-  Traefik's 90s idle timeout so Traefik never reuses a socket Node has already
-  closed.
 - Tool deadline: 45s hard cap per `invoke_tool` call, implemented in
   `withToolDeadline`. Returns a clear timeout error rather than holding the
   connection until Claude's 4-minute client timeout.
@@ -642,12 +639,13 @@ defaults.
 bad row failing the whole PostgREST batch silently froze ingestion for ~19h/23d.
 The agent governs what it writes; the sender isolates bad rows.
 
-### NAS MCP is fully stateless (per-request McpServer)
+### NAS MCP is fully stateless (FastMCP HTTP Stream)
 
-Every HTTP request builds a new `McpServer`, handles the request, discards it.
-`sessionIdGenerator: undefined`, `enableJsonResponse: true`. Stateful mode brings
-back session-resume 404s after Coolify restarts, and the claude.ai proxy's
-4-minute hang was traced to a stateful `GET /mcp` without a session ID.
+`apps/nas-mcp` uses TypeScript FastMCP with `transportType: "httpStream"` and
+`stateless: true`. It does not depend on persistent `mcp-session-id` state across
+requests or redeploys. Stateful mode brings back session-resume failures after
+Coolify restarts, and the claude.ai proxy's old 4-minute hang class was traced to
+stateful transport behavior.
 
 ### NAS MCP exposes 5 tools but has a 119-definition registry
 

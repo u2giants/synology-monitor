@@ -14,6 +14,13 @@ Commit: this fix was applied on May 14 and deployed directly to the running cont
 
 **This document has been updated to correct the earlier wrong assessment of the stateless-GET approach.** The previous attempt in `336348d` was reverted because it correlated with a regression, but that implementation may have differed in a way that broke things. The correctly-scoped fix (stateless mode only for GET without session ID) works and is verified.
 
+**Current-state note (2026-06-05):** `apps/nas-mcp` now runs on TypeScript
+FastMCP with `transportType: "httpStream"` and `stateless: true`. The historical
+Node `keepAliveTimeout` / `headersTimeout` setting described below is not present
+in the current FastMCP implementation. Preserve the current invariants instead:
+stateless transport, `Connection: close` for NAS API requests, bounded NAS API
+HTTP calls, and the 45s MCP tool deadline.
+
 ---
 
 It answers five questions:
@@ -374,7 +381,7 @@ That proved the 403 came from the NAS API validator and was not a Claude UI arti
 Desired current state (as of May 14 2026):
 
 - keep the timeout and connection-management fixes
-- keep the `keepAliveTimeout` increase
+- keep the current transport/timeout invariants documented at the top of this file
 - keep the reduced-cost read-tool behavior
 - keep `enableJsonResponse: true`
 - keep the May 14 stateless-GET fix: `GET /mcp` without `Mcp-Session-Id` → stateless transport (`sessionIdGenerator: undefined`) → 200 OK SSE stream

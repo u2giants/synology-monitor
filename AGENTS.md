@@ -33,14 +33,14 @@ source of truth and are easy to audit.
 |---|---|---|---|
 | `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
 | `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
-| `apps/nas-mcp` | Node/TS | VPS (Coolify) | MCP server — exposes a 119-definition NAS tool registry to AI chat clients over Streamable HTTP/SSE |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | FastMCP server — exposes a 119-definition NAS tool registry to AI chat clients over Streamable HTTP |
 | `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, 3-stage issue-agent loop, operator UI |
 | `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
 `packages/shared` holds shared TypeScript types and the NAS tool definitions
-(built with Turbo). `ALL_TOOL_DEFS` currently contains 119 registry definitions;
-`restart_nas_api` is an extra always-on MCP tool implemented in
-`apps/nas-mcp/src/index.ts`. **One branch: `main`.** Push to `main` → GitHub Actions builds
+(built with Turbo). `ALL_TOOL_DEFS` currently contains 119 registry definitions,
+including `restart_nas_api`; `apps/nas-mcp/src/index.ts` eagerly registers that
+tool alongside `check_disk_space`. **One branch: `main`.** Push to `main` → GitHub Actions builds
 per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api are
 picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 `qnjimovrsaacneqkggsn`) is the shared data layer between agent (writes) and web
@@ -173,20 +173,15 @@ after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
 
-`tools-config.json` currently has 80 read entries and 40 write entries. That total
-(120) is not the same as `ALL_TOOL_DEFS` (119) because `restart_nas_api` is a
-special always-on write tool implemented in `apps/nas-mcp/src/index.ts`, not in
-the shared registry.
+`tools-config.json` enables a subset of the 119 shared definitions. Always-on does
+not mean separate from the registry: `check_disk_space` and `restart_nas_api` are
+shared definitions that `apps/nas-mcp/src/index.ts` registers eagerly.
 
 ### `Connection: close` on every nas-api request (from nas-mcp/web)
 Looks like: throws away HTTP keep-alive.
 Actually: required — timed-out requests don't return their socket to undici's pool,
 so after ~10–15 calls the pool exhausts and calls hang. NAS API is local over
 Tailscale (sub-ms RTT), so re-handshake cost is negligible.
-
-### Node `keepAliveTimeout: 120s` / `headersTimeout: 125s` on nas-mcp
-Set above Traefik's 90s idle timeout so Traefik never reuses a socket Node already
-closed (fixed "Tool result could not be submitted").
 
 ### Sender isolates one bad row instead of failing the whole batch
 Looks like: extra complexity in `apps/agent/internal/sender/sender.go` (`postRows`).
@@ -421,7 +416,7 @@ still be rotated by the owner.**
 Fix: validator hard-block list + process-group kill in `executor.go`.
 
 ### 2026-05 — Claude MCP sessions hanging / failing
-Fix: stateless transport; `Connection: close`; `keepAliveTimeout 120s`.
+Fix: stateless transport; `Connection: close`; bounded NAS API calls; 45s MCP tool deadline.
 Full writeup: [docs/mcp-incident-2026-05.md](docs/mcp-incident-2026-05.md).
 
 ### 2026-06 — NAS API crash-loop from invalid Go regexp
