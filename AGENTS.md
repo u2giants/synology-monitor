@@ -163,13 +163,14 @@ hang class (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 
-### NAS MCP exposes 5 tools but has a 119-definition registry
+### NAS MCP exposes 7 small tools but has a 119-definition registry
 Looks like: most tools are broken/unregistered.
-Actually: deliberate lazy-load. `tools/list` returns only `tool_search`,
-`invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`. Clients
-discover via `tool_search`, execute via `invoke_tool({name,target,args})`.
+Actually: deliberate lazy-load. `tools/list` returns only `list_capabilities`,
+`get_capability_details`, `tool_search`, `invoke_tool`, `run_command`,
+`check_disk_space`, and `restart_nas_api`. Clients browse/search/detail on demand
+and execute via `invoke_tool({name,target,args})`.
 Why: pre-loading 119 schemas put ~50k tokens into every session and degraded it
-after ~10–15 calls; lazy-load keeps the always-on surface ~3k tokens.
+after ~10–15 calls; lazy-load keeps the always-on surface compact.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
 

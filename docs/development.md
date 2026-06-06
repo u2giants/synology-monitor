@@ -114,10 +114,10 @@ pnpm start            # runs dist/index.js on port 3001
 
 The MCP server uses TypeScript FastMCP with stateless HTTP Stream transport. Do
 not add persistent MCP session state. The always-on tool list should stay small:
-`tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, and
-`restart_nas_api`. Add registry capabilities in `packages/shared/src/nas-tools.ts`
-and let `tool_search` describe them clearly instead of registering all tools
-eagerly.
+`list_capabilities`, `get_capability_details`, `tool_search`, `invoke_tool`,
+`run_command`, `check_disk_space`, and `restart_nas_api`. Add registry
+capabilities in `packages/shared/src/nas-tools.ts` and let catalog/search/detail
+describe them clearly instead of registering all tools eagerly.
 
 ## Running tests
 

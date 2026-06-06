@@ -43,7 +43,7 @@ failures.
                          │ nas-mcp (Node.js)                  │
                          │ nas-mcp.designflow.app/mcp         │
                          │ 119-definition registry (lazy-load)      │
-                         │ 5 always-on tools per session      │
+                         │ 7 small always-on tools/session    │
                          └───────────────────────────────────┘
 ```
 
@@ -241,10 +241,12 @@ transport caused via the claude.ai proxy.
 
 ### Tool surface
 
-Five tools are registered eagerly on every request (`EAGER_TOOLS` in `src/index.ts`):
+Seven small tools are registered eagerly on every request:
 
 | Always-on tool | Purpose |
 |---|---|
+| `list_capabilities({ group, safety, limit })` | Browse enabled operations by group/safety without invoking anything |
+| `get_capability_details({ name })` | Return one operation's full contract, examples, safety metadata, and related tools |
 | `tool_search({ query, limit })` | Search the 119-definition registry by keyword; returns names, descriptions, safety class, groups, parameter shapes, and exact `invoke_tool` call shape as text |
 | `invoke_tool({ name, target, args })` | Execute any registry tool by name |
 | `run_command({ target, command })` | Free-form tier-1-only shell command |
@@ -252,11 +254,12 @@ Five tools are registered eagerly on every request (`EAGER_TOOLS` in `src/index.
 | `restart_nas_api({ target, confirmed })` | Restart the NAS API container |
 
 The full 119-definition registry is in `packages/shared/src/nas-tools.ts` (the
-`ALL_TOOL_DEFS` array). Clients discover tools with `tool_search` and execute them
+`ALL_TOOL_DEFS` array). Clients browse with `list_capabilities`, inspect one
+operation with `get_capability_details`, search with `tool_search`, and execute
 with `invoke_tool`. The registry is never loaded eagerly — loading all 119 schemas
 put ~50k tokens into every session and degraded it after ~10–15 tool calls.
-FastMCP session-level instructions tell clients to call `tool_search` before most
-NAS tasks and then call `invoke_tool` with the exact returned operation name.
+FastMCP session-level instructions tell clients to browse/search/detail before
+most NAS tasks and then call `invoke_tool` with the exact returned operation name.
 
 Tool enablement is controlled by `apps/nas-mcp/tools-config.json`. A tool present
 in `ALL_TOOL_DEFS` but absent from `enabled_read_tools` or `enabled_write_tools` is
@@ -647,12 +650,13 @@ requests or redeploys. Stateful mode brings back session-resume failures after
 Coolify restarts, and the claude.ai proxy's old 4-minute hang class was traced to
 stateful transport behavior.
 
-### NAS MCP exposes 5 tools but has a 119-definition registry
+### NAS MCP exposes 7 small tools but has a 119-definition registry
 
 Pre-loading 119 schemas puts ~50k tokens into every session and degrades it after
-~10–15 calls. Lazy-load via `tool_search` + `invoke_tool` keeps the always-on
-surface ~3k tokens. `notifications/tools/list_changed` is not used because Claude
-clients cache the initial `tools/list` and do not re-fetch on the notification.
+~10–15 calls. Lazy-load via catalog/search/detail + `invoke_tool` keeps the
+always-on surface compact. `notifications/tools/list_changed` is not used because
+Claude clients cache the initial `tools/list` and do not re-fetch on the
+notification.
 
 ### HMAC approval tokens are never persisted
 

@@ -35,7 +35,8 @@ const EAGER_TOOLS = ["check_disk_space", "restart_nas_api"] as const;
 
 const MCP_INSTRUCTIONS = `
 This NAS MCP intentionally exposes only a small always-on tool surface:
-tool_search, invoke_tool, run_command, check_disk_space, and restart_nas_api.
+list_capabilities, get_capability_details, tool_search, invoke_tool, run_command,
+check_disk_space, and restart_nas_api.
 
 For any NAS diagnostic, troubleshooting, recovery, storage, Drive/ShareSync,
 backup, package, log, filesystem, snapshot, permission, or admin task, call
@@ -43,9 +44,11 @@ tool_search first unless the task is exactly disk-space checking, free-form
 read-only shell diagnosis, or restarting nas-api. Most NAS capabilities are
 hidden from tools/list by design to keep the AI session context small.
 
-tool_search returns clear operation descriptions plus the exact invoke_tool call
-shape. After choosing a capability, call invoke_tool with the exact returned
-name, target, and args. Use target "edgesynology1", "edgesynology2", or "both".
+list_capabilities browses by group and safety class without invoking anything.
+get_capability_details returns one operation's full contract. tool_search returns
+clear operation descriptions plus the exact invoke_tool call shape. After choosing
+a capability, call invoke_tool with the exact returned name, target, and args. Use
+target "edgesynology1", "edgesynology2", or "both".
 
 Write tools require a preview first. To execute after reviewing the preview,
 call invoke_tool again with confirmed: true inside args. Do not invent or expose
@@ -65,6 +68,17 @@ const INVOKE_TOOL_DESCRIPTION = [
   "Pass the exact operation name, target NAS, and tool-specific args.",
   "For write operations, omit confirmed or set confirmed:false first to receive a preview; call again with confirmed:true inside args only after approval.",
   "If you do not know the exact operation name or args, call tool_search first.",
+].join(" ");
+
+const LIST_CAPABILITIES_DESCRIPTION = [
+  "Browse the enabled NAS operation catalog without invoking anything.",
+  "Use optional group and safety filters for orientation before searching or invoking.",
+  "Returns compact summaries, safety class, parameter names, and example call shapes.",
+].join(" ");
+
+const GET_CAPABILITY_DETAILS_DESCRIPTION = [
+  "Return the full contract for one NAS operation, including parameters, safety metadata, example call, boundaries, common failures, and related tools.",
+  "Use this after tool_search or list_capabilities when you need exact invocation details.",
 ].join(" ");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -198,6 +212,190 @@ function formatToolForSearchWithInvocation(tool: McpToolDef): string {
   ].join("\n");
 }
 
+type CapabilityParam = {
+  name: string;
+  type: string;
+  description?: string;
+  default?: unknown;
+};
+
+function unwrapZod(schema: z.ZodTypeAny): { inner: z.ZodTypeAny; optional: boolean; defaultVal: unknown } {
+  let inner: z.ZodTypeAny = schema;
+  let optional = false;
+  let defaultVal: unknown;
+  for (let i = 0; i < 8; i += 1) {
+    const def = (inner as unknown as { _def?: { typeName?: string; innerType?: z.ZodTypeAny; defaultValue?: () => unknown } })._def;
+    if (!def) break;
+    if (def.typeName === "ZodOptional" || def.typeName === "ZodNullable") {
+      optional = true;
+      inner = def.innerType!;
+      continue;
+    }
+    if (def.typeName === "ZodDefault") {
+      optional = true;
+      try {
+        defaultVal = def.defaultValue?.();
+      } catch {
+        defaultVal = undefined;
+      }
+      inner = def.innerType!;
+      continue;
+    }
+    break;
+  }
+  return { inner, optional, defaultVal };
+}
+
+function describeParam(name: string, schema: z.ZodTypeAny): CapabilityParam & { required: boolean } {
+  const { inner, optional, defaultVal } = unwrapZod(schema);
+  const def = (inner as unknown as { _def?: { typeName?: string; values?: string[] } })._def;
+  let type = "unknown";
+  if (def?.typeName === "ZodString") type = "string";
+  else if (def?.typeName === "ZodNumber") type = "number";
+  else if (def?.typeName === "ZodBoolean") type = "boolean";
+  else if (def?.typeName === "ZodEnum") type = (def.values ?? []).join(" | ");
+  else if (def?.typeName === "ZodArray") type = "array";
+  else if (def?.typeName === "ZodObject" || def?.typeName === "ZodRecord") type = "object";
+
+  const param: CapabilityParam & { required: boolean } = {
+    name,
+    type,
+    required: !optional,
+  };
+  if (schema.description) param.description = schema.description;
+  if (defaultVal !== undefined) param.default = defaultVal;
+  return param;
+}
+
+function capabilityParams(tool: McpToolDef): { required: CapabilityParam[]; optional: CapabilityParam[] } {
+  const required: CapabilityParam[] = [];
+  const optional: CapabilityParam[] = [];
+  for (const [name, schema] of Object.entries(tool.params)) {
+    const param = describeParam(name, schema);
+    const clean = { ...param };
+    delete (clean as { required?: boolean }).required;
+    if (param.required) required.push(clean);
+    else optional.push(clean);
+  }
+  if (tool.write) {
+    optional.push({
+      name: "confirmed",
+      type: "boolean",
+      default: false,
+      description: "Set true only after reviewing the preview. Omit or false to preview.",
+    });
+  }
+  return { required, optional };
+}
+
+function exampleValue(name: string, type: string): unknown {
+  if (name === "filter") return "path-or-search-term";
+  if (name === "packageName") return "SynologyDrive";
+  if (name === "exactPath") return "/volume1/share/path";
+  if (name === "lookbackHours") return 2;
+  if (name === "confirmed") return false;
+  if (type.includes("number")) return 1;
+  if (type.includes("boolean")) return false;
+  if (type.includes("|")) return type.split("|")[0].trim();
+  return `<${name}>`;
+}
+
+function capabilityContract(tool: McpToolDef, includeRelated = false): Record<string, unknown> {
+  const params = capabilityParams(tool);
+  const args: Record<string, unknown> = {};
+  for (const param of params.required) args[param.name] = exampleValue(param.name, param.type);
+  for (const param of params.optional) {
+    if (param.default !== undefined && ["lookbackHours", "confirmed"].includes(param.name)) {
+      args[param.name] = param.default;
+    }
+  }
+  const safetyClass = tool.write ? "state_changing_preview_required" : "read_only";
+  const contract: Record<string, unknown> = {
+    name: tool.name,
+    summary: tool.description,
+    when_to_use: tool.description,
+    group: getGroup(tool.name),
+    target_scope: "edgesynology1 | edgesynology2 | both",
+    safety: {
+      classification: safetyClass,
+      read_only: !tool.write,
+      state_changing: tool.write,
+      destructive: tool.write && /delete|remove|rm|kill|restore|disable|quarantine/i.test(tool.name),
+      preview_supported: tool.write,
+      requires_confirmation: tool.write,
+      reversible: !/delete|remove|rm|kill|disable/i.test(tool.name),
+    },
+    required_args: params.required,
+    optional_args: params.optional,
+    example_call: {
+      name: tool.name,
+      target: "edgesynology1",
+      args,
+    },
+    copy_paste: `invoke_tool({ name: "${tool.name}", target: "edgesynology1", args: ${JSON.stringify(args)} })`,
+    common_failures: [
+      "wrong operation name; call tool_search or list_capabilities",
+      "missing or wrong arg shape; call get_capability_details",
+      "target NAS unreachable or nas-api down",
+      tool.write ? "write operation preview returned; call again with args.confirmed=true after approval" : "read command timed out on a loaded NAS; retry one target instead of both",
+    ],
+  };
+  if (includeRelated) {
+    contract.related_tools = ALL_TOOL_DEFS
+      .filter((candidate) => candidate.name !== tool.name && allEnabled.has(candidate.name) && getGroup(candidate.name) === getGroup(tool.name))
+      .slice(0, 10)
+      .map((candidate) => candidate.name);
+  }
+  return contract;
+}
+
+function compactCapability(tool: McpToolDef): Record<string, unknown> {
+  const contract = capabilityContract(tool);
+  return {
+    name: contract.name,
+    summary: contract.summary,
+    group: contract.group,
+    safety: contract.safety,
+    required_args: contract.required_args,
+    optional_args: contract.optional_args,
+    example_call: contract.example_call,
+  };
+}
+
+function jsonToolResult(value: unknown): ToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
+  };
+}
+
+function closestToolNames(name: string): string[] {
+  const wanted = name.toLowerCase();
+  return ALL_TOOL_DEFS
+    .map((tool) => {
+      const candidate = tool.name.toLowerCase();
+      let score = 0;
+      if (candidate.includes(wanted) || wanted.includes(candidate)) score += 10;
+      for (const part of wanted.split(/[_\W]+/).filter(Boolean)) {
+        if (candidate.includes(part)) score += 2;
+      }
+      return { name: tool.name, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+    .slice(0, 6)
+    .map((item) => item.name);
+}
+
+function validationSchemaForTool(tool: McpToolDef): z.ZodObject<Record<string, z.ZodTypeAny>> {
+  const params = tool.write
+    ? {
+        ...tool.params,
+        confirmed: z.boolean().optional().default(false),
+      }
+    : tool.params;
+  return z.object(params);
+}
+
 /**
  * Registers a single predefined tool directly with the MCP server. Used only
  * for the small set of eagerly-loaded tools; everything else flows through
@@ -251,11 +449,78 @@ server.getApp().get("/health", (c) => {
     read_tools: enabledRead.size,
     write_tools: enabledWrite.size,
     registry_tools: ALL_TOOL_DEFS.length,
-    always_on: ["tool_search", "invoke_tool", "run_command", ...EAGER_TOOLS],
+    always_on: ["list_capabilities", "get_capability_details", "tool_search", "invoke_tool", "run_command", ...EAGER_TOOLS],
   });
 });
 
-// ── Always-on tool 1: tool_search ────────────────────────────────────────────
+// ── Always-on tool 1: list_capabilities ──────────────────────────────────────
+server.addTool({
+  name: "list_capabilities",
+  description: LIST_CAPABILITIES_DESCRIPTION,
+  parameters: z.object({
+    group: z.string().optional().default("").describe("Optional group filter, e.g. storage, recovery, packages, logs, network, files, backup, write_restart."),
+    safety: z.string().optional().default("").describe("Optional safety filter: read_only or state_changing_preview_required."),
+    limit: z.number().int().optional().default(100).describe("Max capabilities to return. Default 100, max 200."),
+  }),
+  timeoutMs: TOOL_DEADLINE_MS,
+  execute: async ({ group, safety, limit }) => {
+    return withToolDeadline("list_capabilities", async () => {
+      const groupFilter = (group ?? "").trim();
+      const safetyFilter = (safety ?? "").trim();
+      const cap = Math.max(1, Math.min(limit ?? 100, 200));
+      const enabledTools = ALL_TOOL_DEFS
+        .filter((tool) => allEnabled.has(tool.name))
+        .filter((tool) => !groupFilter || getGroup(tool.name) === groupFilter)
+        .filter((tool) => {
+          if (!safetyFilter) return true;
+          return (tool.write ? "state_changing_preview_required" : "read_only") === safetyFilter;
+        });
+      return jsonToolResult({
+        ok: true,
+        groups: Array.from(new Set(ALL_TOOL_DEFS.map((tool) => getGroup(tool.name)))).sort(),
+        safety_classes: ["read_only", "state_changing_preview_required"],
+        count: Math.min(enabledTools.length, cap),
+        total_matches: enabledTools.length,
+        capabilities: enabledTools.slice(0, cap).map(compactCapability),
+        boundaries: [
+          "No arbitrary write shell access through run_command; NAS API blocks write commands there.",
+          "Named write tools preview first and require args.confirmed=true to execute.",
+          "Targets are edgesynology1, edgesynology2, or both.",
+          "Kubernetes operations are not available.",
+        ],
+      });
+    });
+  },
+});
+
+// ── Always-on tool 2: get_capability_details ─────────────────────────────────
+server.addTool({
+  name: "get_capability_details",
+  description: GET_CAPABILITY_DETAILS_DESCRIPTION,
+  parameters: z.object({
+    name: z.string().describe("Exact operation name from list_capabilities or tool_search."),
+  }),
+  timeoutMs: TOOL_DEADLINE_MS,
+  execute: async ({ name }) => {
+    return withToolDeadline("get_capability_details", async () => {
+      const tool = findToolByName(name);
+      if (!tool) {
+        return jsonToolResult({
+          ok: false,
+          error: `Unknown operation: ${name}`,
+          nearby_matches: closestToolNames(name),
+          hint: "Call list_capabilities or tool_search to discover exact names.",
+        });
+      }
+      return jsonToolResult({
+        ok: true,
+        capability: capabilityContract(tool, true),
+      });
+    });
+  },
+});
+
+// ── Always-on tool 3: tool_search ────────────────────────────────────────────
 server.addTool({
   name: "tool_search",
   description: TOOL_SEARCH_DESCRIPTION,
@@ -277,22 +542,22 @@ server.addTool({
       }
       const cap = Math.max(1, Math.min(limit ?? 8, 30));
       const top = matches.slice(0, cap);
-      const body = top.map(formatToolForSearchWithInvocation).join("\n\n");
-      const more = matches.length > top.length
-        ? `\n\n(${matches.length - top.length} additional match(es) not shown — refine the query or raise limit.)`
-        : "";
-      const header = [
-        `Found ${matches.length} NAS operation(s) for "${query}". Showing top ${top.length}.`,
-        `Choose the best operation by name, safety class, group, and parameters.`,
-        `Execute with: invoke_tool({ name: "<operation>", target: "edgesynology1|edgesynology2|both", args: { ... } })`,
-        ``,
-      ].join("\n");
-      return { content: [{ type: "text" as const, text: header + body + more }] };
+      return jsonToolResult({
+        ok: true,
+        query,
+        count: top.length,
+        total_matches: matches.length,
+        operations: top.map((tool) => ({
+          ...capabilityContract(tool, true),
+          legacy_text: formatToolForSearchWithInvocation(tool),
+        })),
+        hint: "Use get_capability_details(name) for one full contract, then invoke_tool with the exact name, target, and args.",
+      });
     });
   },
 });
 
-// ── Always-on tool 2: invoke_tool ────────────────────────────────────────────
+// ── Always-on tool 4: invoke_tool ────────────────────────────────────────────
 server.addTool({
   name: "invoke_tool",
   description: INVOKE_TOOL_DESCRIPTION,
@@ -311,29 +576,41 @@ server.addTool({
     return withToolDeadline(`invoke_tool:${name}`, async () => {
       const tool = findToolByName(name);
       if (!tool) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Unknown operation: "${name}". Call tool_search first to discover available operations and exact names.`,
-          }],
-        };
+        return jsonToolResult({
+          ok: false,
+          error: `Unknown operation: "${name}".`,
+          nearby_matches: closestToolNames(name),
+          hint: "Call tool_search, list_capabilities, or get_capability_details with an exact operation name.",
+        });
       }
       const isEnabled = tool.write ? enabledWrite.has(name) : enabledRead.has(name);
       if (!isEnabled) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Operation "${name}" exists but is disabled in tools-config.json (${tool.write ? "enabled_write_tools" : "enabled_read_tools"}). Group: ${getGroup(name)}.`,
-          }],
-        };
+        return jsonToolResult({
+          ok: false,
+          error: `Operation "${name}" exists but is disabled in tools-config.json.`,
+          expected_list: tool.write ? "enabled_write_tools" : "enabled_read_tools",
+          group: getGroup(name),
+        });
       }
-      const input: Record<string, unknown> = { ...(args ?? {}), target };
+      const parsed = validationSchemaForTool(tool).safeParse(args ?? {});
+      if (!parsed.success) {
+        return jsonToolResult({
+          ok: false,
+          error: `Invalid arguments for "${name}".`,
+          issues: parsed.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message,
+          })),
+          expected: capabilityContract(tool),
+        });
+      }
+      const input: Record<string, unknown> = { ...parsed.data, target };
       return runPredefinedTool(tool, input);
     });
   },
 });
 
-// ── Always-on tool 3: run_command (free-form, tier-1-only) ──────────────────
+// ── Always-on tool 5: run_command (free-form, tier-1-only) ──────────────────
 if (enabledRead.has("run_command")) {
   server.addTool({
     name: "run_command",

@@ -26,11 +26,13 @@ The server runs FastMCP in stateless HTTP Stream mode, so it does not rely on pe
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 119 shared tool definitions but exposes only **5 tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface at ~3k tokens (vs ~50k if all 119 were registered upfront). FastMCP session-level instructions also tell clients to use `tool_search` before most NAS tasks, then `invoke_tool` with the exact operation name.
+The server has a registry of 119 shared tool definitions but exposes only **7 small tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface compact (vs ~50k tokens if all 119 were registered upfront). FastMCP session-level instructions tell clients to browse/search/detail before most NAS tasks, then `invoke_tool` with the exact operation name.
 
 | Always-on tool | Purpose |
 |---|---|
-| `tool_search({ query, limit })` | Search the registry by keyword. Returns names, descriptions, safety class, group, parameter shapes, and exact `invoke_tool` call shape as text. **Call this first** to discover the right tool. |
+| `list_capabilities({ group, safety, limit })` | Browse enabled operations by group or safety class without invoking anything. |
+| `get_capability_details({ name })` | Return one operation's full contract: args, safety metadata, example call, common failures, and related tools. |
+| `tool_search({ query, limit })` | Search the registry by keyword. Returns structured contracts with names, descriptions, safety class, group, parameter shapes, related tools, and exact `invoke_tool` call shape. |
 | `invoke_tool({ name, target, args })` | Execute any registry tool by name. For write tools, include `confirmed: true` inside `args`. |
 | `run_command({ target, command })` | Free-form tier-1-only shell. Write commands are blocked by the NAS API validator. |
 | `check_disk_space({ target })` | Eager freebie — disk + inode usage across volumes. |
@@ -39,6 +41,12 @@ The server has a registry of 119 shared tool definitions but exposes only **5 to
 ### Typical flow
 
 ```text
+list_capabilities({ group: "recovery", safety: "read_only" })
+  -> browse recovery operations
+
+get_capability_details({ name: "list_snapshot_candidates" })
+  -> inspect exact args and example call
+
 tool_search({ query: "snapshot recovery" })
   → returns: list_snapshot_candidates, create_prechange_snapshot,
              restore_path_from_snapshot, inspect_recycle_bin, ...
