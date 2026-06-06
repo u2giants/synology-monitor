@@ -8,6 +8,8 @@ references: [docs/architecture.md](docs/architecture.md),
 complete (2026-05-30); current behavior and durable rationale live in
 [docs/architecture.md](docs/architecture.md). [PLAN.md](PLAN.md) is historical.
 
+## Multi-model AI note
+
 There is no universal ignore-file standard across AI coding tools.
 
 `.claudeignore` works for Claude Code.
@@ -27,7 +29,33 @@ sync/replication failures, storage and I/O attribution, and silent task/backup
 failures. The owner is a non-developer; favor changes that keep `main` the single
 source of truth and are easy to audit.
 
-## 2. Quick orientation — five components
+## 2. Documentation map: what to read for each task
+
+Always start with:
+
+- `AGENTS.md`
+
+Then load additional docs only when relevant:
+
+| Task / question | Read these docs | Usually do not need |
+|---|---|---|
+| Quick repo orientation | `README.md`, `AGENTS.md` | Deep docs under `docs/` unless task requires them |
+| Modify app behavior or project-owned code | `AGENTS.md`, relevant folder-level `README.md`, `docs/architecture.md` if system design is affected | `docs/deployment.md` unless deploy behavior changes |
+| Add or change NAS MCP capabilities | `AGENTS.md`, `apps/nas-mcp/README.md`, `docs/architecture.md`, `packages/shared/src/nas-tools.ts`, `apps/nas-mcp/tools-config.json` | Web deployment docs unless deploy behavior changes |
+| Change agent or NAS API behavior | `AGENTS.md`, `docs/architecture.md`, `docs/development.md`, `deploy/synology/README.md` if compose/env is involved | Unrelated web/NAS MCP README files |
+| Add or change configuration, env vars, feature flags, secrets, or runtime settings | `AGENTS.md`, `docs/configuration.md`, `docs/deployment.md` if prod/runtime env is affected | Unrelated architecture docs |
+| Change local setup, dev scripts, test/lint/debug workflow, package scripts, or tooling | `AGENTS.md`, `docs/development.md`, relevant package/config files | `docs/deployment.md` unless CI/CD changes |
+| Change deployment, Docker, CI/CD, hosting, release flow, rollback, or runtime environment | `AGENTS.md`, `docs/deployment.md`, `docs/configuration.md`, relevant workflow/deployment files | Local-only development docs unless needed |
+| Change database schema, migrations, models, external IDs, or data flow | `AGENTS.md`, `docs/architecture.md`, `docs/configuration.md` if env/config is affected, relevant migration/model files | Deployment docs unless rollout/deploy behavior changes |
+| Investigate bugs or incidents | `AGENTS.md`, relevant docs based on affected area, `HANDOFF.md` if present, Critical incidents section in `AGENTS.md`, relevant incident docs under `docs/` | Unrelated folder-level READMEs |
+| Continue unfinished work | `AGENTS.md`, `HANDOFF.md`, relevant docs named inside `HANDOFF.md` | Docs unrelated to the handoff scope |
+| Work in a subfolder with its own README | `AGENTS.md`, that folder-level `README.md`, and only broader docs referenced there | Other folder-level READMEs |
+| Claude Code session | `CLAUDE.md`, then `AGENTS.md` | Other docs unless task requires them |
+| Documentation-only cleanup | `AGENTS.md`, `README.md`, affected docs under `docs/`, folder-level READMEs only where relevant | Source files except as needed to verify accuracy |
+
+This map is intentionally task-based. Do not load every Markdown file by default.
+
+## 3. Quick orientation — five components
 
 | Component | Language | Where it runs | Purpose |
 |---|---|---|---|
@@ -46,7 +74,7 @@ picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 `qnjimovrsaacneqkggsn`) is the shared data layer between agent (writes) and web
 (reads). NAS API does not touch Supabase.
 
-## 3. Repository structure
+## 4. Repository structure
 
 ```
 apps/
@@ -70,7 +98,7 @@ Generated / not-source: `apps/web/.next/`, `apps/*/dist/`, `apps/nas-mcp/dist/`,
 Next.js runtime surface under `apps/web/.next/`. Build artifacts: image layers (in
 GHCR, not the repo).
 
-## 4. Prime directive — custom-code boundary
+## 5. Prime Directive: custom-code boundary
 
 Our custom code lives here:
 
@@ -83,18 +111,18 @@ Everything else (`node_modules/`, `.next/`, `dist/`, `.turbo/`, lockfiles, the
 Next.js framework surface) requires explicit justification before touching. Do not
 scatter project logic into generated or framework files.
 
-## 5. Core modification inventory
+## 6. Core modification inventory
 
 No files outside the project-owned areas (above) have been patched — there is no
 forked vendor/framework code in this repo. All code is first-party; third-party
 code is consumed only as dependencies (`node_modules`, Go modules) and base Docker
 images. If you ever patch a vendored file, record it here.
 
-| File | Change made | Why | Risk during upgrades |
+| File | Change made | Why it was necessary | Risk during upgrades |
 |---|---|---|---|
 | — | — | — | — |
 
-## 6. Task-to-file navigation
+## 7. Task-to-file navigation: what to edit for common changes
 
 | Task | Files to touch | Files NOT to touch |
 |---|---|---|
@@ -111,7 +139,7 @@ images. If you ever patch a vendored file, record it here.
 | Add a dashboard page | `apps/web/src/app/(dashboard)/<page>/page.tsx`, hook in `src/hooks/` | — |
 | Add a nightly custom command | Insert into `custom_metric_schedules` DB table with `collection_command`, `interval_minutes`, `nas_id` | — |
 
-## 7. Data model and external identifiers
+## 8. Data model and external identifiers
 
 Do not casually rename or regenerate these.
 
@@ -127,7 +155,7 @@ Do not casually rename or regenerate these.
 | GHCR images | `ghcr.io/u2giants/synology-monitor-{agent,nas-api,nas-mcp,web}` | workflows | tags: `latest`, `sha-<sha>`, `main` |
 | Public endpoints | `mon.designflow.app` (web), `nas-mcp.designflow.app/mcp` | Coolify/Traefik | |
 
-## 8. Container and service inventory
+## 9. Container and service inventory
 
 | Container / service | Purpose | Managed by | App ID | Image / source |
 |---|---|---|---|---|
@@ -143,7 +171,7 @@ Do not casually rename or regenerate these.
 relay image is not produced by the standard pipeline; it is built/deployed manually
 on the VPS. Treat its deploy path as exceptional, not routine.
 
-## 9. What to ignore
+## 10. What to ignore
 
 Not relevant to active development; do not read or index (already in
 `.claudeignore` / `.cursorignore` / `.copilotignore`): `node_modules/`, `apps/*/node_modules/`,
@@ -151,7 +179,7 @@ Not relevant to active development; do not read or index (already in
 `*.tsbuildinfo`, `pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
 agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-monitor`.
 
-## 10. Intentional quirks — do not "fix" these
+## 11. Intentional quirks and non-obvious decisions
 
 ### NAS MCP is fully stateless (FastMCP HTTP Stream)
 Looks like: a bug — the server refuses to rely on persistent MCP session state.
@@ -351,7 +379,7 @@ will miss Snapshot Replication state and scheduler/package artifacts on one NAS.
 Read-only tools should check `/host/packages` and `/btrfs/volumeN`, and may use
 DSM WebAPI read methods as a fallback when SQLite/config paths are not mounted.
 
-## 11. Credentials and environment
+## 12. Credentials and environment
 
 Full reference: [docs/configuration.md](docs/configuration.md). No secret values
 live in the repo (example files use placeholders; real values live in Coolify and
@@ -377,7 +405,7 @@ each NAS `.env`).
 
 NAS API URLs are Tailscale IPs; Tailscale must be connected for live NAS calls.
 
-## 12. Deployment
+## 13. Deployment
 
 Push to `main` → `.github/workflows/{agent,nas-api,nas-mcp,web}-image.yml` build
 and push to GHCR (each has a `paths:` filter; tags `latest`, `sha-<sha>`, `main`):
@@ -395,70 +423,177 @@ Rollback: redeploy a previous tag in Coolify, or pin `AGENT_IMAGE_TAG` to a SHA
 on the NAS, or `git revert` + push. **SSH is not a routine deploy path** — public
 SSH on the VPS is disabled by design; manual container rebuilds create drift.
 
-## 13. Critical incidents
+## 14. Critical incidents
 
 ### 2026-05-29 — Log/alert ingestion silently frozen + pg_partman broken
-What happened: `nas_logs` stopped ingesting ~19h, `alerts` ~23 days.
-Root cause: source-check whitelists rejected newer log sources; one bad row failed
+
+What happened:
+`nas_logs` stopped ingesting for about 19 hours; `alerts` stopped for about 23 days.
+
+Impact:
+Telemetry-derived issue detection and alert visibility were stale or incomplete.
+
+Root cause:
+Source-check whitelists rejected newer log sources; one bad row failed
 the whole PostgREST batch → dropped after 5 retries. partman config pointed at
 pre-rename `smon_*` parent names.
-Recovery: dropped whitelists (migration 00035); sender now isolates bad rows;
+
+Recovery:
+Dropped whitelists in migration 00035; sender now isolates bad rows;
 corrected partman, reclaimed 3.34 GB.
-Rule: no source whitelists; sender must isolate bad rows; empty tables are bugs.
+
+Rule added to prevent recurrence:
+No source whitelists; sender must isolate bad rows; empty tables are bugs.
 
 ### 2026-05-29 — Live secrets found committed in example/recovery files
-What happened: real NAS API secrets, relay tokens, Supabase service-role key,
+
+What happened:
+Real NAS API secrets, relay tokens, Supabase service-role key, and a
 NAS SSH password committed in example and recovery files.
-Recovery: values redacted; `.env.runtime` gitignored.
-Rule: never commit real secrets. **Leaked values remain in git history and MUST
-still be rotated by the owner.**
+
+Impact:
+Those values must be treated as compromised even after redaction.
+
+Root cause:
+Example/recovery files contained live values instead of placeholders.
+
+Recovery:
+Values were redacted and `.env.runtime` was gitignored.
+
+Rule added to prevent recurrence:
+Never commit real secrets. **Leaked values remain in git history and MUST still be
+rotated by the owner.**
 
 ### 2026-05 — 4-day runaway `grep -R` on production NAS
-Fix: validator hard-block list + process-group kill in `executor.go`.
+
+What happened:
+A recursive `grep -R` against Synology internal stores ran for 4 days 11 hours on
+production.
+
+Impact:
+The NAS spent excessive CPU/I/O on an AI-generated diagnostic command.
+
+Root cause:
+The validator allowed broad recursive grep and the executor killed only direct
+children, not process groups.
+
+Recovery:
+Added validator hard-blocks and process-group kill in `executor.go`.
+
+Rule added to prevent recurrence:
+Recursive grep on Synology internal stores is hard-blocked; subprocess timeouts
+kill process groups.
 
 ### 2026-05 — Claude MCP sessions hanging / failing
-Fix: stateless transport; `Connection: close`; bounded NAS API calls; 45s MCP tool deadline.
+
+What happened:
+Claude MCP sessions hung or failed around NAS MCP tool calls.
+
+Impact:
+AI clients waited until client-side timeouts instead of getting clear tool results.
+
+Root cause:
+Stateful transport/session behavior and stale HTTP connection reuse interacted
+badly with client proxies and timed-out NAS API calls.
+
+Recovery:
+Stateless transport, `Connection: close`, bounded NAS API calls, and a 45s MCP tool
+deadline.
+
+Rule added to prevent recurrence:
+Keep NAS MCP stateless and keep every NAS API/tool call bounded.
+
 Full writeup: [docs/mcp-incident-2026-05.md](docs/mcp-incident-2026-05.md).
 
 ### 2026-06 — NAS API crash-loop from invalid Go regexp
-Cause: validator used PCRE-style negative lookahead `(?!...)` inside
+
+What happened:
+`nas-api` crash-looped after Watchtower pulled an image.
+
+Impact:
+MCP calls returned `ECONNREFUSED` to both NAS `:7734` endpoints.
+
+Root cause:
+The validator used PCRE-style negative lookahead `(?!...)` inside
 `regexp.MustCompile`; Go RE2 does not support lookaround, so `nas-api` panicked
-at startup after Watchtower pulled the image. Symptom: MCP calls returned
-`ECONNREFUSED` to both NAS `:7734` endpoints. Fix: use RE2-safe positive regexes
-or Go helper code, add validator tests for both match and exception cases, then
-verify `/health` on both NASes after `nas-api-image.yml` publishes.
+at startup.
+
+Recovery:
+Use RE2-safe positive regexes or Go helper code, add validator tests for both match
+and exception cases, then verify `/health` on both NASes after `nas-api-image.yml`
+publishes.
+
+Rule added to prevent recurrence:
+Do not use lookaround/backrefs in Go validator regexes; test validator patterns.
 
 ### 2026-06 — Read-only MCP probes missed DSM 7/NAS API paths
-What happened: `check_scheduled_tasks`, `list_snapshot_candidates`, and
+
+What happened:
+`check_scheduled_tasks`, `list_snapshot_candidates`, and
 `inspect_snapshot_replication` were safe to run but reported missing data because
 they only checked legacy or agent-style paths.
-Impact: AI sessions could not confirm DSM scheduled tasks or Snapshot Replication
+
+Impact:
+AI sessions could not confirm DSM scheduled tasks or Snapshot Replication
 schedule/retention rules even though the package/runtime existed.
-Root cause: NAS API mount layout differs from the telemetry agent: package state is
+
+Root cause:
+NAS API mount layout differs from the telemetry agent: package state is
 under `/host/packages`, and the full Btrfs volume is under `/btrfs/volumeN`.
-Recovery: widened read-only path discovery, opened SQLite with `-readonly`, added
+
+Recovery:
+Widened read-only path discovery, opened SQLite with `-readonly`, added
 DSM WebAPI read fallbacks for task and Snapshot/Replication API discovery, and
 kept writes/start/cancel operations separate.
-Rule added to prevent recurrence: read-only NAS tools must be narrow and
+
+Rule added to prevent recurrence:
+Read-only NAS tools must be narrow and
 allowlisted, but they must cover the actual compose mounts before assuming DSM data
 is absent.
 
 ### 2026-06 — Snapshot Replication probe exceeded NAS API command limit
-What happened: `inspect_snapshot_replication` was read-only, but it bundled too
+
+What happened:
+`inspect_snapshot_replication` was read-only, but it bundled too
 much DSM WebAPI/config/SQLite discovery into one generated shell probe. The NAS
 API rejects commands over 4096 bytes, so the MCP tool failed before reaching
 either NAS.
-Recovery: keep `inspect_snapshot_replication` as a compact first-pass probe and
+
+Impact:
+The tool failed before running on either NAS.
+
+Root cause:
+One generated shell command exceeded the NAS API `maxCommandLength`.
+
+Recovery:
+Keep `inspect_snapshot_replication` as a compact first-pass probe and
 push deeper follow-up into separate read-only tools such as
 `summarize_snapshots_by_share`, `check_scheduled_tasks`, and `fetch_package_db`.
-Rule added to prevent recurrence: every generated NAS MCP command must stay under
+
+Rule added to prevent recurrence:
+Every generated NAS MCP command must stay under
 the NAS API `maxCommandLength`; split broad diagnostics into smaller named tools
 instead of raising the limit or packing everything into one shell command.
 
 ### 2026-05 — `check_backup_status` returning stale 2024 data
-Fix: multi-path freshest-by-mtime discovery + staleness banner.
 
-## 14. Pending work
+What happened:
+`check_backup_status` returned stale 2024 data from a canonical log path.
+
+Impact:
+AI sessions could falsely conclude backup state from stale logs.
+
+Root cause:
+The live log existed in a per-task target directory rather than the canonical
+`synobackup.log` path.
+
+Recovery:
+Added multi-path freshest-by-mtime discovery plus a staleness banner.
+
+Rule added to prevent recurrence:
+Backup diagnostics must enumerate candidate paths and surface freshness metadata.
+
+## 15. Pending work
 
 | Status | Item | Owner / next action |
 |---|---|---|
@@ -479,7 +614,7 @@ Fix: multi-path freshest-by-mtime discovery + staleness banner.
 | done | Compact `inspect_snapshot_replication` so the generated NAS API command stays under the 4096-byte `maxCommandLength`; split deeper work into separate read-only tools | Commit `d65047a` |
 | done | De-curate AI-stage model dropdowns: live per-provider model lists (`provider-models.ts` → `/api/ai-models`), `MODEL_CATALOG` demoted to metadata override + fallback, runtime resolves `catalog → derived → live-map`, "inferred model" UI warning | Commits `4f8ee0e`, `4ea43f3` (2026-06-02) |
 
-## 15. Non-negotiable rules
+## 16. Non-negotiable rules
 
 - Commit only to `main`; never create feature branches.
 - Do not build Docker images manually on the VPS/NAS. Container restarts or
