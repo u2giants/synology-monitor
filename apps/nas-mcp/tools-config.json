@@ -1,6 +1,8 @@
 {
   "_readme": "This file controls what AI agents can do on your Synology NAS. Read tools are safe — they only look at things and run automatically. Write tools change state and ALWAYS ask for your approval before doing anything. To remove a tool, delete its name from the enabled list. To add a write tool, copy its name from _write_tools_available into enabled_write_tools. Push to GitHub for changes to take effect.",
   "enabled_read_tools": [
+    "get_file_inventory_status",
+    "fetch_file_inventory_result",
     "check_system_info",
     "list_volumes",
     "list_shared_folders",
@@ -83,6 +85,9 @@
     "check_smart_test_progress"
   ],
   "enabled_write_tools": [
+    "start_file_inventory",
+    "schedule_file_inventory",
+    "cancel_file_inventory",
     "restart_monitor_agent",
     "stop_monitor_agent",
     "start_monitor_agent",

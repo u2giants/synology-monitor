@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
+import { runJobTool } from "./job-client.js";
 import {
   ALL_TOOL_DEFS,
   type McpToolDef,
@@ -132,6 +133,20 @@ async function executePredefinedToolOnNas(
   input: Record<string, unknown>,
   config: ReturnType<typeof getNasConfigs>[number],
 ): Promise<string> {
+  // Native job tools (file inventory) dispatch to nas-api /jobs endpoints
+  // instead of building and executing a shell command.
+  if (tool.job) {
+    try {
+      return await runJobTool(tool, input, config);
+    } catch (err) {
+      return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  if (!tool.buildCommand) {
+    return `[${config.name}] Tool ${tool.name} has no command builder and is not a job tool.`;
+  }
+
   let command: string;
   try {
     command = tool.buildCommand(input);

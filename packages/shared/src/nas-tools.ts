@@ -1,12 +1,20 @@
 import { z } from "zod";
 
+/** Native nas-api file-inventory job operations (no shell command). */
+export type JobOp = "start" | "schedule" | "status" | "result" | "cancel";
+
 export interface McpToolDef {
   name: string;
   description: string;
   write: boolean;
   /** ZodRawShape passed directly to server.tool() */
   params: Record<string, z.ZodTypeAny>;
-  buildCommand: (input: Record<string, unknown>) => string;
+  /** Builds the shell command. Optional: native job tools (see `job`) dispatch
+   *  to nas-api REST endpoints instead and have no command. */
+  buildCommand?: (input: Record<string, unknown>) => string;
+  /** Present on native job tools; selects the nas-api /jobs operation. When set,
+   *  the MCP dispatcher routes through job-client.ts instead of /preview→/exec. */
+  job?: { op: JobOp };
 }
 
 // ─── Shared param shapes ──────────────────────────────────────────────────────
@@ -35,6 +43,41 @@ const packageName = z
 const exactPath = z
   .string()
   .describe("Exact absolute filesystem path to inspect (e.g. /volume1/data/folder/file.txt).");
+
+// ─── Archive file-inventory param shapes (validated server-side by nas-api) ───
+const archiveSharesParam = z
+  .string()
+  .describe(
+    "Comma-separated shared folders to scan. Allowed: files, styleguides, users, homes, Coldlion, Photography, freelancers, mgmt, mac, oldStyleguides.",
+  );
+const cutoffYearsParam = z
+  .string()
+  .optional()
+  .describe("Comma-separated cutoff years for archive-candidate totals, e.g. '2021,2022'.");
+const overlayParam = z
+  .boolean()
+  .optional()
+  .describe("Run the Drive/ShareSync recent-activity overlay (default: true). It protects actively-synced folders from aggressive archive rules.");
+const protectNewerThanParam = z
+  .string()
+  .optional()
+  .describe("RFC3339/ISO date. A file is never an archive candidate if its newest timestamp (max of mtime/ctime/btime) is on or after this date, even with no sync activity.");
+const maxFilesPerSecParam = z
+  .number()
+  .optional()
+  .describe("Throttle the scan to at most this many files/second (0 or omit = unlimited).");
+const useIdleIoParam = z
+  .boolean()
+  .optional()
+  .describe("Run the scan at idle I/O priority so active SMB/Drive workloads win (default: true).");
+const sleepEveryFilesParam = z
+  .number()
+  .optional()
+  .describe("Pause briefly every N files to reduce NAS load (default: 5000).");
+const sleepMsParam = z
+  .number()
+  .optional()
+  .describe("Pause duration in milliseconds at each checkpoint (default: 25).");
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -3258,6 +3301,91 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
+  // ─── Archive file-inventory (native job tools — dispatch to nas-api /jobs) ─────
+  // These do NOT build a shell command; the MCP server routes them through
+  // job-client.ts to the nas-api /jobs/inventory/* REST endpoints. Allowlisted
+  // shares are validated server-side by nas-api (jobs.AllowedShares); the list
+  // is mirrored in deploy/synology/docker-compose.agent.yml and the web
+  // ARCHIVE_SHARES constant.
+  {
+    name: "start_file_inventory",
+    description:
+      "WRITE — Starts a read-only file inventory on a NAS: walks the selected shared folders and reports file counts/bytes by modified year, archive-candidate cutoffs, empty-directory counts, and (optionally) a Synology Drive/ShareSync recent-activity overlay. It does NOT move, delete, or modify any files, but the metadata walk may run for HOURS on large shares, so it requires confirmation. Returns immediately with a job id; poll get_file_inventory_status and fetch results with fetch_file_inventory_result. Call again with confirmed: true to start.",
+    write: true,
+    job: { op: "start" },
+    params: {
+      target,
+      shares: archiveSharesParam,
+      cutoff_years: cutoffYearsParam,
+      overlay: overlayParam,
+      protect_newer_than: protectNewerThanParam,
+      max_files_per_second: maxFilesPerSecParam,
+      use_idle_io_priority: useIdleIoParam,
+      sleep_every_files: sleepEveryFilesParam,
+      sleep_ms: sleepMsParam,
+    },
+  },
+  {
+    name: "schedule_file_inventory",
+    description:
+      "WRITE — Schedules a future one-shot read-only file inventory (same scan as start_file_inventory) to run at a given time, e.g. during quiet hours. Requires scheduled_for as an RFC3339 UTC timestamp in the future. Call again with confirmed: true to schedule.",
+    write: true,
+    job: { op: "schedule" },
+    params: {
+      target,
+      shares: archiveSharesParam,
+      scheduled_for: z
+        .string()
+        .describe("When to run, as an RFC3339 UTC timestamp in the future, e.g. 2026-06-08T02:00:00Z."),
+      cutoff_years: cutoffYearsParam,
+      overlay: overlayParam,
+      protect_newer_than: protectNewerThanParam,
+      max_files_per_second: maxFilesPerSecParam,
+      use_idle_io_priority: useIdleIoParam,
+      sleep_every_files: sleepEveryFilesParam,
+      sleep_ms: sleepMsParam,
+    },
+  },
+  {
+    name: "get_file_inventory_status",
+    description:
+      "Read the status/progress of file-inventory jobs on a NAS. Pass job_id for one job (status, progress, result availability, overlay notes); omit job_id to list recent jobs (newest first), including scheduled ones.",
+    write: false,
+    job: { op: "status" },
+    params: {
+      target,
+      job_id: z.string().optional().describe("Inventory job id. Omit to list recent jobs."),
+    },
+  },
+  {
+    name: "fetch_file_inventory_result",
+    description:
+      "Fetch a completed inventory's results as bounded CSV rows. result selects which report: 'yearly' (file count + bytes per modified year), 'cutoff' (archive-candidate vs date-protected totals per cutoff year), 'dirs' (total + empty directory counts), or 'overlay' (recent Drive/ShareSync activity). Use limit/cursor to page; responses are capped so they never flood the context.",
+    write: false,
+    job: { op: "result" },
+    params: {
+      target,
+      job_id: z.string().describe("Inventory job id to fetch results for."),
+      result: z
+        .enum(["yearly", "cutoff", "dirs", "overlay"])
+        .optional()
+        .describe("Which report to fetch. Default: yearly."),
+      limit: z.number().int().optional().describe("Max rows to return (default 1000, max 5000)."),
+      cursor: z.number().int().optional().describe("Row offset for pagination (from a prior response's next_cursor)."),
+    },
+  },
+  {
+    name: "cancel_file_inventory",
+    description:
+      "WRITE — Cancels a running or scheduled file-inventory job. Read-only scans cause no data changes, so this only stops the walk. Call again with confirmed: true to cancel.",
+    write: true,
+    job: { op: "cancel" },
+    params: {
+      target,
+      job_id: z.string().describe("Inventory job id to cancel."),
+    },
+  },
+
 ];
 
 // ─── Group taxonomy + tool_search registry ────────────────────────────────────
@@ -3267,6 +3395,13 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 // "misc" via getGroup() and are still fully searchable + invokable.
 
 export const TOOL_GROUPS: Record<string, string> = {
+  // Archive file-inventory job tools.
+  start_file_inventory: "archive",
+  schedule_file_inventory: "archive",
+  get_file_inventory_status: "archive",
+  fetch_file_inventory_result: "archive",
+  cancel_file_inventory: "archive",
+
   // system
   check_system_info: "system",
   check_disk_space: "system",
@@ -3457,6 +3592,8 @@ export const KEYWORD_TO_GROUPS: Record<string, string[]> = {
   audit: ["files", "security"],
   task: ["write_tasks", "system"],
   scheduled: ["write_tasks", "system"],
+  archive: ["archive"],
+  inventory: ["archive"],
 };
 
 const KNOWN_GROUPS: Set<string> = new Set([

@@ -263,7 +263,10 @@ const RUN_COMMAND_TOOL_NAME = "run_command";
  * run_command (free-form tier-1 shell), as model tool schemas.
  */
 export function buildStage2Tools(): ToolSchema[] {
-  const nasTools: ToolSchema[] = ALL_TOOL_DEFS.filter((def) => !def.write).map((def) => {
+  // Exclude native job tools (file inventory): they dispatch to nas-api /jobs
+  // REST endpoints, not shell commands, so they have no buildCommand and do not
+  // fit Stage 2's classify-then-exec path.
+  const nasTools: ToolSchema[] = ALL_TOOL_DEFS.filter((def) => !def.write && !def.job).map((def) => {
     const schema = toInputSchema(def);
     const { target: _target, ...properties } = schema.properties;
     void _target;
@@ -384,7 +387,7 @@ function makeToolExecutor(
     }
 
     const def = findToolByName(call.name);
-    if (!def || def.write) {
+    if (!def || def.write || def.job || !def.buildCommand) {
       return { content: `Tool "${call.name}" is not an available read-only tool.`, isError: true };
     }
 
