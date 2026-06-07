@@ -306,6 +306,115 @@ export async function fetchInventoryResult(config: NasApiConfig, id: string, que
   return inventoryFetch(config, "GET", `/jobs/inventory/${encodeURIComponent(id)}/result${qs ? `?${qs}` : ""}`);
 }
 
+// ─── Archive move (Phase 2) ───────────────────────────────────────────────────
+//
+// Move ops reuse inventoryFetch's transport. Canonical op strings MUST byte-match
+// nas-api jobs.MoveCanonicalOpString and nas-mcp's job-client.ts. Plan/cancel are
+// tier 2; execute/rollback are tier 3.
+
+export interface MovePlanInput {
+  share: string;
+  mode?: string; // "move" | "clean_empty_dirs"
+  roots?: string[];
+  include_globs?: string[];
+  exclude_globs?: string[];
+  cutoff_years?: number[];
+  protect_newer_than?: string;
+  prune_emptied_source_dirs?: boolean;
+  remove_preexisting_empty_dirs?: boolean;
+}
+
+function moveCanonicalPlan(nas: string, p: Required<Pick<MovePlanInput, "share">> & {
+  mode: string;
+  roots: string[];
+  include: string[];
+  exclude: string[];
+  cutoffYears: number[];
+  protect: string;
+  prune: boolean;
+  removePreexisting: boolean;
+}): string {
+  return (
+    `move.plan|nas=${nas}|share=${p.share}|mode=${p.mode}` +
+    `|roots=${canonShares(p.roots)}|include=${canonShares(p.include)}|exclude=${canonShares(p.exclude)}` +
+    `|cutoff=${canonYears(p.cutoffYears)}|protect=${p.protect}` +
+    `|prune=${p.prune ? "true" : "false"}|rmpre=${p.removePreexisting ? "true" : "false"}`
+  );
+}
+
+function prepMovePlan(config: NasApiConfig, raw: MovePlanInput) {
+  const roots = (raw.roots ?? []).map((r) => r.replace(/^\/+|\/+$/g, "")).filter(Boolean);
+  const p = {
+    share: (raw.share ?? "").trim(),
+    mode: (raw.mode ?? "move") || "move",
+    roots,
+    include: (raw.include_globs ?? []).map((s) => s.trim()).filter(Boolean),
+    exclude: (raw.exclude_globs ?? []).map((s) => s.trim()).filter(Boolean),
+    cutoffYears: (raw.cutoff_years ?? []).filter((n) => Number.isFinite(n)),
+    protect: (raw.protect_newer_than ?? "").trim(),
+    prune: raw.prune_emptied_source_dirs !== false, // undefined → true
+    removePreexisting: raw.remove_preexisting_empty_dirs === true, // undefined → false
+  };
+  const body: Record<string, unknown> = {
+    share: p.share,
+    mode: p.mode,
+    roots: p.roots,
+    include_globs: p.include,
+    exclude_globs: p.exclude,
+    cutoff_years: p.cutoffYears,
+    protect_newer_than: p.protect,
+    prune_emptied_source_dirs: p.prune,
+    remove_preexisting_empty_dirs: p.removePreexisting,
+  };
+  return { body, canonical: moveCanonicalPlan(config.name, p) };
+}
+
+export async function planMove(config: NasApiConfig, raw: MovePlanInput): Promise<Response> {
+  const { body, canonical } = prepMovePlan(config, raw);
+  const token = buildNasApiApprovalToken(config, canonical, 2);
+  return inventoryFetch(config, "POST", "/jobs/archive-move/plan", { body, approvalToken: token });
+}
+
+export async function listMoves(config: NasApiConfig): Promise<Response> {
+  return inventoryFetch(config, "GET", "/jobs/archive-move");
+}
+
+export async function moveStatus(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "GET", `/jobs/archive-move/${encodeURIComponent(id)}`);
+}
+
+export async function moveManifest(config: NasApiConfig, id: string, query: URLSearchParams): Promise<Response> {
+  const qs = query.toString();
+  return inventoryFetch(config, "GET", `/jobs/archive-move/${encodeURIComponent(id)}/manifest${qs ? `?${qs}` : ""}`);
+}
+
+export async function moveResult(config: NasApiConfig, id: string, query: URLSearchParams): Promise<Response> {
+  const qs = query.toString();
+  return inventoryFetch(config, "GET", `/jobs/archive-move/${encodeURIComponent(id)}/result${qs ? `?${qs}` : ""}`);
+}
+
+export async function verifyMove(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/verify`);
+}
+
+function moveTokenFor(config: NasApiConfig, op: "execute" | "cancel" | "rollback", id: string): string {
+  const canonical = `move.${op}|nas=${config.name}|job_id=${id}`;
+  const tier: 2 | 3 = op === "cancel" ? 2 : 3;
+  return buildNasApiApprovalToken(config, canonical, tier);
+}
+
+export async function executeMove(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/execute`, { approvalToken: moveTokenFor(config, "execute", id) });
+}
+
+export async function cancelMove(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/cancel`, { approvalToken: moveTokenFor(config, "cancel", id) });
+}
+
+export async function rollbackMove(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/rollback`, { approvalToken: moveTokenFor(config, "rollback", id) });
+}
+
 export async function collectNasDiagnostics(lookbackHours = 2) {
   const configs = getNasApiConfigs();
   const driveLines = Math.max(60, Math.min(300, lookbackHours * 50));
