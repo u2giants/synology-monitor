@@ -71,7 +71,23 @@ Recommended safety labels:
 
 Add a small job manager to the NAS API container.
 
-Suggested local state path:
+Persistent job storage is required before any long-running scan is implemented. The NAS API container currently does not have a named Docker volume mounted at `/app/data`; only the agent has `agent-data:/app/data`. Because Watchtower recreates `synology-monitor-nas-api` when a new image is published, job state stored only in the container writable layer would be lost on update or restart.
+
+First add a durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`.
+
+Preferred host-path mount:
+
+```yaml
+nas-api:
+  volumes:
+    - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
+```
+
+This path is easy to inspect directly on the NAS and avoids hiding job results inside an anonymous or named Docker volume. A named volume is also acceptable, but the host path is more operator-friendly for recovery and auditing.
+
+Important deployment note: Watchtower applies new images, not compose-file changes. Adding this mount requires updating the NAS compose file and running `docker compose up -d` on each NAS once.
+
+Suggested durable state path:
 
 ```text
 /app/data/jobs/file-inventory/
@@ -110,6 +126,10 @@ Default behavior:
 - Persist status and partial progress so a restarted request path can still report what happened.
 - Write results only under `/app/data/jobs/file-inventory/`.
 - Do not write into the shared folders.
+- On startup, detect jobs that were `running` before a container restart and mark them `interrupted` unless resume support has been explicitly implemented.
+- Write progress to disk atomically every N files so status polling and crash recovery are never stale by more than that interval.
+
+Persistence does not keep a scan alive through a Watchtower restart. The first implementation should report an interrupted job clearly rather than silently losing it.
 
 ## Scanner Scope
 
@@ -129,6 +149,8 @@ Allowed share roots should match the existing compose mounts:
 /volume1/mac
 /volume1/oldStyleguides
 ```
+
+There is an intentional coupling here: the scanner can only walk shares mounted into the NAS API container. If a new share is added to `docker-compose.agent.yml`, the scanner allowlist or share-discovery logic must be updated too. Prefer deriving the allowlist from a single shared config or from the actual mounted paths; if hardcoding is used, add a code comment and test that make this dependency obvious.
 
 Skip:
 
@@ -153,6 +175,7 @@ Recommended approach:
 - Aggregate by `mtime.Year()`.
 - Track total file count and total bytes per share/year.
 - Track progress every N files.
+- Persist progress every N files with an atomic write, such as writing `status.tmp` and renaming it to `status.json`.
 - Check cancellation between directories and every N files.
 - Throttle periodically to reduce NAS impact.
 
@@ -208,6 +231,8 @@ Add an optional second report mode that aggregates recent Synology Drive and Sha
 
 This should be treated as a recent-change overlay, not a complete access history.
 
+The overlay must be best-effort. Synology Drive keeps its SQLite databases open, and the NAS API mounts those paths read-only. Open the databases in read-only mode with a short busy timeout. If SQLite returns `SQLITE_BUSY`, missing-table errors, or WAL-related read errors, skip the overlay and record the reason in the job result instead of failing the whole inventory.
+
 Example result:
 
 ```text
@@ -247,6 +272,22 @@ cancel_file_inventory
 
 The operations should call the NAS API rather than running long shell commands. MCP should only receive compact JSON/CSV results.
 
+Tiering:
+
+- `start_file_inventory`: tier 2. It is read-only, but it can impose hours of metadata I/O on a NAS with millions of files, so it should require preview and approval.
+- `cancel_file_inventory`: tier 2. It changes job state and should require approval.
+- `get_file_inventory_status`: tier 1.
+- `fetch_file_inventory_result`: tier 1.
+
+The start preview should show:
+
+- target NAS
+- target shares
+- excluded directories
+- result path
+- whether the recent activity overlay is enabled
+- a warning that the scan may take hours on large shares
+
 The operation descriptions should make the I/O cost explicit:
 
 - This is read-only but may perform a long metadata walk.
@@ -278,17 +319,22 @@ This is optional. The first useful version can be MCP-only.
 1. Unit-test scanner aggregation with fake directory trees.
 2. Unit-test exclusion behavior for `#snapshot`, `@eaDir`, `Archive`, and `@tmp`.
 3. Unit-test cancellation.
-4. Run scanner against a tiny mounted test folder.
-5. Run one real small share, such as `Coldlion`.
-6. Run one medium share with throttling enabled.
-7. Confirm MCP timeout no longer matters because status polling returns immediately.
-8. Compare one completed share report against a manual `find` spot check.
-9. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
+4. Unit-test startup recovery for a job left in `running` state.
+5. Unit-test atomic progress writes.
+6. Run scanner against a tiny mounted test folder.
+7. Run one real small share, such as `Coldlion`.
+8. Run one medium share with throttling enabled.
+9. Confirm MCP timeout no longer matters because status polling returns immediately.
+10. Compare one completed share report against a manual `find` spot check.
+11. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
+12. Confirm the durable NAS API jobs mount survives a container recreate.
+13. Confirm Drive/ShareSync overlay errors are recorded without failing the inventory.
 
 ## First PR Scope
 
 Build the smallest useful version:
 
+- Durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`
 - NAS API local file inventory job manager
 - Mtime-year scanner
 - Status/result/cancel endpoints
