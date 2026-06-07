@@ -196,6 +196,7 @@ Suggested scanner options:
   "exclude_default_dirs": true,
   "archive_dir_name": "Archive",
   "cutoff_years": [2021, 2022],
+  "protect_newer_than": "2025-01-01T00:00:00Z",
   "max_files_per_second": 0,
   "use_idle_io_priority": true,
   "sleep_every_files": 5000,
@@ -204,6 +205,39 @@ Suggested scanner options:
 ```
 
 The `max_files_per_second` field can be `0` for unlimited.
+
+Every one of these options is exposed in the web UI (an Advanced panel for the
+throttle/priority fields) and as MCP tool parameters — there are no
+scanner options that can only be set from code.
+
+## Protection Rules (date whitelist)
+
+Age by modified-year alone is not sufficient to decide what is safe to archive.
+A file can be old by `mtime` yet have been recently created, restored, or had its
+metadata changed — and the activity overlay only sees Drive/ShareSync events, not
+every access path (SMB copies, restores, rsync, local edits).
+
+So the inventory supports an explicit **date protection whitelist**,
+`protect_newer_than`. A file is **protected** (never an archive candidate) when
+its *newest* timestamp is at or after that date:
+
+```text
+newest = max(mtime, ctime, btime)
+protected = newest >= protect_newer_than
+```
+
+- `mtime` — last content modification.
+- `ctime` — last inode/metadata change (permissions, rename, restore).
+- `btime` — birth/creation time, read via `statx` on Btrfs. If `btime` is
+  unavailable, fall back to `max(mtime, ctime)` and record that the fallback was
+  used.
+
+Protection is **independent of the activity overlay**: a file is protected by
+date even if it shows zero sync activity. This is the safeguard that prevents
+archiving data that is genuinely current but quiet. Protected files are still
+counted in the yearly report; they are excluded from the cutoff archive-candidate
+totals and reported separately so the operator can see how much was held back and
+why.
 
 ## Result Format
 
@@ -214,11 +248,12 @@ nas,share,year,file_count,total_bytes,total_gib
 edgesynology1,files,2020,24584,982589180666,915.11
 ```
 
-Cutoff summary CSV:
+Cutoff summary CSV (candidate = older-than AND not date-protected AND, when the
+overlay is on, not in an active folder):
 
 ```text
-nas,share,cutoff,file_count,total_bytes,total_gib
-edgesynology1,files,older_than_2021,65755,1499000000000,1395.90
+nas,share,cutoff,candidate_count,candidate_bytes,candidate_gib,protected_count,protected_bytes
+edgesynology1,files,older_than_2021,61240,1402000000000,1305.7,4515,97000000000
 ```
 
 Directory summary CSV:
@@ -338,17 +373,31 @@ All operations must have GUI coverage. Add an operator page in the web app at `/
 Required controls:
 
 - Target NAS selector
-- Share checkboxes
+- Share checkboxes (top-level shared folders; see the folder-granularity note below)
+- Cutoff years
+- "Protect files newer than" date control (`protect_newer_than`)
+- Overlay toggle (default on)
+- Advanced panel: idle I/O priority toggle, max files/sec, sleep-every-files, sleep-ms
 - Start job (immediate)
 - Schedule job (date/time picker for a future one-shot run)
 - Scheduled jobs list with per-job cancel control
 - Active job progress and status display
 - Cancel running job
-- Download CSV (primary yearly, cutoff summary, directory summary)
+- Download CSV (yearly, cutoff summary, directory summary)
 - View yearly file count and size chart/table
-- View cutoff summary
+- View cutoff summary (including protected vs candidate counts)
 
-Every operation exposed via MCP must also be reachable through the web UI, including scheduling. MCP and web UI must reach feature parity. The web UI is required in the first PR.
+Every operation **and every option** exposed via MCP must also be reachable
+through the web UI, including scheduling and all scanner tuning/protection
+options. MCP and web UI must reach full feature and option parity. The web UI is
+required in the first PR.
+
+**Folder granularity.** For the inventory phase the selectable unit is the
+top-level shared folder (the set of read-only mounts the NAS API container has).
+Sub-folder selection is *not* part of the inventory UI. When the separate archive
+**move** workflow is built (see Archive Move Follow-Up), its UI must let the
+operator choose archive scope at the folder level within a share and preview the
+exact set of files that would move before anything happens.
 
 ## Verification Plan
 
@@ -373,6 +422,8 @@ Every operation exposed via MCP must also be reachable through the web UI, inclu
 19. Confirm web UI can schedule a future job, list it, and cancel it before it fires.
 20. Confirm web UI displays yearly chart, cutoff summary, and directory summary after job completes.
 21. Confirm web UI CSV downloads match the files written by the NAS API.
+22. Unit-test date protection: a file older than the cutoff but with `mtime`, or `ctime`, or `btime` at/after `protect_newer_than` is reported as protected, not as an archive candidate — assert each timestamp triggers protection on its own.
+23. Confirm every scanner option (overlay, protect-newer-than, I/O priority, max files/sec, sleep settings) set from the web UI is echoed back in the job's persisted state.
 
 ## First PR Scope
 
@@ -401,7 +452,8 @@ Rules for that later phase:
 
 - Create `Archive` inside the same shared folder/subvolume.
 - Dry-run first.
-- Generate a manifest before any move.
+- Generate a manifest before any move. The manifest records, **per file before
+  the move**: full path, size, inode number, and `mtime`, `ctime`, `btime`.
 - Move files with same-subvolume rename semantics.
 - Before any real move, record source root device ID, source file device ID, destination archive root device ID, and Btrfs subvolume path/id where available.
 - Verify the archive destination is on the same Btrfs subvolume as the source tree, not merely the same `/volume1`.
@@ -409,3 +461,36 @@ Rules for that later phase:
 - Preserve directory structure exactly under `Archive`.
 - Exclude `Archive` from future Resilio scans.
 - Take a Btrfs snapshot before executing.
+
+### Move integrity: verify-and-rollback (hard requirement)
+
+The move must be *self-checking*. The system never trusts that a move preserved
+identity — it proves it, per file, and undoes anything that does not match.
+
+**Same-subvolume rename path (the only allowed move path).** `rename(2)` is
+atomic and preserves the inode, all three timestamps, and size; there is no
+separate "delete" step (the source name simply ceases to exist). Even so, after
+each rename the system **re-stats the destination** and compares
+inode number, size, `mtime`, `ctime`, and `btime` against the values recorded in
+the manifest. `mtime`, `btime`, and size must be **identical**; `ctime` is
+expected to change on rename, so it is *recorded and reported* but not required
+to match. If `mtime`, `btime`, the inode, or the size differs from the manifest,
+the system **immediately renames the file back to its original path** (rollback)
+and aborts the batch. Nothing else proceeds until the operator reviews it.
+
+**Copy-and-delete path: forbidden by default, and never deletes before
+verifying.** A cross-subvolume boundary is detected up front (device/subvolume
+check + test rename) and the run aborts rather than silently copying. If a
+copy-based mode is ever explicitly enabled in the future, it must obey
+**verify-before-delete**:
+
+1. Copy source → destination preserving timestamps.
+2. Re-stat the destination and compare size, `mtime`, and `btime` (and a content
+   checksum) against the manifest.
+3. **Only if every check passes** delete the source.
+4. If any check fails, delete the *destination copy* (not the source), leave the
+   source untouched, and abort. The source is never removed on a mismatch.
+
+In both paths the per-file verification result is written back to the manifest
+(verified / rolled-back / aborted) so there is a complete, auditable record of
+exactly what happened to every file.
