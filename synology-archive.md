@@ -51,10 +51,11 @@ This avoids MCP request timeouts because MCP starts the job, then polls for stat
 
 ## User-Facing Operations
 
-Expose four operations:
+Expose five operations:
 
 ```text
 start_file_inventory
+schedule_file_inventory
 get_file_inventory_status
 fetch_file_inventory_result
 cancel_file_inventory
@@ -63,6 +64,7 @@ cancel_file_inventory
 Recommended safety labels:
 
 - `start_file_inventory`: read-only, expensive read
+- `schedule_file_inventory`: state-changing, non-destructive
 - `get_file_inventory_status`: read-only
 - `fetch_file_inventory_result`: read-only
 - `cancel_file_inventory`: state-changing but non-destructive
@@ -101,6 +103,7 @@ Each job should have a metadata file:
   "type": "file_inventory",
   "status": "queued",
   "started_at": null,
+  "scheduled_for": null,
   "finished_at": null,
   "target_shares": ["files", "styleguides"],
   "current_share": null,
@@ -114,10 +117,12 @@ Statuses:
 
 ```text
 queued
+scheduled
 running
 complete
 failed
 cancelled
+interrupted
 ```
 
 Default behavior:
@@ -128,6 +133,7 @@ Default behavior:
 - Do not write into the shared folders.
 - On startup, detect jobs that were `running` before a container restart and mark them `interrupted` unless resume support has been explicitly implemented.
 - Write progress to disk atomically every N files so status polling and crash recovery are never stale by more than that interval.
+- On startup, check for `scheduled` jobs whose `scheduled_for` time has passed and promote them to `queued`.
 
 Persistence does not keep a scan alive through a Watchtower restart. The first implementation should report an interrupted job clearly rather than silently losing it.
 
@@ -232,6 +238,7 @@ Status JSON should include:
   "files_scanned": 248000,
   "bytes_scanned": 4900000000000,
   "elapsed_seconds": 180,
+  "scheduled_for": null,
   "result_available": false
 }
 ```
@@ -278,6 +285,7 @@ Add hidden MCP operations for the job lifecycle:
 
 ```text
 start_file_inventory
+schedule_file_inventory
 get_file_inventory_status
 fetch_file_inventory_result
 cancel_file_inventory
@@ -288,6 +296,7 @@ The operations should call the NAS API rather than running long shell commands. 
 Tiering:
 
 - `start_file_inventory`: tier 2. It is read-only, but it can impose hours of metadata I/O on a NAS with millions of files, so it should require preview and approval.
+- `schedule_file_inventory`: tier 2. Schedules a future one-shot run; changes job state and should require approval.
 - `cancel_file_inventory`: tier 2. It changes job state and should require approval.
 - `get_file_inventory_status`: tier 1.
 - `fetch_file_inventory_result`: tier 1.
@@ -300,6 +309,8 @@ The start preview should show:
 - result path
 - whether the recent activity overlay is enabled
 - a warning that the scan may take hours on large shares
+
+The schedule preview should show the same fields plus the scheduled start time in local and UTC.
 
 The operation descriptions should make the I/O cost explicit:
 
@@ -320,25 +331,24 @@ Suggested fetch options:
 }
 ```
 
-## Web UI Optional Follow-Up
+## Web UI
 
-After the MCP-first version works, add a small operator page in the web app:
+All operations must have GUI coverage. Add an operator page in the web app at `/archive-inventory`.
 
-```text
-/archive-inventory
-```
-
-Expected controls:
+Required controls:
 
 - Target NAS selector
 - Share checkboxes
-- Start job
-- Progress/status
-- Download CSV
-- View yearly chart/table
+- Start job (immediate)
+- Schedule job (date/time picker for a future one-shot run)
+- Scheduled jobs list with per-job cancel control
+- Active job progress and status display
+- Cancel running job
+- Download CSV (primary yearly, cutoff summary, directory summary)
+- View yearly file count and size chart/table
 - View cutoff summary
 
-This is optional. The first useful version can be MCP-only.
+Every operation exposed via MCP must also be reachable through the web UI, including scheduling. MCP and web UI must reach feature parity. The web UI is required in the first PR.
 
 ## Verification Plan
 
@@ -349,15 +359,20 @@ This is optional. The first useful version can be MCP-only.
 5. Unit-test atomic progress writes.
 6. Unit-test symlink skipping.
 7. Unit-test empty directory counting.
-8. Run scanner against a tiny mounted test folder.
-9. Run one real small share, such as `Coldlion`.
-10. Run one medium share with low I/O priority and throttling enabled.
-11. Confirm MCP timeout no longer matters because status polling returns immediately.
-12. Compare one completed share report against a manual `find` spot check.
-13. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
-14. Confirm the durable NAS API jobs mount survives a container recreate.
-15. Confirm Drive/ShareSync overlay errors are recorded without failing the inventory.
-16. Confirm `fetch_file_inventory_result` enforces pagination or response-size limits.
+8. Unit-test that `scheduled` jobs whose `scheduled_for` time has passed are promoted to `queued` on startup.
+9. Run scanner against a tiny mounted test folder.
+10. Run one real small share, such as `Coldlion`.
+11. Run one medium share with low I/O priority and throttling enabled.
+12. Confirm MCP timeout no longer matters because status polling returns immediately.
+13. Compare one completed share report against a manual `find` spot check.
+14. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
+15. Confirm the durable NAS API jobs mount survives a container recreate.
+16. Confirm Drive/ShareSync overlay errors are recorded without failing the inventory.
+17. Confirm `fetch_file_inventory_result` enforces pagination or response-size limits.
+18. Confirm web UI can start an immediate job and display live progress.
+19. Confirm web UI can schedule a future job, list it, and cancel it before it fires.
+20. Confirm web UI displays yearly chart, cutoff summary, and directory summary after job completes.
+21. Confirm web UI CSV downloads match the files written by the NAS API.
 
 ## First PR Scope
 
@@ -366,13 +381,13 @@ Build the smallest useful version:
 - Durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`
 - NAS API local file inventory job manager
 - Mtime-year scanner
-- Status/result/cancel endpoints
+- Status/result/cancel/schedule endpoints
 - MCP operations wired to those endpoints
+- Web UI at `/archive-inventory` covering all five operations
 - Documentation and safety notes
 
 Defer:
 
-- Web UI
 - Supabase persistence
 - Archive move execution
 - Atime/remount changes
