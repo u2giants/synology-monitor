@@ -46,14 +46,15 @@ in docs.
 | Workflow | Pre-build gate | Compile gate (in Docker build) |
 |---|---|---|
 | `nas-api-image.yml` | `go vet ./... && go test ./...` (`apps/nas-api`) | `go build` |
-| `agent-image.yml` | _none yet — see note_ | `go build` |
+| `agent-image.yml` | `go vet ./... && go test ./...` (`apps/agent`) | `go build` |
 | `web-image.yml` | `pnpm --filter web run guard:ai` | `next build` (tsc) |
 | `nas-mcp-image.yml` | _none yet — Docker build runs_ | `tsc` (pnpm build) |
 
 > The Go services historically only had the compile-level gate from `go build` in
-> their Dockerfiles. `nas-api-image.yml` now runs `go vet` + `go test` before the
-> build so the `internal/jobs` (and validator) tests gate the deploy. `agent-image.yml`
-> can take the same gate if/when its tests should block release.
+> their Dockerfiles. Both `nas-api-image.yml` and `agent-image.yml` now run
+> `go vet` + `go test` before the build, so vet findings and unit tests (e.g. the
+> nas-api `internal/jobs` and validator suites) gate the deploy. The agent has no
+> test files yet, so its gate is currently `go vet` plus future-proofing.
 
 ### Required GitHub Secrets
 

@@ -23,6 +23,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Verification gate (CI/CD rules §8/§11): build/publish only if vet + tests
+      # pass, so a regression never reaches the production NASes (Watchtower only
+      # deploys images this workflow publishes). The agent has no test files yet,
+      # so this is currently a vet gate plus future-proofing for added tests.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Vet and test
+        working-directory: apps/agent
+        run: |
+          go vet ./...
+          go test ./...
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
