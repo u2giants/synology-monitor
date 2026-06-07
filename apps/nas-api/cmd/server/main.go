@@ -3,16 +3,21 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/synology-monitor/nas-api/internal/auth"
 	"github.com/synology-monitor/nas-api/internal/executor"
+	"github.com/synology-monitor/nas-api/internal/jobs"
 	"github.com/synology-monitor/nas-api/internal/validator"
 )
 
@@ -62,10 +67,31 @@ func main() {
 
 	v := auth.NewVerifier(apiKey, signingKey)
 
+	// File-inventory job system (Phase 1). State persists under the durable
+	// /app/data/jobs bind mount; nasName is the logical NAS name the web/MCP
+	// target this box by (edgesynology1/2) — deliberately separate from the
+	// agent's NAS_NAME (see docker-compose.agent.yml).
+	jobsDir := envOr("NAS_API_JOBS_DIR", "/app/data/jobs")
+	nasName := envOr("NAS_API_NAME", hostnameOrEmpty())
+	store := jobs.NewStore(jobsDir)
+	mgr := jobs.New(store, nasName)
+	mgr.RecoverOnStart()
+	mgr.StartScheduler()
+	if !mgr.Ready() {
+		log.Printf("WARNING: jobs dir %s not writable — inventory endpoints will return 503 until `docker compose up -d` materializes the mount", jobsDir)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", requireAuth(v, handleExec(v)))
 	mux.HandleFunc("POST /preview", requireAuth(v, handlePreview))
+
+	mux.HandleFunc("POST /jobs/inventory", requireAuth(v, requireApproval(v, jobs.OpStart, nasName, handleInventoryStart(mgr))))
+	mux.HandleFunc("POST /jobs/inventory/schedule", requireAuth(v, requireApproval(v, jobs.OpSchedule, nasName, handleInventorySchedule(mgr))))
+	mux.HandleFunc("GET /jobs/inventory", requireAuth(v, handleInventoryList(mgr)))
+	mux.HandleFunc("GET /jobs/inventory/{id}", requireAuth(v, handleInventoryStatus(mgr)))
+	mux.HandleFunc("GET /jobs/inventory/{id}/result", requireAuth(v, handleInventoryResult(mgr, store)))
+	mux.HandleFunc("POST /jobs/inventory/{id}/cancel", requireAuth(v, requireApproval(v, jobs.OpCancel, nasName, handleInventoryCancel(mgr))))
 
 	addr := ":" + port
 	log.Printf("Listening on %s", addr)
@@ -205,4 +231,250 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func hostnameOrEmpty() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return h
+}
+
+// ── File-inventory job endpoints ───────────────────────────────────────────────
+
+// requireApproval enforces an HMAC approval token for state-changing job ops.
+// It rebuilds the canonical operation string from the SERVER's NAS name plus the
+// request body/path and verifies the token via the same auth.Verifier used by
+// /exec (tier 2). The token is sent in the X-Approval-Token header.
+func requireApproval(v *auth.Verifier, op jobs.Op, nasName string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+		token := r.Header.Get("X-Approval-Token")
+		if token == "" {
+			writeJSON(w, http.StatusForbidden, errResp{"approval token required (X-Approval-Token header)"})
+			return
+		}
+		var canonical string
+		if op == jobs.OpCancel {
+			canonical = jobs.CanonicalOpString(op, nasName, r.PathValue("id"), nil)
+		} else {
+			var req jobs.StartRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
+				return
+			}
+			req.Normalize()
+			canonical = jobs.CanonicalOpString(op, nasName, "", &req)
+		}
+		if err := v.VerifyApprovalToken(token, canonical, 2); err != nil {
+			writeJSON(w, http.StatusForbidden, errResp{err.Error()})
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body)) // restore for the handler
+		next(w, r)
+	}
+}
+
+// jobsReady returns false and writes 503 when the durable jobs mount is absent.
+func jobsReady(w http.ResponseWriter, mgr *jobs.Manager) bool {
+	if mgr.Ready() {
+		return true
+	}
+	writeJSON(w, http.StatusServiceUnavailable, errResp{"jobs mount not present — run `docker compose up -d` on this NAS to materialize /app/data/jobs"})
+	return false
+}
+
+func decodeStartRequest(w http.ResponseWriter, r *http.Request) (jobs.StartRequest, bool) {
+	var req jobs.StartRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
+		return req, false
+	}
+	return req, true
+}
+
+func handleInventoryStart(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		req, ok := decodeStartRequest(w, r)
+		if !ok {
+			return
+		}
+		job, err := mgr.Start(req)
+		if errors.Is(err, jobs.ErrBusy) {
+			writeJSON(w, http.StatusConflict, errResp{err.Error()})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, job)
+	}
+}
+
+func handleInventorySchedule(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		req, ok := decodeStartRequest(w, r)
+		if !ok {
+			return
+		}
+		job, err := mgr.Schedule(req)
+		if errors.Is(err, jobs.ErrBusy) {
+			writeJSON(w, http.StatusConflict, errResp{err.Error()})
+			return
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, job)
+	}
+}
+
+func handleInventoryList(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		list, err := mgr.List()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp{err.Error()})
+			return
+		}
+		if list == nil {
+			list = []*jobs.Job{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": list})
+	}
+}
+
+func handleInventoryStatus(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, err := mgr.Get(r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	}
+}
+
+func handleInventoryCancel(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		if err := mgr.Cancel(r.PathValue("id")); err != nil {
+			if errors.Is(err, jobs.ErrNotFound) {
+				writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusConflict, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
+	}
+}
+
+// resultCap bounds the non-download (MCP) response so an oversized CSV can never
+// be pulled into a model context.
+const (
+	resultDefaultLimit = 1000
+	resultMaxLimit     = 5000
+)
+
+func handleInventoryResult(mgr *jobs.Manager, store *jobs.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		id := r.PathValue("id")
+		job, err := mgr.Get(id)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+			return
+		}
+		kind := r.URL.Query().Get("result")
+		if kind == "" {
+			kind = "yearly"
+		}
+		path, ok := store.ResultPath(id, kind)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, errResp{"unknown result kind (want yearly|cutoff|dirs|overlay)"})
+			return
+		}
+		if !job.ResultReady {
+			writeJSON(w, http.StatusConflict, errResp{"result not ready (job status: " + string(job.Status) + ")"})
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{"result file not found: " + kind})
+			return
+		}
+
+		// Web download path: stream the full CSV as an attachment.
+		if r.URL.Query().Get("download") == "1" {
+			w.Header().Set("Content-Type", "text/csv")
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-"+kind+".csv"))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+
+		// MCP path: bounded JSON envelope (header + paged rows).
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		header := ""
+		var rows []string
+		if len(lines) > 0 {
+			header = lines[0]
+			rows = lines[1:]
+		}
+		limit := clampInt(queryInt(r, "limit", resultDefaultLimit), 1, resultMaxLimit)
+		cursor := clampInt(queryInt(r, "cursor", 0), 0, len(rows))
+		end := cursor + limit
+		if end > len(rows) {
+			end = len(rows)
+		}
+		next := -1
+		if end < len(rows) {
+			next = end
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"result":      kind,
+			"header":      header,
+			"rows":        rows[cursor:end],
+			"total_rows":  len(rows),
+			"next_cursor": next,
+		})
+	}
+}
+
+func queryInt(r *http.Request, key string, fallback int) int {
+	if v := r.URL.Query().Get(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func clampInt(n, lo, hi int) int {
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
 }
