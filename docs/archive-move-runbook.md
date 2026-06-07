@@ -31,16 +31,37 @@ No new mount or env is needed for Phase 2 — moves use the existing read-write
 
 ---
 
-## 1. Pick a safe target
+## 1. The archive targets (this project)
 
-- **Share:** start with a small, low-importance share — **`Coldlion`** is a good
-  first choice.
-- **Keep the first run tiny.** Either:
-  - limit scope with a **sub-folder** in the "Limit to sub-folders" box, and/or
-  - pick a **cutoff year** that only captures a handful of files.
-- Tip: run an **Archive Inventory** on the share first and look at the yearly
-  chart, so you know roughly how many files a given cutoff will select. Aim for
-  **well under 100 files** for the first test.
+The only data the owner wants archived is:
+
+| # | Share (UI dropdown) | Scope ("Limit to sub-folders") |
+|---|---|---|
+| 1 | `styleguides` | whole share (leave the box empty) |
+| 2 | `mac` | `Decor/character licensed, Decor/generic decor` |
+
+**Do not archive any other share** (Coldlion in particular is out of scope).
+
+There is **no throwaway share to practice on**, so validate carefully on these real
+targets. This is safe because **Plan is always read-only**, and the first real
+**Execute is proven with a Rollback before any keep-move** (sections 3–6). Suggested
+order for the very first run: do the smaller target (the two `mac/Decor`
+sub-folders, or even just one of them) end-to-end including the rollback, then —
+once proven — run the real keep-moves.
+
+Notes / gotchas:
+- **Folder names are case- and space-sensitive on the NAS.** If a Plan returns
+  **0 files**, the path or capitalization is wrong — check the exact names on the
+  NAS (is the share `mac` or `Mac`? is the folder `Decor`? are the sub-folders
+  lowercase `character licensed` / `generic decor`?). Fix the scope and re-plan.
+- The "Limit to sub-folders" box is **comma-separated**; spaces inside a folder
+  name are fine (`Decor/character licensed, Decor/generic decor`).
+- For **move** mode, pick a **cutoff year** that matches what "old enough to
+  archive" means for these folders. Run an **Archive Inventory** on the share first
+  to see the per-year file counts before choosing.
+- If you want to archive **everything** in these folders regardless of age, set the
+  cutoff to next year (e.g. `2027`) so every file qualifies — but prefer a real
+  age cutoff unless you truly want all of it moved.
 
 ---
 
