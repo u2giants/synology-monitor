@@ -171,13 +171,16 @@ Use Go filesystem walking rather than shelling out to `find`.
 Recommended approach:
 
 - Use `filepath.WalkDir` or a controlled iterative stack.
+- Explicitly ignore symlinks. Check `DirEntry.Type()` before calling `Info()` and skip entries where `mode&os.ModeSymlink != 0`.
 - Call `DirEntry.Info()` only for files.
 - Aggregate by `mtime.Year()`.
+- Track empty directory counts per share. This gives a baseline for how many skeleton directories may remain after a future archive move.
 - Track total file count and total bytes per share/year.
 - Track progress every N files.
 - Persist progress every N files with an atomic write, such as writing `status.tmp` and renaming it to `status.json`.
 - Check cancellation between directories and every N files.
-- Throttle periodically to reduce NAS impact.
+- Run the scanner at low CPU and I/O priority where possible, for example via `nice` plus `ionice -c 3`, so active SMB/Drive workloads win scheduling priority.
+- Keep periodic manual throttling as a secondary control to reduce NAS impact.
 
 Suggested scanner options:
 
@@ -188,6 +191,7 @@ Suggested scanner options:
   "archive_dir_name": "Archive",
   "cutoff_years": [2021, 2022],
   "max_files_per_second": 0,
+  "use_idle_io_priority": true,
   "sleep_every_files": 5000,
   "sleep_ms": 25
 }
@@ -211,6 +215,13 @@ nas,share,cutoff,file_count,total_bytes,total_gib
 edgesynology1,files,older_than_2021,65755,1499000000000,1395.90
 ```
 
+Directory summary CSV:
+
+```text
+nas,share,total_dirs,empty_dirs
+edgesynology1,files,52110,8321
+```
+
 Status JSON should include:
 
 ```json
@@ -232,6 +243,8 @@ Add an optional second report mode that aggregates recent Synology Drive and Sha
 This should be treated as a recent-change overlay, not a complete access history.
 
 The overlay must be best-effort. Synology Drive keeps its SQLite databases open, and the NAS API mounts those paths read-only. Open the databases in read-only mode with a short busy timeout. If SQLite returns `SQLITE_BUSY`, missing-table errors, or WAL-related read errors, skip the overlay and record the reason in the job result instead of failing the whole inventory.
+
+Prefer copying the relevant SQLite files into the job's temporary workspace before querying them. Copy the main `.sqlite` file plus any adjacent `-wal` and `-shm` files, then open the copied database read-only. This avoids placing read locks on Synology's live Drive or ShareSync databases during active sync cycles. If the copy is incomplete or the copied database cannot be queried consistently, skip that overlay and record the reason.
 
 Example result:
 
@@ -294,6 +307,19 @@ The operation descriptions should make the I/O cost explicit:
 - It should be run during quiet hours for very large shares.
 - It does not move, delete, or modify files.
 
+Result fetching must be bounded. `fetch_file_inventory_result` should default to compact summaries and enforce maximum response rows/bytes so an MCP client cannot accidentally pull an oversized CSV into the model context. Full results should be fetched by result kind and page, or exposed as an artifact/path reference with explicit pagination.
+
+Suggested fetch options:
+
+```json
+{
+  "job_id": "inv_20260607_all",
+  "result": "yearly",
+  "limit": 100,
+  "cursor": null
+}
+```
+
 ## Web UI Optional Follow-Up
 
 After the MCP-first version works, add a small operator page in the web app:
@@ -321,14 +347,17 @@ This is optional. The first useful version can be MCP-only.
 3. Unit-test cancellation.
 4. Unit-test startup recovery for a job left in `running` state.
 5. Unit-test atomic progress writes.
-6. Run scanner against a tiny mounted test folder.
-7. Run one real small share, such as `Coldlion`.
-8. Run one medium share with throttling enabled.
-9. Confirm MCP timeout no longer matters because status polling returns immediately.
-10. Compare one completed share report against a manual `find` spot check.
-11. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
-12. Confirm the durable NAS API jobs mount survives a container recreate.
-13. Confirm Drive/ShareSync overlay errors are recorded without failing the inventory.
+6. Unit-test symlink skipping.
+7. Unit-test empty directory counting.
+8. Run scanner against a tiny mounted test folder.
+9. Run one real small share, such as `Coldlion`.
+10. Run one medium share with low I/O priority and throttling enabled.
+11. Confirm MCP timeout no longer matters because status polling returns immediately.
+12. Compare one completed share report against a manual `find` spot check.
+13. Confirm no writes occur outside `/app/data/jobs/file-inventory/`.
+14. Confirm the durable NAS API jobs mount survives a container recreate.
+15. Confirm Drive/ShareSync overlay errors are recorded without failing the inventory.
+16. Confirm `fetch_file_inventory_result` enforces pagination or response-size limits.
 
 ## First PR Scope
 
@@ -359,6 +388,9 @@ Rules for that later phase:
 - Dry-run first.
 - Generate a manifest before any move.
 - Move files with same-subvolume rename semantics.
+- Before any real move, record source root device ID, source file device ID, destination archive root device ID, and Btrfs subvolume path/id where available.
+- Verify the archive destination is on the same Btrfs subvolume as the source tree, not merely the same `/volume1`.
+- Run a harmless same-tree test rename before moving user files. If rename behavior indicates a cross-device or cross-subvolume boundary, abort instead of falling back to copy-and-delete.
 - Preserve directory structure exactly under `Archive`.
 - Exclude `Archive` from future Resilio scans.
 - Take a Btrfs snapshot before executing.
