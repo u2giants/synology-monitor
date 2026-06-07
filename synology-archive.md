@@ -49,6 +49,26 @@ Implement a NAS-side background file inventory job. The NAS performs the long fi
 
 This avoids MCP request timeouts because MCP starts the job, then polls for status and fetches the small result when complete.
 
+## Phases
+
+This project ships in two phases. Both are fully specified in this document.
+
+- **Phase 1 — Inventory (read-only).** Scan shares, classify files by modified
+  year, apply protection and activity rules, and report archive candidates. It
+  never touches user data. Phase 1 produces the *evidence* for choosing archive
+  rules. Sections up to and including *Phase 1 Scope* describe it.
+- **Phase 2 — Archive Move (relocation).** Relocate the archive candidates into
+  an `Archive/` tree inside the same shared folder/subvolume, preserving file
+  identity and timestamps, verify every move, exclude `Archive/` from sync, and
+  keep a complete reversible record. **Phase 2 is what makes the application
+  actually useful** — it is the step that removes old files from the sync path
+  and lets the operator validate the system end to end. It is built as a staged,
+  reviewable, self-verifying, reversible workflow. The *Phase 2 — Archive Move*
+  section describes it in full.
+
+Phase 2 depends on Phase 1's classification logic and job runtime, but is a
+distinct job type with its own operations, UI flow, and tiering.
+
 ## User-Facing Operations
 
 Expose five operations:
@@ -425,72 +445,321 @@ exact set of files that would move before anything happens.
 22. Unit-test date protection: a file older than the cutoff but with `mtime`, or `ctime`, or `btime` at/after `protect_newer_than` is reported as protected, not as an archive candidate — assert each timestamp triggers protection on its own.
 23. Confirm every scanner option (overlay, protect-newer-than, I/O priority, max files/sec, sleep settings) set from the web UI is echoed back in the job's persisted state.
 
-## First PR Scope
+## Phase 1 Scope — Inventory
 
-Build the smallest useful version:
+Build the read-only inventory:
 
 - Durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`
 - NAS API local file inventory job manager
-- Mtime-year scanner
+- Mtime-year scanner with date protection and the activity overlay
 - Status/result/cancel/schedule endpoints
 - MCP operations wired to those endpoints
-- Web UI at `/archive-inventory` covering all five operations
+- Web UI at `/archive-inventory` covering all five operations and every option
 - Documentation and safety notes
 
-Defer:
+Defer to a later, separate effort (NOT Phase 2):
 
-- Supabase persistence
-- Archive move execution
-- Atime/remount changes
-- Per-file candidate manifests
+- Supabase persistence of results
+- Atime/relatime remount changes
 
-## Archive Move Follow-Up
+## Phase 2 — Archive Move (Relocation)
 
-Once inventory is complete and archive rules are chosen, implement archive moves separately.
+Phase 1 only reports. **Phase 2 is what makes this application useful and
+testable end to end:** it relocates the archive candidates into an `Archive/`
+tree inside the same shared folder/subvolume, preserving file identity and
+timestamps, verifies every move, excludes `Archive/` from sync so Resilio/Drive
+stop traversing old data, and keeps a complete reversible record. This is the
+step that actually fixes the slow-sync problem. It is also the only step that
+writes to user data, so it is built as a staged, reviewable, self-verifying,
+reversible workflow with hard safety gates between stages.
 
-Rules for that later phase:
+### Relationship to Phase 1
 
-- Create `Archive` inside the same shared folder/subvolume.
-- Dry-run first.
-- Generate a manifest before any move. The manifest records, **per file before
-  the move**: full path, size, inode number, and `mtime`, `ctime`, `btime`.
-- Move files with same-subvolume rename semantics.
-- Before any real move, record source root device ID, source file device ID, destination archive root device ID, and Btrfs subvolume path/id where available.
-- Verify the archive destination is on the same Btrfs subvolume as the source tree, not merely the same `/volume1`.
-- Run a harmless same-tree test rename before moving user files. If rename behavior indicates a cross-device or cross-subvolume boundary, abort instead of falling back to copy-and-delete.
-- Preserve directory structure exactly under `Archive`.
-- Exclude `Archive` from future Resilio scans.
-- Take a Btrfs snapshot before executing.
+- Phase 2 reuses Phase 1's classification logic (cutoff years,
+  `protect_newer_than`, the Drive/ShareSync activity overlay) and the same
+  scanner core (symlink-skipping, default exclusions, idle I/O priority).
+- It re-evaluates every rule at **plan time with fresh `stat` data** — a stored
+  inventory result is treated as guidance, never as the authority for what to
+  move (files may have changed since the inventory ran).
+- It runs on the same NAS-side job manager and persistence model as Phase 1, as
+  a new job `type` of `archive_move`.
+- **Mutual exclusion:** at most one heavyweight job (inventory *or* move) runs
+  per NAS at a time; a second request returns `409 Conflict`.
+
+### Staged workflow
+
+Five strictly-ordered stages, each persisted and individually observable, plus
+two out-of-band operations. **Execution never auto-follows planning** — the
+operator (or an MCP caller) advances explicitly across every destructive
+boundary.
+
+1. **Plan (dry-run, read-only)** — enumerate the exact files that would move,
+   write a manifest, produce a summary. No changes to user data.
+2. **Preflight** — safety gates that must all pass before anything is created
+   (subvolume/device verification, test-rename, collision rescan, symlink/open-
+   file checks, snapshot readiness, capacity sanity).
+3. **Snapshot** — take a read-only Btrfs snapshot of the share subvolume as a
+   whole-run safety net, record its id/path.
+4. **Execute** — per-file atomic rename + immediate verify, with rollback-on-
+   mismatch; resumable; cancellable.
+5. **Verify & finalize** — re-confirm every entry landed with matching identity
+   and the source path is gone; emit the completion report; apply the `Archive/`
+   sync exclusion; optionally prune source dirs emptied by the move.
+
+Out of band: **Cancel** (stop an in-progress stage cleanly, leaving a consistent
+resumable state) and **Rollback** (reverse a completed or partial move using the
+manifest).
+
+### Scope selection (folder-level)
+
+- The operator chooses **NAS → share → optional sub-folder roots** within the
+  share. Scoping is folder-level, not whole-share-only, and supports per-run
+  include/exclude path globs.
+- The archive root for a share is `/<share>/Archive`. Files keep their relative
+  path beneath it:
+  `/<share>/clients/acme/logo.ai` → `/<share>/Archive/clients/acme/logo.ai`.
+- The Plan UI must render a **preview of the exact file set** (and totals) before
+  any directory is created. Nothing is hidden behind a single "archive" button.
+
+### Move job runtime
+
+- New job `type: "archive_move"`, persisted under
+  `/app/data/jobs/archive-move/<job_id>/` (same atomic-write model as Phase 1).
+- Statuses: `planning`, `planned`, `preflight`, `preflight_failed`,
+  `snapshotting`, `executing`, `verifying`, `complete`, `failed`, `cancelled`,
+  `rolled_back`, `interrupted`.
+- A move job records: NAS, share, scope (roots + globs), the applied rules
+  (cutoff, protect date, overlay flag), the chosen snapshot id, and the manifest
+  path.
+- **Startup recovery:** a job left in `executing` when the container restarts is
+  marked `interrupted`. Because per-file status is in the manifest, an
+  interrupted job is **resumable** (continue from the first not-yet-moved file)
+  or can be rolled back — it is never silently abandoned.
+
+### The manifest (single source of truth)
+
+JSONL (one JSON object per line), written at Plan and updated through Execute /
+Verify / Rollback. It is the input to Execute and to Rollback and is downloadable
+in the UI and fetchable (bounded/paginated) via MCP. Per-file fields:
+
+```text
+rel_path        relative path within the share
+source_abs      absolute source path
+dest_abs        absolute destination path under /<share>/Archive/
+size            bytes
+inode           inode number (identity check)
+dev_id          st_dev of the file
+subvol_id       Btrfs subvolume id of the source tree
+mtime           RFC3339 (ns) — must be preserved
+ctime           RFC3339 (ns) — recorded; expected to change on rename
+btime           RFC3339 (ns) — must be preserved (statx; fallback noted)
+planned_reason  e.g. "older_than_2021"
+status          planned | moved | verified | skipped | failed | rolled_back
+detail          skip/error reason, or verification result
+```
+
+### Plan (dry-run) details
+
+- Walk the scoped paths with the Phase 1 scanner core (skip symlinks, skip the
+  default-excluded dirs **including the existing `Archive/`**).
+- Classify each file with the same rules as inventory; for each candidate compute
+  `dest_abs` and capture `size`, `inode`, `dev_id`, `subvol_id`, and all three
+  timestamps.
+- **Collision detection:** if `dest_abs` already exists, mark the row `skipped`
+  with reason `collision` — the move never overwrites an existing file.
+- Emit the manifest plus a summary (counts/bytes by share/year, with
+  protected/skipped breakdown). Fully read-only and safe to re-run.
+
+### Preflight gates (all must pass, else `preflight_failed`)
+
+- **Same-subvolume check:** the source tree and `/<share>/Archive` must resolve
+  to the same Btrfs subvolume id, not merely the same `/volume1`. Record source
+  and destination `dev_id` + subvolume id.
+- **Test-rename:** create a throwaway file under the source tree, rename it into
+  `Archive/`, stat-verify identity is preserved, rename it back, delete it. If
+  this reveals cross-device / cross-subvolume behavior → **abort** (never fall
+  back to copy-and-delete).
+- **Collision rescan (fresh):** re-confirm no `dest_abs` exists.
+- **Symlink / open-file checks:** re-confirm no candidate is a symlink;
+  best-effort check that candidates are not currently open (`lsof`/`fuser`) and
+  either warn or skip open files per the run option.
+- **Snapshot readiness:** confirm a Btrfs snapshot of the subvolume can be
+  created.
+- **Capacity:** rename needs no extra data space, but creating `Archive/`
+  directories consumes metadata — sanity-check free space and inodes.
+
+### Snapshot
+
+Before the first rename, take a read-only Btrfs snapshot of the share subvolume
+and record its id/path in the job. This is the last-resort whole-run recovery if
+per-file rollback is ever insufficient. Document retention: the snapshot is kept
+until the operator confirms the move is good, then may be dropped.
+
+### Execute details
+
+- Set idle I/O priority (reuse the Phase 1 priority helper).
+- For each `planned` (non-`skipped`) file, in a stable order:
+  1. Create destination parent directories, matching source ownership/permissions.
+  2. Atomic `rename(source_abs, dest_abs)`.
+  3. Re-`stat` the destination and compare **inode, size, mtime, btime** to the
+     manifest. `ctime` is expected to change on rename, so it is recorded and
+     reported but not required to match.
+  4. On full match → mark `moved`. On any mismatch → **rename the file back to
+     `source_abs`** (per-file rollback), mark `failed`, and abort the run.
+- Persist progress and per-file status atomically every N files. Cancellable
+  between files. **Resumable:** on resume, files already `moved`/`verified` are
+  skipped.
+- The move is **rename-only — nothing is ever deleted.** The source name
+  disappears as part of the atomic rename; there is no separate unlink step.
 
 ### Move integrity: verify-and-rollback (hard requirement)
 
-The move must be *self-checking*. The system never trusts that a move preserved
+The move is *self-checking*. The system never trusts that a move preserved
 identity — it proves it, per file, and undoes anything that does not match.
 
-**Same-subvolume rename path (the only allowed move path).** `rename(2)` is
-atomic and preserves the inode, all three timestamps, and size; there is no
-separate "delete" step (the source name simply ceases to exist). Even so, after
-each rename the system **re-stats the destination** and compares
-inode number, size, `mtime`, `ctime`, and `btime` against the values recorded in
-the manifest. `mtime`, `btime`, and size must be **identical**; `ctime` is
-expected to change on rename, so it is *recorded and reported* but not required
-to match. If `mtime`, `btime`, the inode, or the size differs from the manifest,
-the system **immediately renames the file back to its original path** (rollback)
-and aborts the batch. Nothing else proceeds until the operator reviews it.
+- **Rename path (the only allowed move path).** `rename(2)` is atomic and
+  preserves inode, size, `mtime`, and `btime` within a subvolume; `ctime`
+  changes because the inode changed. After each rename the destination is
+  re-`stat`ed and compared to the manifest: `inode`, `size`, `mtime`, `btime`
+  must be **identical**; a `ctime` change is expected. Any mismatch →
+  immediate rename-back (rollback) of that file and abort of the run.
+- **Copy-and-delete path is forbidden by default.** A cross-subvolume boundary
+  is caught at preflight and the run aborts rather than silently copying. If a
+  copy-based mode is ever explicitly enabled later, it must obey
+  **verify-before-delete**: copy preserving timestamps → re-`stat` and compare
+  `size`, `mtime`, `btime`, **and a content checksum** to the manifest → only if
+  every check passes, delete the source → on any failure, delete the
+  *destination copy* (never the source) and abort. The source is never removed
+  on a mismatch.
+- Every per-file outcome (`moved`/`verified`/`failed`/`rolled_back`) is written
+  back to the manifest, producing a complete, auditable record of exactly what
+  happened to every file.
 
-**Copy-and-delete path: forbidden by default, and never deletes before
-verifying.** A cross-subvolume boundary is detected up front (device/subvolume
-check + test rename) and the run aborts rather than silently copying. If a
-copy-based mode is ever explicitly enabled in the future, it must obey
-**verify-before-delete**:
+### Verify & finalize
 
-1. Copy source → destination preserving timestamps.
-2. Re-stat the destination and compare size, `mtime`, and `btime` (and a content
-   checksum) against the manifest.
-3. **Only if every check passes** delete the source.
-4. If any check fails, delete the *destination copy* (not the source), leave the
-   source untouched, and abort. The source is never removed on a mismatch.
+- Re-walk the manifest: for each `moved` file confirm `dest_abs` exists with
+  matching identity and `source_abs` no longer exists; mark `verified`.
+- Emit the completion report (counts/bytes moved/verified/skipped/failed).
+- Apply the `Archive/` sync exclusion (next section).
+- Optionally prune source directories **emptied by the move** — never delete a
+  directory that still holds non-candidate files; record exactly which dirs were
+  removed.
 
-In both paths the per-file verification result is written back to the manifest
-(verified / rolled-back / aborted) so there is a complete, auditable record of
-exactly what happened to every file.
+### Sync exclusion for `Archive/`
+
+The point of the move is to stop sync tools from traversing `Archive/`. After a
+verified move, ensure each sync tool covering the share excludes
+`<share>/Archive`:
+
+- **Resilio:** add the `Archive` subtree to the job's IgnoreList / selective-sync
+  exclusion. Where a file-based ignore list exists (`.sync/IgnoreList`), the
+  system appends the entry directly; otherwise it emits the exact operator steps.
+- **Synology Drive ShareSync:** document and emit the selective-sync exclusion
+  step; automate only where a supported config path exists.
+- Record what exclusion was applied automatically versus what the operator must
+  do manually. Phase 1 inventory already skips `Archive/`, so relocated data also
+  stays out of future scans.
+
+### Rollback (whole-run)
+
+- Using the manifest, reverse the move: for each `moved`/`verified` entry, rename
+  `dest_abs` → `source_abs`, verify identity, mark `rolled_back`; remove any
+  `Archive/` directories emptied by the rollback.
+- If rename-based rollback is impossible for any entry, fall back to restoring
+  from the pre-execute Btrfs snapshot, with the manual snapshot-restore procedure
+  documented.
+- Rollback is a destructive/reversing operation: tier 3, approval + explicit
+  confirmation required.
+
+### Operations (NAS API endpoints + MCP tools)
+
+Mirror Phase 1 under `/jobs/archive-move/*`:
+
+```text
+plan_archive_move          tier 2  — heavy read; writes a manifest; preview + approval
+get_archive_move_status    tier 1
+fetch_archive_move_manifest tier 1 — bounded/paginated
+execute_archive_move       tier 3  — destructive; needs a planned job/manifest id + confirmed
+cancel_archive_move        tier 2
+rollback_archive_move      tier 3  — reversing; confirmed
+verify_archive_move        tier 1  — re-verify a completed move
+```
+
+Tier 2/3 reuse the existing HMAC approval-token mechanism; the canonical
+operation string includes NAS, share, scope, a hash of the applied rules, and the
+manifest/job id so a tampered request fails verification.
+
+### Web UI (full parity, folder-level, gated)
+
+On the `/archive-inventory` page (or a sibling `/archive-move`), a staged panel:
+
+- **Scope:** NAS → share → folder picker (tree and/or include/exclude path
+  globs).
+- **Rules:** cutoff, protect-newer-than, overlay toggle — prefilled from the most
+  recent inventory.
+- **Plan move (dry-run):** shows the manifest summary plus a browsable and
+  downloadable file-list preview. Nothing destructive happens.
+- **Review gate:** an explicit "I reviewed N files / X TB" confirmation.
+- **Execute:** strong confirmation modal (operator types the share name), shows
+  the snapshot id, then live per-file progress with a Cancel control.
+- **Verify:** status plus a downloadable completion report.
+- **Rollback:** its own confirmation modal.
+- Every operation and option is reachable in the GUI (parity); folder-level scope
+  selection is required.
+
+### Result / report formats
+
+```text
+manifest.jsonl     per-file (schema above)
+move-report.csv    nas,share,planned,moved,verified,skipped,failed,bytes_moved
+preflight.json     per-gate pass/fail with details
+verify-report.csv  nas,share,verified,missing,identity_mismatch
+```
+
+### Tiering summary
+
+- Read (tier 1): status, manifest fetch, verify.
+- State-changing, non-destructive (tier 2): plan, cancel.
+- Destructive (tier 3): execute, rollback.
+
+### Phase 2 verification plan
+
+Unit tests on temp trees where Btrfs is not required; integration tests on a real
+share for the subvolume/snapshot/identity behavior.
+
+1. Plan produces a correct manifest for a known tree (paths, dest mapping, and
+   all three timestamps captured).
+2. Protected / overlay-active / cutoff rules correctly exclude files at plan time.
+3. Collision detection marks a pre-existing destination `skipped`; never
+   overwrites.
+4. Same-subvolume check passes within a share; a cross-subvolume scope aborts at
+   preflight.
+5. Test-rename round-trips and preserves identity.
+6. Execute renames preserve `inode` + `mtime` + `btime` + `size` (assert via
+   `stat`); a `ctime` change is tolerated.
+7. An injected identity mismatch triggers per-file rollback and aborts the run.
+8. Cancel mid-run leaves a consistent, resumable state; resume completes the rest.
+9. Interrupted (simulated container restart) → marked `interrupted`; both resume
+   and rollback work.
+10. Whole-run rollback restores every file to its exact original path and
+    identity.
+11. The snapshot is taken before execute and recorded; the documented restore
+    works.
+12. After finalize, `Archive/` is excluded from sync and from future inventory
+    scans.
+13. Empty source dirs are pruned only when emptied by the move; non-empty dirs
+    are untouched.
+14. **End-to-end on a small real share (e.g. `Coldlion`): plan → execute →
+    verify → confirm sync no longer traverses `Archive/` → rollback → confirm the
+    original state is fully restored.** This is the end-to-end test that
+    validates the whole system.
+
+### Phase 2 PR scope
+
+- `archive_move` job type in the job manager
+  (plan / preflight / snapshot / execute / verify / cancel / rollback).
+- Manifest read/write plus resume.
+- Seven NAS API endpoints and seven MCP operations, correctly tiered.
+- Web UI staged move flow with folder-level scope, previews, and confirmations.
+- Sync-exclusion application/instructions.
+- Tests and docs.
