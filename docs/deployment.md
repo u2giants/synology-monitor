@@ -242,6 +242,41 @@ use the narrower `/volume1/<share>` mounts.
 
 The NAS API image (`ghcr.io/u2giants/synology-monitor-nas-api`) is built by `nas-api-image.yml` and deployed by the same Watchtower mechanism as the agent. The NAS API is a sidecar in the same Docker Compose file — Watchtower manages both. All steps in the agent section above apply equally to the NAS API.
 
+## Archive job state &amp; snapshots (on the NAS)
+
+The archive feature (file inventory + archive move) persists all job state to the
+durable host bind mount on each NAS — **not** Supabase. It survives Watchtower
+image recreations.
+
+Host path (default; overridable via `NAS_API_JOBS_PATH`), mounted at
+`/app/data/jobs` in the nas-api container:
+
+```
+/volume1/docker/synology-monitor-agent/nas-api-jobs/
+  file-inventory/<job_id>/   status.json, yearly.csv, cutoff.csv, dirs.csv, overlay.csv
+  archive-move/<job_id>/     status.json, manifest.jsonl, move-report.csv,
+                             verify-report.csv, preflight.json
+```
+
+These files are read-only audit data and safe to inspect or delete (deleting an
+inventory job's dir just discards its results). On startup, jobs left mid-run by a
+restart are marked `interrupted`.
+
+**Btrfs snapshots (archive move only).** Before any destructive move, the executor
+takes a read-only Btrfs snapshot of the share subvolume at
+`/volume1/@archive_move_snapshots/<job_id>` (recorded as `snapshot_id` /
+`snapshot_path` in the job). It is the last-resort whole-run recovery. It is **not**
+auto-deleted — once a move is confirmed good, reclaim the space:
+
+```sh
+sudo btrfs subvolume delete /volume1/@archive_move_snapshots/<job_id>
+```
+
+Archive moves write via the read-write `/btrfs/volume1` mount (resolving paths as
+`/btrfs/volume1/<share>/…`); the per-share `/volume1/<share>` mounts stay
+read-only. No compose change beyond the Phase 1 jobs mount is required. The first
+real move should follow `docs/archive-move-runbook.md`.
+
 ## Supabase migrations
 
 **How they are applied:** Manually, via the Supabase CLI or the Supabase dashboard SQL editor. There is no CI step that auto-applies migrations. After writing a new migration file, the operator runs it against the production project `qnjimovrsaacneqkggsn`.

@@ -49,6 +49,7 @@ Then load additional docs only when relevant:
 | Change database schema, migrations, models, external IDs, or data flow | `AGENTS.md`, `docs/architecture.md`, `docs/configuration.md` if env/config is affected, relevant migration/model files | Deployment docs unless rollout/deploy behavior changes |
 | Investigate bugs or incidents | `AGENTS.md`, relevant docs based on affected area, `HANDOFF.md` if present, Critical incidents section in `AGENTS.md`, relevant incident docs under `docs/` | Unrelated folder-level READMEs |
 | Continue unfinished work | `AGENTS.md`, `HANDOFF.md`, relevant docs named inside `HANDOFF.md` | Docs unrelated to the handoff scope |
+| Work on the archive feature (file inventory or archive move) | `AGENTS.md`, `docs/synology-archive.md` (design/behavior), `docs/synology-archive-implementation.md` (build guide), `docs/archive-move-runbook.md` (live-move operator steps), `docs/architecture.md` (nas-api job API), `docs/deployment.md` (on-NAS job state + snapshots) | Unrelated subsystem docs |
 | Work in a subfolder with its own README | `AGENTS.md`, that folder-level `README.md`, and only broader docs referenced there | Other folder-level READMEs |
 | Claude Code session | `CLAUDE.md`, then `AGENTS.md` | Other docs unless task requires them |
 | Documentation-only cleanup | `AGENTS.md`, `README.md`, affected docs under `docs/`, folder-level READMEs only where relevant | Source files except as needed to verify accuracy |
@@ -616,6 +617,8 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | open | Relay has no CI build workflow | Decide: add workflow or document manual path as canonical |
 | low | 2 DB functions still `smon_`-prefixed (`smon_create_alert`, `smon_get_openai_key`) | Low value; rename with caller updates |
 | **open** | **Manual `docker compose up -d` on each NAS** — `SYS_PTRACE` + `/dev/sd*` mounts in `docker-compose.agent.yml` require a manual compose recreate; Watchtower will not apply these | Owner — run on each NAS after pulling new compose file |
+| **open** | **First live archive-move validation** — the Btrfs snapshot + same-subvolume rename path is unit-tested via an injectable stub only; validate on a small real share (e.g. `Coldlion`) per `docs/archive-move-runbook.md` before trusting a real move. Also run the one-time jobs-mount `docker compose up -d` if not already done | Owner — follow the runbook |
+| done | Archive feature: Phase 1 file inventory + Phase 2 staged reversible archive move (`/jobs/inventory/*`, `/jobs/archive-move/*`, 12 MCP tools, `/archive-inventory` + `/archive-move` pages) | 2026-06-07 — design/build/runbook in `docs/synology-archive*.md` + `docs/archive-move-runbook.md` |
 | done | 3-stage issue-agent rebuild (structurer → reasoning core → explainer/memory) | Completed 2026-05-30 |
 | done | `disk_inflight_ios` metric, Drive client log fix, Stage 2 `run_command` tool, nightly disk health schedules | 2026-05-31 |
 | done | `backend-findings.ts` + `buildProblemPrompt` + `resolution/create` migrated from `analyzed_problems` to `issues` | 2026-05-31 |
