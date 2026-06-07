@@ -37,6 +37,11 @@ For `apps/agent` and `apps/nas-api`:
 
 Do not propose alternate routine deployment methods.
 
+Note: Watchtower updates the **image** only, not the compose config. Changes to
+`deploy/synology/docker-compose.agent.yml` (new mounts, capabilities, or env keys)
+require a one-time `docker compose up -d` on each NAS to apply — this is the
+documented exception, not a routine deploy path. See `docs/deployment.md`.
+
 ## Allowed AI actions
 
 AI may help with:

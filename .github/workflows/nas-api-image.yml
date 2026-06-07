@@ -23,6 +23,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Verification gate (CI/CD rules §8/§11): the image is only built and
+      # published if vet + tests pass, so a regression that compiles but fails
+      # tests never reaches the production NASes. Watchtower only deploys images
+      # this workflow actually publishes, so a failed gate = no deploy.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Vet and test
+        working-directory: apps/nas-api
+        run: |
+          go vet ./...
+          go test ./...
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
