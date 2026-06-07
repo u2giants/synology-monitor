@@ -878,13 +878,26 @@ PR description must include the **operator action checklist**:
 
 ```
 apps/nas-api/internal/jobs/
-  move.go        # archive_move job type; plan→preflight→snapshot→execute→verify state machine; resume
-  manifest.go    # JSONL manifest read/write (append + rewrite-with-status), bounded paged reads
+  move.go        # archive_move job type; plan→preflight→snapshot→execute→verify state machine; resume; mode: move | clean_empty_dirs
+  dirs.go        # directory pruning: bottom-up, Synology-artifact-aware "empty" test, record+recreate for rollback
+  manifest.go    # JSONL manifest read/write (file AND dir rows; append + rewrite-with-status), bounded paged reads
   btrfs.go       # subvolume id lookup (stat + `btrfs subvolume show` via os/exec), same-subvol check
   snapshot.go    # create/list/drop read-only Btrfs snapshot of a share subvolume (os/exec `btrfs subvolume snapshot -r`)
   statx.go       # btime via raw statx syscall (shared with Phase 1 protection; amd64), with fallback
   move_test.go
+  dirs_test.go
 ```
+
+**Directory handling (`dirs.go`) — see the design's *How directories are
+handled*.** A folder is "empty"/prunable when, ignoring `@eaDir`, `.DS_Store`,
+`Thumbs.db`, `.SynologyWorkingDirectory`, it has no regular files and no non-empty
+subdirs. Run options: `prune_emptied_source_dirs` (default **true**) prunes
+folders the move empties, bottom-up; `remove_preexisting_empty_dirs` (default
+**false**) also removes folders that were already empty. Every removed dir is
+recorded in the manifest (path, mode, owner, mtime) and recreated on rollback
+before files are returned. `mode: clean_empty_dirs` runs the whole staged machine
+with **zero file moves** — it only removes empty dirs (the fix for the existing
+"10,000 empty folders" problem).
 
 Notes:
 - The nas-api container already has `CAP_SYS_ADMIN` and the full
