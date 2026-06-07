@@ -181,6 +181,131 @@ export async function executeNasCommand(
   };
 }
 
+// ─── File-inventory jobs (Phase 1) ────────────────────────────────────────────
+//
+// These hit the native nas-api /jobs/inventory/* REST endpoints (NOT /exec).
+// State-changing ops carry an HMAC approval token in the X-Approval-Token header
+// signed over a canonical op string that MUST byte-match nas-api's
+// jobs.CanonicalOpString and nas-mcp's job-client.ts (Appendix A of
+// docs/synology-archive-implementation.md).
+
+const INVENTORY_TIMEOUT_MS = 15_000;
+
+export interface InventoryStartInput {
+  shares: string[];
+  cutoff_years?: number[];
+  overlay?: boolean;
+  protect_newer_than?: string;
+  max_files_per_second?: number;
+  use_idle_io_priority?: boolean;
+  sleep_every_files?: number;
+  sleep_ms?: number;
+  scheduled_for?: string;
+}
+
+type InventoryOp = "start" | "schedule" | "cancel";
+
+function canonShares(shares: string[]): string {
+  return [...shares].sort().join(",");
+}
+function canonYears(years: number[]): string {
+  return [...years].sort((a, b) => a - b).join(",");
+}
+
+interface CanonicalParams {
+  shares: string[];
+  cutoffYears: number[];
+  overlayEffective: boolean;
+  protect: string;
+  scheduledFor: string;
+}
+
+function canonicalInventoryOp(op: InventoryOp, nas: string, jobId: string, p?: CanonicalParams): string {
+  if (op === "cancel") return `inventory.cancel|nas=${nas}|job_id=${jobId}`;
+  const params = p!;
+  const base =
+    `inventory.${op}|nas=${nas}|shares=${canonShares(params.shares)}` +
+    `|cutoff=${canonYears(params.cutoffYears)}|overlay=${params.overlayEffective ? "true" : "false"}` +
+    `|protect=${params.protect}`;
+  if (op === "schedule") return `${base}|scheduled_for=${params.scheduledFor}`;
+  return base;
+}
+
+// Normalizes raw input into the body sent to nas-api AND the matching canonical
+// params, so the signed string and the request body never drift.
+function normalizeInventoryBody(raw: InventoryStartInput): { body: Record<string, unknown>; params: CanonicalParams } {
+  const shares = (raw.shares ?? []).map((s) => s.trim()).filter(Boolean);
+  const cutoffYears = (raw.cutoff_years ?? []).filter((n) => Number.isFinite(n));
+  const overlayEffective = raw.overlay !== false; // undefined → true
+  const useIdleIo = raw.use_idle_io_priority !== false; // undefined → true
+  const protect = (raw.protect_newer_than ?? "").trim();
+  const scheduledFor = (raw.scheduled_for ?? "").trim();
+
+  const body: Record<string, unknown> = {
+    shares,
+    cutoff_years: cutoffYears,
+    overlay: overlayEffective,
+    protect_newer_than: protect,
+    use_idle_io_priority: useIdleIo,
+  };
+  if (raw.max_files_per_second !== undefined) body.max_files_per_second = raw.max_files_per_second;
+  if (raw.sleep_every_files !== undefined) body.sleep_every_files = raw.sleep_every_files;
+  if (raw.sleep_ms !== undefined) body.sleep_ms = raw.sleep_ms;
+  if (scheduledFor) body.scheduled_for = scheduledFor;
+
+  return { body, params: { shares, cutoffYears, overlayEffective, protect, scheduledFor } };
+}
+
+async function inventoryFetch(
+  config: NasApiConfig,
+  method: "GET" | "POST",
+  path: string,
+  opts: { body?: Record<string, unknown>; approvalToken?: string } = {},
+): Promise<Response> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${config.apiSecret}` };
+  if (opts.body) headers["Content-Type"] = "application/json";
+  if (opts.approvalToken) headers["X-Approval-Token"] = opts.approvalToken;
+  return fetch(`${config.url}${path}`, {
+    method,
+    headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
+  });
+}
+
+export async function startInventory(config: NasApiConfig, raw: InventoryStartInput): Promise<Response> {
+  const { body, params } = normalizeInventoryBody(raw);
+  const canonical = canonicalInventoryOp("start", config.name, "", params);
+  const token = buildNasApiApprovalToken(config, canonical, 2);
+  return inventoryFetch(config, "POST", "/jobs/inventory", { body, approvalToken: token });
+}
+
+export async function scheduleInventory(config: NasApiConfig, raw: InventoryStartInput): Promise<Response> {
+  const { body, params } = normalizeInventoryBody(raw);
+  const canonical = canonicalInventoryOp("schedule", config.name, "", params);
+  const token = buildNasApiApprovalToken(config, canonical, 2);
+  return inventoryFetch(config, "POST", "/jobs/inventory/schedule", { body, approvalToken: token });
+}
+
+export async function listInventory(config: NasApiConfig): Promise<Response> {
+  return inventoryFetch(config, "GET", "/jobs/inventory");
+}
+
+export async function statusInventory(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "GET", `/jobs/inventory/${encodeURIComponent(id)}`);
+}
+
+export async function cancelInventory(config: NasApiConfig, id: string): Promise<Response> {
+  const canonical = canonicalInventoryOp("cancel", config.name, id);
+  const token = buildNasApiApprovalToken(config, canonical, 2);
+  return inventoryFetch(config, "POST", `/jobs/inventory/${encodeURIComponent(id)}/cancel`, { approvalToken: token });
+}
+
+export async function fetchInventoryResult(config: NasApiConfig, id: string, query: URLSearchParams): Promise<Response> {
+  const qs = query.toString();
+  return inventoryFetch(config, "GET", `/jobs/inventory/${encodeURIComponent(id)}/result${qs ? `?${qs}` : ""}`);
+}
+
 export async function collectNasDiagnostics(lookbackHours = 2) {
   const configs = getNasApiConfigs();
   const driveLines = Math.max(60, Math.min(300, lookbackHours * 50));

@@ -13,6 +13,7 @@ import {
   Container,
   Brain,
   Bot,
+  Archive,
   Settings,
 } from "lucide-react";
 
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/docker", label: "Docker", icon: Container },
   { href: "/ai-insights", label: "Issue Insights", icon: Brain },
   { href: "/assistant", label: "Issue Agent", icon: Bot },
+  { href: "/archive-inventory", label: "Archive Inventory", icon: Archive },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
