@@ -27,6 +27,36 @@ Live directory:
 - NAS 1: [nas-1.env.example](/worksp/monitor/app/deploy/synology/nas-1.env.example)
 - NAS 2: [nas-2.env.example](/worksp/monitor/app/deploy/synology/nas-2.env.example)
 
+## Archive file-inventory mount (Phase 1)
+
+The nas-api service mounts a durable host path for read-only file-inventory job
+state and sets a logical NAS name:
+
+```yaml
+nas-api:
+  environment:
+    NAS_API_NAME: ${NAS_API_NAME:-}     # edgesynology1 / edgesynology2
+  volumes:
+    - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
+```
+
+Set `NAS_API_NAME` in each NAS `.env` to the name the web/MCP target this box by
+(`edgesynology1` or `edgesynology2`). This is **separate** from the agent's
+`NAS_NAME` (a heartbeat display name) — reusing that value would break the HMAC
+approval signatures for the inventory job endpoints.
+
+**One-time step after this image ships:** Watchtower updates the image but not the
+compose configuration, so run once on each NAS to materialize the mount + env:
+
+```sh
+cd /volume1/docker/synology-monitor-agent && docker compose up -d
+```
+
+Until then, the `/jobs/inventory/*` endpoints return `503` (and the
+`/archive-inventory` page shows a "mount not present" message). Job results under
+`/volume1/docker/synology-monitor-agent/nas-api-jobs` are read-only inventory data
+and safe to inspect or delete.
+
 ## Running containers
 
 The compose stack runs three containers:

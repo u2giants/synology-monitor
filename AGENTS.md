@@ -138,6 +138,7 @@ images. If you ever patch a vendored file, record it here.
 | Add a DB migration | `supabase/migrations/000NN_description.sql` — next number after current max (00041) | applied migrations |
 | Add a dashboard page | `apps/web/src/app/(dashboard)/<page>/page.tsx`, hook in `src/hooks/` | — |
 | Add a nightly custom command | Insert into `custom_metric_schedules` DB table with `collection_command`, `interval_minutes`, `nas_id` | — |
+| Change archive file-inventory (Phase 1) | nas-api `internal/jobs/*` (scanner/manager/overlay) + `cmd/server/main.go` routes; MCP tools in `packages/shared/src/nas-tools.ts` + `apps/nas-mcp/src/job-client.ts`; web `app/(dashboard)/archive-inventory/` + `app/api/archive/*` + `lib/server/nas-api-client.ts`. Share allowlist mirrored in Go `jobs.AllowedShares`, `packages/shared/src/archive.ts`, and the compose mounts | `/exec` validator path (jobs are native REST, not shell) |
 
 ## 8. Data model and external identifiers
 
@@ -393,6 +394,8 @@ each NAS `.env`).
 | `DSM_URL` / `DSM_USERNAME` / `DSM_PASSWORD` | Agent DSM API + nas-api WebAPI restarts | NAS `.env` | yes | yes |
 | `NAS_API_SECRET` / `NAS_API_APPROVAL_SIGNING_KEY` | Nas-api auth + HMAC | NAS `.env` | yes | yes |
 | `NAS_EDGE{1,2}_API_URL/_SECRET/_SIGNING_KEY` | Web + nas-mcp → nas-api | Coolify | yes | yes |
+| `NAS_API_NAME` | Logical NAS name (`edgesynology1`/`edgesynology2`) stamped into inventory result CSVs + the signed canonical op string. **Distinct from the agent's `NAS_NAME`** (a heartbeat display name); reusing that would break tier-2 approval signatures | NAS `.env` | yes | yes |
+| `NAS_API_JOBS_PATH` / `NAS_API_JOBS_DIR` | Host bind path / in-container dir for durable inventory job state (`/app/data/jobs`) | NAS `.env` (optional) | yes | yes |
 | `MCP_BEARER_TOKEN` | Nas-mcp client auth | Coolify | yes | yes |
 | `ANTHROPIC_API_KEY` | Stage 2 reasoning (Anthropic/Claude) | Coolify | yes | yes |
 | `OPENAI_API_KEY` | Stage 1/3 + copilot fallback | Coolify | yes | yes |
@@ -417,6 +420,14 @@ and push to GHCR (each has a `paths:` filter; tags `latest`, `sha-<sha>`, `main`
   recreates. `NEXT_PUBLIC_SUPABASE_*` is baked at image build — changing it in
   Coolify after build has no effect; requires a new push to `main`.
 - **relay**: no workflow; built/deployed manually on the VPS (exceptional).
+
+**Compose-change caveat (archive inventory, 2026-06):** the Phase 1 file-inventory
+job system added a durable `/app/data/jobs` bind mount and a `NAS_API_NAME` env to
+the nas-api service in `docker-compose.agent.yml`. Watchtower applies new *images*,
+not compose changes, so after that image ships the operator must run
+`cd /volume1/docker/synology-monitor-agent && docker compose up -d` **once on each
+NAS** to materialize the mount/env. Until then the `/jobs/inventory/*` endpoints
+return `503` by design.
 
 Runtime env lives in **Coolify** (VPS) and each NAS `.env` (agent/nas-api).
 Rollback: redeploy a previous tag in Coolify, or pin `AGENT_IMAGE_TAG` to a SHA

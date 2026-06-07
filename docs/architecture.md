@@ -177,6 +177,15 @@ The service exposes three HTTP endpoints:
 | `POST /preview` | Classify a command's tier without executing it |
 | `POST /exec` | Execute a command; requires tier + optional approval token |
 
+It also exposes a native (non-shell) **file-inventory job** API (Phase 1 of the
+archive work — see [synology-archive.md](synology-archive.md)): `POST/GET
+/jobs/inventory`, `GET /jobs/inventory/{id}`, `…/{id}/result`,
+`POST /jobs/inventory/schedule`, and `…/{id}/cancel`. These run an in-process Go
+`filepath.WalkDir` scanner (`internal/jobs/`), persist state to the durable
+`/app/data/jobs` mount, and gate state-changing ops with the same HMAC tier-2
+approval token as `/exec` (signed over a canonical op string, not a shell command).
+They do **not** pass through the validator or `/exec`.
+
 ### Three-tier execution model
 
 | Tier | Label | Approval required | Examples |
