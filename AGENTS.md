@@ -138,7 +138,7 @@ images. If you ever patch a vendored file, record it here.
 | Add a DB migration | `supabase/migrations/000NN_description.sql` — next number after current max (00041) | applied migrations |
 | Add a dashboard page | `apps/web/src/app/(dashboard)/<page>/page.tsx`, hook in `src/hooks/` | — |
 | Add a nightly custom command | Insert into `custom_metric_schedules` DB table with `collection_command`, `interval_minutes`, `nas_id` | — |
-| Change archive file-inventory (Phase 1) | nas-api `internal/jobs/*` (scanner/manager/overlay) + `cmd/server/main.go` routes; MCP tools in `packages/shared/src/nas-tools.ts` + `apps/nas-mcp/src/job-client.ts`; web `app/(dashboard)/archive-inventory/` + `app/api/archive/*` + `lib/server/nas-api-client.ts`. Share allowlist mirrored in Go `jobs.AllowedShares`, `packages/shared/src/archive.ts`, and the compose mounts | `/exec` validator path (jobs are native REST, not shell) |
+| Change archive inventory (Phase 1) or archive move (Phase 2) | nas-api `internal/jobs/*` (Phase 1: scanner/manager/overlay; Phase 2: `move.go`/`dirs.go`/`manifest.go`/`btrfs.go`) + `cmd/server/main.go` routes; MCP tools in `packages/shared/src/nas-tools.ts` + `apps/nas-mcp/src/job-client.ts`; web `app/(dashboard)/archive-{inventory,move}/` + `app/api/archive/*` + `lib/server/nas-api-client.ts`. Share allowlist mirrored in Go `jobs.AllowedShares`, `packages/shared/src/archive.ts`, and the compose mounts. Move ops write via the `:rw` `/btrfs/volume1/<share>` mount; execute/rollback are tier 3 | `/exec` validator path (jobs are native REST, not shell); the `:ro` per-share `/volume1/<share>` mounts for writes |
 
 ## 8. Data model and external identifiers
 

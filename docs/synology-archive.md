@@ -1,11 +1,15 @@
 # Synology Archive Inventory Plan
 
-> **Implementation status (2026-06-07):** **Phase 1 (read-only inventory) is
-> implemented** — nas-api `internal/jobs/` scanner + manager + overlay, the six
-> `/jobs/inventory/*` REST endpoints, the five MCP tools, and the
-> `/archive-inventory` web page with full option parity. Deploy needs a one-time
-> `docker compose up -d` per NAS (durable jobs mount + `NAS_API_NAME`). **Phase 2
-> (archive move)** below is fully specified but **not yet built**.
+> **Implementation status (2026-06-07):** **Both phases are implemented.**
+> Phase 1 (read-only inventory): nas-api `internal/jobs/` scanner + manager +
+> overlay, six `/jobs/inventory/*` endpoints, five MCP tools, `/archive-inventory`
+> web page. Phase 2 (archive move): the staged `archive_move` state machine
+> (plan → preflight → snapshot → execute → verify → rollback, plus
+> `clean_empty_dirs`) in `internal/jobs/move.go` etc., eight `/jobs/archive-move/*`
+> endpoints (tier-3 execute/rollback), seven MCP tools, and the `/archive-move`
+> web page. Moves resolve under the writable `/btrfs/volume1/<share>` mount;
+> deploy still only needs the one-time `docker compose up -d` per NAS (durable jobs
+> mount + `NAS_API_NAME`) from Phase 1 — no further compose change.
 
 > **Implementers read both documents.** This file is the **design and behavioral
 > specification** — *what* to build, the rules, the safety guarantees, the

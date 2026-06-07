@@ -186,6 +186,19 @@ archive work — see [synology-archive.md](synology-archive.md)): `POST/GET
 approval token as `/exec` (signed over a canonical op string, not a shell command).
 They do **not** pass through the validator or `/exec`.
 
+Phase 2 adds a staged, reversible **archive-move** API under
+`/jobs/archive-move/*` (`plan`, `{id}`, `{id}/manifest`, `{id}/result`,
+`{id}/execute`, `{id}/cancel`, `{id}/rollback`, `{id}/verify`). The move state
+machine (plan → preflight → snapshot → execute → verify → rollback, plus a
+`clean_empty_dirs` mode) relocates old files into `<share>/Archive` by atomic
+**rename within the same Btrfs subvolume** (verifying inode/size/mtime/btime per
+file, rolling back any mismatch), takes a read-only Btrfs snapshot before any
+write, and records every file and pruned directory in a JSONL manifest for
+reversibility. It writes via the **writable `/btrfs/volume1/<share>`** mount (the
+per-share `/volume1/<share>` mounts stay read-only); `execute` and `rollback` are
+**tier 3**. Btrfs subvolume/snapshot calls sit behind an injectable interface so
+the logic is unit-tested on temp trees.
+
 ### Three-tier execution model
 
 | Tier | Label | Approval required | Examples |
