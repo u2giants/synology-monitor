@@ -62,6 +62,14 @@ services:
       - .env
     environment:
       TZ: ${TZ:-UTC}
+      # Logical name of THIS NAS (edgesynology1 / edgesynology2). Stamped into
+      # file-inventory result CSVs and into the signed canonical op string, so it
+      # MUST equal the name the web/MCP target this NAS by — which is hardcoded to
+      # "edgesynology1"/"edgesynology2" in nas-api-client.ts / nas-client.ts.
+      # NOTE: this is intentionally NOT the agent's NAS_NAME env (that is a
+      # heartbeat display name like "Synology NAS 1"); reusing it would make every
+      # tier-2 approval signature mismatch. Falls back to the container hostname.
+      NAS_API_NAME: ${NAS_API_NAME:-}
     volumes:
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
@@ -96,6 +104,14 @@ services:
       - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/volume1/@SynologyDriveShareSync:ro
       - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/volume1/@appdata/HyperBackup:ro
       - ${MONITOR_STACK_PATH:-/volume1/docker/synology-monitor-agent}:/volume1/docker/synology-monitor-agent:ro
+      # Durable job state for the file-inventory scanner (read-only inventory jobs).
+      # Host-path bind so the operator can inspect/recover results directly. The
+      # NAS API's writable-layer would be wiped when Watchtower recreates the
+      # container on a new image, so job state MUST live on a persistent mount.
+      # NOTE: Watchtower applies new images, not compose changes — after this lands
+      # the operator must run `docker compose up -d` once on each NAS to materialize
+      # this mount (until then the /jobs/inventory endpoints return 503).
+      - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
       - /var/run/docker.sock:/var/run/docker.sock
       # Block devices (read-only) — required for hdparm -I (device identity/features) and
       # hdparm -t (throughput test). Individual named mounts only — NOT the full /dev tree.
