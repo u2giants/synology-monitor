@@ -95,9 +95,19 @@ its own `package.json` — check `name` field first.)
 
 ---
 
-## 1. Scope of this PR
+## 1. Scope
 
-Build the **smallest useful, fully GUI-covered** version:
+This guide covers **two phases**, both required for the app to be useful and
+end-to-end testable. Build Phase 1 first and ship it; then build Phase 2.
+
+- **Phase 1 — Inventory** (read-only reporting). Detailed in §§3–9.
+- **Phase 2 — Archive Move** (relocation with verify-and-rollback). Detailed in
+  §11, and specified comprehensively in
+  [`synology-archive.md` → *Phase 2 — Archive Move*](synology-archive.md).
+
+### 1.1 Phase 1 scope
+
+Build the **smallest useful, fully GUI-covered** inventory:
 
 - Durable nas-api jobs mount (compose + env).
 - nas-api: job manager + mtime-year scanner + Drive/ShareSync overlay +
@@ -114,8 +124,9 @@ Build the **smallest useful, fully GUI-covered** version:
   including scheduling**, plus the supporting Next.js API routes.
 - Tests + docs.
 
-**Explicitly deferred** (do NOT build): Supabase persistence of results, archive
-*move* execution, atime/relatime changes, per-file candidate manifests.
+**Deferred to a later, separate effort (NOT Phase 2):** Supabase persistence of
+results, atime/relatime changes. (Archive *move* execution and per-file manifests
+are **Phase 2**, specified here — not deferred.)
 
 ---
 
@@ -837,6 +848,105 @@ PR description must include the **operator action checklist**:
   NAS units once.
 - [ ] Set `NAS_NAME` in each NAS `.env` (`edgesynology1` / `edgesynology2`).
 - [ ] Verify `/archive-inventory` page loads and lists both NAS units.
+
+---
+
+## 11. Phase 2 — Archive Move (build guide)
+
+> Build this **after Phase 1 ships and the inventory is validated**. The full
+> behavioral spec — staged workflow, manifest schema, preflight gates, snapshot,
+> verify-and-rollback rules, sync exclusion, tiering, and the end-to-end
+> verification plan — is in
+> [`synology-archive.md` → *Phase 2 — Archive Move*](synology-archive.md). This
+> section maps that spec onto exact files, reusing all Phase 1 infrastructure.
+
+### 11.1 What Phase 2 reuses from Phase 1 (do not rebuild)
+
+- The job manager, persistence/atomic-write store, scheduler, startup recovery,
+  single-heavyweight-job-per-NAS lock (extend the lock to also block a move while
+  an inventory runs and vice-versa).
+- The scanner core (`filepath.WalkDir`, symlink-skip, default exclusions, idle
+  I/O priority) for the Plan stage.
+- The classification logic (cutoff, `protect_newer_than`, overlay) — call the
+  same code paths at **plan time** with fresh `stat`.
+- The HMAC approval mechanism (`requireApproval` middleware / canonical op
+  string / `VerifyApprovalToken`) — extend the tier handling to **tier 3** for
+  `execute`/`rollback` (the existing verifier already accepts a tier argument;
+  pass `3` and sign with tier `3`).
+
+### 11.2 New nas-api files
+
+```
+apps/nas-api/internal/jobs/
+  move.go        # archive_move job type; plan→preflight→snapshot→execute→verify state machine; resume
+  manifest.go    # JSONL manifest read/write (append + rewrite-with-status), bounded paged reads
+  btrfs.go       # subvolume id lookup (stat + `btrfs subvolume show` via os/exec), same-subvol check
+  snapshot.go    # create/list/drop read-only Btrfs snapshot of a share subvolume (os/exec `btrfs subvolume snapshot -r`)
+  statx.go       # btime via raw statx syscall (shared with Phase 1 protection; amd64), with fallback
+  move_test.go
+```
+
+Notes:
+- The nas-api container already has `CAP_SYS_ADMIN` and the full
+  `/btrfs/volume1:rw` mount (see `docker-compose.agent.yml`) — required for
+  `btrfs subvolume` operations and for writing into shares. **Phase 2 needs the
+  share mounts to be writable for the targeted share.** They are currently `:ro`
+  in compose. Add a writable mount (or remount) for the share(s) being archived,
+  e.g. keep `/volume1/<share>:ro` for inventory and add a separate writable path,
+  **or** perform the rename via the `/btrfs/volume1` rw mount
+  (`/btrfs/volume1/<share>/...`). **Prefer the `/btrfs/volume1` rw path** so no
+  compose change to the per-share mounts is needed; resolve all move paths under
+  `/btrfs/volume1/<share>/…` and verify the subvolume there.
+- `btrfs` CLI must be present in the runtime image — verify with
+  `grep -n btrfs apps/nas-api/Dockerfile`; the image already runs btrfs scrub/
+  snapshot tools for other features, but confirm and add `btrfs-progs` if absent.
+
+### 11.3 New nas-api endpoints (wire in `cmd/server/main.go`)
+
+```go
+mux.HandleFunc("POST /jobs/archive-move/plan",            requireAuth(v, requireApproval(v, jobs.OpMovePlan,     handleMovePlan(mgr))))
+mux.HandleFunc("GET  /jobs/archive-move/{id}",            requireAuth(v, handleMoveStatus(mgr)))
+mux.HandleFunc("GET  /jobs/archive-move/{id}/manifest",   requireAuth(v, handleMoveManifest(mgr)))   // bounded/paged
+mux.HandleFunc("POST /jobs/archive-move/{id}/execute",    requireAuth(v, requireApprovalTier3(v, jobs.OpMoveExecute,  handleMoveExecute(mgr))))
+mux.HandleFunc("POST /jobs/archive-move/{id}/cancel",     requireAuth(v, requireApproval(v, jobs.OpMoveCancel,   handleMoveCancel(mgr))))
+mux.HandleFunc("POST /jobs/archive-move/{id}/rollback",   requireAuth(v, requireApprovalTier3(v, jobs.OpMoveRollback, handleMoveRollback(mgr))))
+mux.HandleFunc("POST /jobs/archive-move/{id}/verify",     requireAuth(v, handleMoveVerify(mgr)))
+```
+`requireApprovalTier3` is `requireApproval` with tier `3`. Preflight runs inside
+`handleMoveExecute` before the snapshot+rename loop (or expose it as part of plan
+output); either way every preflight gate in the design must pass or the job goes
+`preflight_failed` and execute refuses.
+
+### 11.4 nas-mcp — 7 tools
+
+Add to `packages/shared/src/nas-tools.ts` (group `archive`) and enable in
+`tools-config.json`, using the same native `job` dispatch branch added in §6.3
+(extend the `job.op` union with the move ops). Tiering: `get_archive_move_status`,
+`fetch_archive_move_manifest`, `verify_archive_move` → read; `plan_archive_move`,
+`cancel_archive_move` → tier 2 (confirm gate); `execute_archive_move`,
+`rollback_archive_move` → tier 3 (confirm gate + tier-3 token). The execute/
+rollback tools require a `job_id` referencing a planned manifest.
+
+### 11.5 web — staged move flow
+
+Extend `apps/web/src/lib/server/nas-api-client.ts` with the seven move helpers
+(tier-3 ones sign a tier-3 canonical op string). Add API routes under
+`apps/web/src/app/api/archive/move/…` mirroring §7.2. Extend the
+`/archive-inventory` page (or add a sibling) with the staged panel from the
+design's *Web UI* subsection: folder-level scope picker, Plan (dry-run) →
+manifest preview (downloadable) → review gate → Execute (type-the-share-name
+confirmation, snapshot id shown, live per-file progress, cancel) → Verify
+(report download) → Rollback (own confirmation). Full option + operation parity.
+
+### 11.6 Phase 2 build + verification gate
+
+`go build ./... && go vet ./... && go test ./...` (move_test.go covers plan
+manifest, collision skip, identity-preservation assertions on a temp tree,
+injected-mismatch rollback, resume, whole-run rollback). Then the **end-to-end
+test on a small real share** from the design's Phase 2 verification plan item 14
+(plan → execute → verify → confirm sync skips `Archive/` → rollback → confirm
+restored). Ship as its own commit group: `nas-api: archive move`, `nas-mcp:
+archive move ops`, `web: archive move flow`, `docs: archive move`.
 
 ---
 
