@@ -86,12 +86,23 @@ func main() {
 	mux.HandleFunc("POST /exec", requireAuth(v, handleExec(v)))
 	mux.HandleFunc("POST /preview", requireAuth(v, handlePreview))
 
-	mux.HandleFunc("POST /jobs/inventory", requireAuth(v, requireApproval(v, jobs.OpStart, nasName, handleInventoryStart(mgr))))
-	mux.HandleFunc("POST /jobs/inventory/schedule", requireAuth(v, requireApproval(v, jobs.OpSchedule, nasName, handleInventorySchedule(mgr))))
+	mux.HandleFunc("POST /jobs/inventory", requireAuth(v, requireApproval(v, jobs.OpStart, 2, nasName, handleInventoryStart(mgr))))
+	mux.HandleFunc("POST /jobs/inventory/schedule", requireAuth(v, requireApproval(v, jobs.OpSchedule, 2, nasName, handleInventorySchedule(mgr))))
 	mux.HandleFunc("GET /jobs/inventory", requireAuth(v, handleInventoryList(mgr)))
 	mux.HandleFunc("GET /jobs/inventory/{id}", requireAuth(v, handleInventoryStatus(mgr)))
 	mux.HandleFunc("GET /jobs/inventory/{id}/result", requireAuth(v, handleInventoryResult(mgr, store)))
-	mux.HandleFunc("POST /jobs/inventory/{id}/cancel", requireAuth(v, requireApproval(v, jobs.OpCancel, nasName, handleInventoryCancel(mgr))))
+	mux.HandleFunc("POST /jobs/inventory/{id}/cancel", requireAuth(v, requireApproval(v, jobs.OpCancel, 2, nasName, handleInventoryCancel(mgr))))
+
+	// Archive-move (Phase 2). Tier 2: plan, cancel. Tier 3: execute, rollback.
+	mux.HandleFunc("POST /jobs/archive-move/plan", requireAuth(v, requireApproval(v, jobs.OpMovePlan, 2, nasName, handleMovePlan(mgr))))
+	mux.HandleFunc("GET /jobs/archive-move", requireAuth(v, handleMoveList(mgr)))
+	mux.HandleFunc("GET /jobs/archive-move/{id}", requireAuth(v, handleMoveStatus(mgr)))
+	mux.HandleFunc("GET /jobs/archive-move/{id}/manifest", requireAuth(v, handleMoveManifest(mgr)))
+	mux.HandleFunc("GET /jobs/archive-move/{id}/result", requireAuth(v, handleMoveResult(mgr)))
+	mux.HandleFunc("POST /jobs/archive-move/{id}/execute", requireAuth(v, requireApproval(v, jobs.OpMoveExecute, 3, nasName, handleMoveExecute(mgr))))
+	mux.HandleFunc("POST /jobs/archive-move/{id}/cancel", requireAuth(v, requireApproval(v, jobs.OpMoveCancel, 2, nasName, handleMoveCancel(mgr))))
+	mux.HandleFunc("POST /jobs/archive-move/{id}/rollback", requireAuth(v, requireApproval(v, jobs.OpMoveRollback, 3, nasName, handleMoveRollback(mgr))))
+	mux.HandleFunc("POST /jobs/archive-move/{id}/verify", requireAuth(v, handleMoveVerify(mgr)))
 
 	addr := ":" + port
 	log.Printf("Listening on %s", addr)
@@ -243,11 +254,12 @@ func hostnameOrEmpty() string {
 
 // ── File-inventory job endpoints ───────────────────────────────────────────────
 
-// requireApproval enforces an HMAC approval token for state-changing job ops.
-// It rebuilds the canonical operation string from the SERVER's NAS name plus the
-// request body/path and verifies the token via the same auth.Verifier used by
-// /exec (tier 2). The token is sent in the X-Approval-Token header.
-func requireApproval(v *auth.Verifier, op jobs.Op, nasName string, next http.HandlerFunc) http.HandlerFunc {
+// requireApproval enforces an HMAC approval token for state-changing job ops at
+// the given tier (2 for service ops, 3 for destructive ops). It rebuilds the
+// canonical operation string from the SERVER's NAS name plus the request
+// body/path and verifies the token via the same auth.Verifier used by /exec. The
+// token is sent in the X-Approval-Token header.
+func requireApproval(v *auth.Verifier, op jobs.Op, tier int, nasName string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 		token := r.Header.Get("X-Approval-Token")
@@ -255,24 +267,46 @@ func requireApproval(v *auth.Verifier, op jobs.Op, nasName string, next http.Han
 			writeJSON(w, http.StatusForbidden, errResp{"approval token required (X-Approval-Token header)"})
 			return
 		}
-		var canonical string
-		if op == jobs.OpCancel {
-			canonical = jobs.CanonicalOpString(op, nasName, r.PathValue("id"), nil)
-		} else {
-			var req jobs.StartRequest
-			if err := json.Unmarshal(body, &req); err != nil {
-				writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
-				return
-			}
-			req.Normalize()
-			canonical = jobs.CanonicalOpString(op, nasName, "", &req)
+		canonical, ok := buildCanonical(w, op, nasName, r.PathValue("id"), body)
+		if !ok {
+			return // buildCanonical already wrote a 400
 		}
-		if err := v.VerifyApprovalToken(token, canonical, 2); err != nil {
+		if err := v.VerifyApprovalToken(token, canonical, tier); err != nil {
 			writeJSON(w, http.StatusForbidden, errResp{err.Error()})
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body)) // restore for the handler
 		next(w, r)
+	}
+}
+
+// buildCanonical rebuilds the signed canonical op string for an inventory or
+// archive-move operation from the request body/path.
+func buildCanonical(w http.ResponseWriter, op jobs.Op, nasName, id string, body []byte) (string, bool) {
+	switch op {
+	case jobs.OpCancel:
+		return jobs.CanonicalOpString(op, nasName, id, nil), true
+	case jobs.OpStart, jobs.OpSchedule:
+		var req jobs.StartRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
+			return "", false
+		}
+		req.Normalize()
+		return jobs.CanonicalOpString(op, nasName, "", &req), true
+	case jobs.OpMovePlan:
+		var req jobs.MovePlanRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
+			return "", false
+		}
+		req.Normalize()
+		return jobs.MoveCanonicalOpString(op, nasName, "", &req), true
+	case jobs.OpMoveExecute, jobs.OpMoveCancel, jobs.OpMoveRollback:
+		return jobs.MoveCanonicalOpString(op, nasName, id, nil), true
+	default:
+		writeJSON(w, http.StatusBadRequest, errResp{"unknown operation"})
+		return "", false
 	}
 }
 
@@ -477,4 +511,175 @@ func clampInt(n, lo, hi int) int {
 		return hi
 	}
 	return n
+}
+
+// ── Archive-move handlers ──────────────────────────────────────────────────────
+
+func moveStateErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, jobs.ErrNotFound):
+		writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+	case errors.Is(err, jobs.ErrBusy):
+		writeJSON(w, http.StatusConflict, errResp{err.Error()})
+	case errors.Is(err, jobs.ErrMoveState):
+		writeJSON(w, http.StatusConflict, errResp{err.Error()})
+	default:
+		writeJSON(w, http.StatusBadRequest, errResp{err.Error()})
+	}
+}
+
+func handleMovePlan(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		var req jobs.MovePlanRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errResp{"invalid JSON: " + err.Error()})
+			return
+		}
+		job, err := mgr.PlanMove(req)
+		if err != nil {
+			moveStateErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, job)
+	}
+}
+
+func handleMoveList(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		list, err := mgr.MoveList()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errResp{err.Error()})
+			return
+		}
+		if list == nil {
+			list = []*jobs.MoveJob{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"jobs": list})
+	}
+}
+
+func handleMoveStatus(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, err := mgr.MoveGet(r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	}
+}
+
+func handleMoveManifest(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		id := r.PathValue("id")
+		limit := clampInt(queryInt(r, "limit", resultDefaultLimit), 1, resultMaxLimit)
+		cursor := clampInt(queryInt(r, "cursor", 0), 0, 1<<30)
+		lines, total, next, err := mgr.MoveManifestPage(id, cursor, limit)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{"manifest not available: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"lines":       lines,
+			"total_rows":  total,
+			"next_cursor": next,
+		})
+	}
+}
+
+func handleMoveResult(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		id := r.PathValue("id")
+		kind := r.URL.Query().Get("kind")
+		if kind == "" {
+			kind = "move-report"
+		}
+		data, err := mgr.MoveResult(id, kind)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{"result not available: " + err.Error()})
+			return
+		}
+		if r.URL.Query().Get("download") == "1" {
+			ext := "csv"
+			if kind == "preflight" {
+				ext = "json"
+			}
+			w.Header().Set("Content-Type", "text/"+ext)
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", id+"-"+kind+"."+ext))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"kind": kind, "content": string(data)})
+	}
+}
+
+func handleMoveExecute(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, err := mgr.ExecuteMove(r.PathValue("id"))
+		if err != nil {
+			moveStateErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	}
+}
+
+func handleMoveCancel(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		if err := mgr.CancelMove(r.PathValue("id")); err != nil {
+			moveStateErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
+	}
+}
+
+func handleMoveRollback(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, err := mgr.RollbackMove(r.PathValue("id"))
+		if err != nil {
+			moveStateErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, job)
+	}
+}
+
+func handleMoveVerify(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, report, err := mgr.ReVerifyMove(r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, errResp{err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": job, "verify_report": string(report)})
+	}
 }

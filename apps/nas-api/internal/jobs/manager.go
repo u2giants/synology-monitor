@@ -26,17 +26,26 @@ type Manager struct {
 	// a temp tree.
 	rootFor func(share string) string
 
+	// moveRootFor maps a share to its WRITABLE root for archive moves. Production
+	// resolves to /btrfs/volume1/<share> (the rw mount); tests inject a temp tree.
+	moveRootFor func(share string) string
+
+	// fs performs Btrfs subvolume + snapshot operations; tests inject a stub.
+	fs fsOps
+
 	mu       sync.Mutex
-	activeID string             // id of the queued/running job, "" when idle
-	cancel   context.CancelFunc // cancels the active scan
+	activeID string             // id of the queued/running heavyweight job, "" when idle
+	cancel   context.CancelFunc // cancels the active scan/move
 }
 
 // New constructs a Manager. Call RecoverOnStart then StartScheduler after.
 func New(store *Store, nasName string) *Manager {
 	return &Manager{
-		store:   store,
-		nasName: nasName,
-		rootFor: func(share string) string { return "/volume1/" + share },
+		store:       store,
+		nasName:     nasName,
+		rootFor:     func(share string) string { return "/volume1/" + share },
+		moveRootFor: func(share string) string { return "/btrfs/volume1/" + share },
+		fs:          btrfsCLI{},
 	}
 }
 
@@ -139,6 +148,24 @@ func (m *Manager) RecoverOnStart() {
 			j.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 			if err := m.store.SaveJob(j); err != nil {
 				log.Printf("inventory: recover %s: %v", j.ID, err)
+			}
+		}
+	}
+
+	// Move jobs caught mid-stage become interrupted. An interrupted execute is
+	// resumable (per-file status lives in the manifest) or can be rolled back.
+	moves, err := m.store.ListMoveJobs()
+	if err != nil {
+		return
+	}
+	for _, j := range moves {
+		switch j.Status {
+		case MovePlanning, MovePreflight, MoveSnapshotting, MoveExecuting, MoveVerifying:
+			j.Status = MoveInterrupted
+			j.Error = "interrupted by NAS API restart; resume execute or roll back"
+			j.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+			if err := m.store.SaveMoveJob(j); err != nil {
+				log.Printf("archive-move: recover %s: %v", j.ID, err)
 			}
 		}
 	}
