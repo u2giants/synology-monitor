@@ -287,7 +287,7 @@ export default function ArchiveInventoryPage() {
           </label>
 
           <div className="text-sm">
-            <span className="mb-1 block text-muted-foreground">Shares</span>
+            <span className="mb-1 block text-muted-foreground">Shared folders to scan</span>
             <div className="grid grid-cols-2 gap-1">
               {ARCHIVE_SHARES.map((s) => (
                 <label key={s} className="flex items-center gap-2">
@@ -299,22 +299,32 @@ export default function ArchiveInventoryPage() {
           </div>
 
           <label className="block text-sm">
-            <span className="mb-1 block text-muted-foreground">Cutoff years (comma-separated)</span>
+            <span className="mb-1 block text-muted-foreground">Compare archive cut-off years</span>
             <input
               value={cutoffYears}
               onChange={(e) => setCutoffYears(e.target.value)}
-              placeholder="2021,2022"
+              placeholder="2021, 2022"
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
             />
+            <span className="mt-1 block text-xs text-muted-foreground">
+              Each year answers a what-if: &ldquo;how many files were last touched <em>before</em> this year?&rdquo; List a few to
+              compare (e.g. <code>2021, 2022</code> → before-2021 vs before-2022). Nothing is moved — this just measures.
+            </span>
           </label>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={overlay} onChange={(e) => setOverlay(e.target.checked)} />
-            Drive/ShareSync recent-activity overlay
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" checked={overlay} onChange={(e) => setOverlay(e.target.checked)} className="mt-1" />
+            <span>
+              Flag folders with recent sync activity
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Checks Synology Drive / ShareSync history so you can see which folders are still actively in use before
+                archiving them.
+              </span>
+            </span>
           </label>
 
           <label className="block text-sm">
-            <span className="mb-1 block text-muted-foreground">Protect files newer than</span>
+            <span className="mb-1 block text-muted-foreground">Never archive files newer than (optional safety date)</span>
             <input
               type="datetime-local"
               value={protectNewerThan}
@@ -322,20 +332,24 @@ export default function ArchiveInventoryPage() {
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
             />
             <span className="mt-1 block text-xs text-muted-foreground">
-              Files modified, changed, or created on/after this date are never archive candidates, even with no sync
-              activity.
+              Any file modified, changed, or created on/after this date is always kept out of the archive list — even if it
+              looks old by its main date and shows no sync activity. Leave blank for no extra protection.
             </span>
           </label>
 
           <details className="rounded-md border border-border p-3 text-sm">
-            <summary className="cursor-pointer text-muted-foreground">Advanced options</summary>
+            <summary className="cursor-pointer text-muted-foreground">Advanced: go easy on the NAS</summary>
+            <p className="mt-2 text-xs text-muted-foreground">
+              These slow the scan down so it doesn&rsquo;t compete with people using the NAS. The defaults are safe — only
+              change them if a scan is noticeably affecting NAS performance.
+            </p>
             <div className="mt-3 space-y-3">
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={useIdleIo} onChange={(e) => setUseIdleIo(e.target.checked)} />
-                Use idle I/O priority
+                Let real NAS activity take priority over the scan
               </label>
               <label className="block">
-                <span className="mb-1 block text-muted-foreground">Max files/sec (0 = unlimited)</span>
+                <span className="mb-1 block text-muted-foreground">Speed limit — files per second (0 = no limit)</span>
                 <input
                   type="number"
                   value={maxFilesPerSec}
@@ -344,7 +358,7 @@ export default function ArchiveInventoryPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-muted-foreground">Pause every N files</span>
+                <span className="mb-1 block text-muted-foreground">Take a short break every N files</span>
                 <input
                   type="number"
                   value={sleepEveryFiles}
@@ -353,7 +367,7 @@ export default function ArchiveInventoryPage() {
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-muted-foreground">Pause duration (ms)</span>
+                <span className="mb-1 block text-muted-foreground">How long each break lasts (milliseconds)</span>
                 <input
                   type="number"
                   value={sleepMs}
@@ -471,43 +485,60 @@ export default function ArchiveInventoryPage() {
           <h2 className="font-medium">Results</h2>
 
           {yearlyChart.length > 0 && (
-            <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={yearlyChart}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                  <XAxis dataKey="year" className="text-xs" />
-                  <YAxis className="text-xs" />
-                  <Tooltip />
-                  <Bar dataKey="files" name="files" fill="#2563eb" />
-                </BarChart>
-              </ResponsiveContainer>
+            <div>
+              <h3 className="mb-2 text-sm font-medium text-muted-foreground">How many files were last changed each year</h3>
+              <div className="h-64">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={yearlyChart}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+                    <XAxis dataKey="year" className="text-xs" />
+                    <YAxis className="text-xs" />
+                    <Tooltip />
+                    <Bar dataKey="files" name="files" fill="#2563eb" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           )}
 
           <ResultTable
-            title="Cutoff summary (candidates vs protected)"
-            header={["share", "cutoff", "candidate #", "candidate bytes", "candidate GiB", "protected #", "protected bytes"]}
-            rows={(results.cutoff ?? []).map((r) => r.slice(1))}
+            title="How much each cut-off would archive"
+            caption="For each cut-off year: how many old files (and how much space) could be archived, and how many were kept back by your safety date."
+            header={["Share", "Older than", "Files to archive", "Size (bytes)", "Size (GiB)", "Kept (too recent)", "Kept size (bytes)"]}
+            rows={(results.cutoff ?? []).map((r) => {
+              const c = r.slice(1); // drop the NAS-name column
+              c[1] = c[1].replace("older_than_", ""); // "older_than_2021" → "2021"
+              return c;
+            })}
           />
           <ResultTable
-            title="Directory summary"
-            header={["share", "total dirs", "empty dirs"]}
+            title="Folders today"
+            caption="A snapshot of the current folders — including how many are already empty right now. (This is not a prediction of what archiving would empty out.)"
+            header={["Share", "Total folders", "Empty folders now"]}
             rows={(results.dirs ?? []).map((r) => r.slice(1))}
           />
 
           {activeJob?.overlay_note && (
-            <p className="text-xs text-muted-foreground">Overlay note: {activeJob.overlay_note}</p>
+            <p className="text-xs text-muted-foreground">Recent-activity note: {activeJob.overlay_note}</p>
           )}
 
-          <div className="flex flex-wrap gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Download as spreadsheet (CSV):</span>
             {resultsJobId &&
-              (["yearly", "cutoff", "dirs", "overlay"] as const).map((kind) => (
+              (
+                [
+                  ["yearly", "files by year"],
+                  ["cutoff", "archive cut-offs"],
+                  ["dirs", "folders"],
+                  ["overlay", "recent activity"],
+                ] as const
+              ).map(([kind, label]) => (
                 <a
                   key={kind}
                   href={`/api/archive/jobs/${resultsJobId}/result?nas=${nas}&result=${kind}&download=1`}
                   className="inline-flex items-center gap-1 rounded-md border border-border px-3 py-1.5 hover:bg-muted"
                 >
-                  <Download className="h-4 w-4" /> {kind}.csv
+                  <Download className="h-4 w-4" /> {label}
                 </a>
               ))}
           </div>
@@ -517,11 +548,22 @@ export default function ArchiveInventoryPage() {
   );
 }
 
-function ResultTable({ title, header, rows }: { title: string; header: string[]; rows: string[][] }) {
+function ResultTable({
+  title,
+  caption,
+  header,
+  rows,
+}: {
+  title: string;
+  caption?: string;
+  header: string[];
+  rows: string[][];
+}) {
   if (rows.length === 0) return null;
   return (
     <div>
-      <h3 className="mb-2 text-sm font-medium text-muted-foreground">{title}</h3>
+      <h3 className="text-sm font-medium">{title}</h3>
+      {caption && <p className="mb-2 text-xs text-muted-foreground">{caption}</p>}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
