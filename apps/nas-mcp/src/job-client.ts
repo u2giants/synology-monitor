@@ -164,6 +164,10 @@ export async function runJobTool(
   const jobId = String(input.job_id ?? "").trim();
   const tag = `[${config.name}]`;
 
+  if (op.startsWith("move_")) {
+    return runMoveTool(op, input, config, tag);
+  }
+
   try {
     switch (op) {
       case "status": {
@@ -254,4 +258,172 @@ function formatResult(kind: string, r: unknown): string {
     lines.push(`… more rows: pass cursor=${res.next_cursor} to continue.`);
   }
   return lines.join("\n");
+}
+
+// ── Archive move (Phase 2) ───────────────────────────────────────────────────
+
+interface MovePlanParams {
+  share: string;
+  mode: string;
+  roots: string[];
+  include: string[];
+  exclude: string[];
+  cutoffYears: number[];
+  protect: string;
+  prune: boolean;
+  removePreexisting: boolean;
+}
+
+// Mirrors nas-api jobs.MovePlanRequest.Normalize so the signed canonical and the
+// request body never drift.
+function parseMovePlan(input: Record<string, unknown>): MovePlanParams {
+  const roots = toStringArray(input.roots).map((r) => r.replace(/^\/+|\/+$/g, "")).filter(Boolean);
+  return {
+    share: String(input.share ?? "").trim(),
+    mode: String(input.mode ?? "move") || "move",
+    roots,
+    include: toStringArray(input.include_globs),
+    exclude: toStringArray(input.exclude_globs),
+    cutoffYears: toYearArray(input.cutoff_years),
+    protect: String(input.protect_newer_than ?? "").trim(),
+    prune: input.prune_emptied_source_dirs !== false, // undefined → true
+    removePreexisting: input.remove_preexisting_empty_dirs === true, // undefined → false
+  };
+}
+
+// MUST byte-match nas-api jobs.MoveCanonicalOpString (Appendix A).
+function moveCanonical(op: string, nas: string, jobId: string, p?: MovePlanParams): string {
+  if (op === "move_plan") {
+    const params = p!;
+    return (
+      `move.plan|nas=${nas}|share=${params.share}|mode=${params.mode}` +
+      `|roots=${canonStrings(params.roots)}|include=${canonStrings(params.include)}|exclude=${canonStrings(params.exclude)}` +
+      `|cutoff=${canonYears(params.cutoffYears)}|protect=${params.protect}` +
+      `|prune=${params.prune ? "true" : "false"}|rmpre=${params.removePreexisting ? "true" : "false"}`
+    );
+  }
+  const goOp = { move_execute: "move.execute", move_cancel: "move.cancel", move_rollback: "move.rollback" }[op];
+  return `${goOp}|nas=${nas}|job_id=${jobId}`;
+}
+
+function canonStrings(items: string[]): string {
+  return [...items].sort().join(",");
+}
+
+function moveBody(p: MovePlanParams): Record<string, unknown> {
+  return {
+    share: p.share,
+    mode: p.mode,
+    roots: p.roots,
+    include_globs: p.include,
+    exclude_globs: p.exclude,
+    cutoff_years: p.cutoffYears,
+    protect_newer_than: p.protect,
+    prune_emptied_source_dirs: p.prune,
+    remove_preexisting_empty_dirs: p.removePreexisting,
+  };
+}
+
+async function runMoveTool(
+  op: string,
+  input: Record<string, unknown>,
+  config: NasConfig,
+  tag: string,
+): Promise<string> {
+  const jobId = String(input.job_id ?? "").trim();
+  try {
+    switch (op) {
+      case "move_status": {
+        if (jobId) return `${tag} ${formatMoveJob(await jobHttp(config, "GET", `/jobs/archive-move/${encodeURIComponent(jobId)}`))}`;
+        const list = (await jobHttp(config, "GET", "/jobs/archive-move")) as { jobs?: unknown[] };
+        return `${tag} ${formatMoveList(list.jobs ?? [])}`;
+      }
+      case "move_manifest": {
+        if (!jobId) return `${tag} job_id is required.`;
+        const q = new URLSearchParams();
+        if (input.limit !== undefined) q.set("limit", String(input.limit));
+        if (input.cursor !== undefined) q.set("cursor", String(input.cursor));
+        const r = (await jobHttp(config, "GET", `/jobs/archive-move/${encodeURIComponent(jobId)}/manifest?${q.toString()}`)) as {
+          lines?: string[];
+          total_rows?: number;
+          next_cursor?: number;
+        };
+        const lines = [`${tag} manifest (${r.total_rows ?? 0} rows)`, ...(r.lines ?? [])];
+        if (typeof r.next_cursor === "number" && r.next_cursor >= 0) lines.push(`… more: cursor=${r.next_cursor}`);
+        return lines.join("\n");
+      }
+      case "move_verify": {
+        if (!jobId) return `${tag} job_id is required.`;
+        const r = (await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/verify`)) as { verify_report?: string };
+        return `${tag} re-verify:\n${r.verify_report ?? "(no report)"}`;
+      }
+      case "move_plan": {
+        const p = parseMovePlan(input);
+        if (!p.share) return `${tag} share is required.`;
+        if (p.mode === "move" && p.cutoffYears.length === 0) return `${tag} cutoff_years is required for a move (it sets the archive boundary).`;
+        if (!input.confirmed) {
+          return [
+            `${tag} This will create a DRY-RUN archive-move plan on ${config.name} for share '${p.share}' (mode: ${p.mode}).`,
+            p.mode === "move" ? `Files last modified before ${Math.max(...p.cutoffYears)} would be relocated into ${p.share}/Archive.` : `Empty folders under the scope would be listed for removal.`,
+            `Nothing is moved or deleted by planning. Call again with confirmed: true to create the plan, then review it with fetch_archive_move_manifest.`,
+          ].join("\n");
+        }
+        const canonical = moveCanonical("move_plan", config.name, "", p);
+        const token = buildApprovalToken(config, canonical, 2);
+        const job = await jobHttp(config, "POST", "/jobs/archive-move/plan", { body: moveBody(p), approvalToken: token });
+        return `${tag} Plan created.\n${formatMoveJob(job)}`;
+      }
+      case "move_cancel": {
+        if (!jobId) return `${tag} job_id is required.`;
+        if (!input.confirmed) return `${tag} This will cancel archive-move ${jobId}. Call again with confirmed: true.`;
+        const token = buildApprovalToken(config, moveCanonical("move_cancel", config.name, jobId), 2);
+        await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/cancel`, { approvalToken: token });
+        return `${tag} Cancellation requested for ${jobId}.`;
+      }
+      case "move_execute":
+      case "move_rollback": {
+        if (!jobId) return `${tag} job_id is required.`;
+        const verb = op === "move_execute" ? "EXECUTE (move files into Archive, writes to user data)" : "ROLL BACK (return files to their original paths)";
+        if (!input.confirmed) {
+          return [
+            `${tag} This will ${verb} for archive-move ${jobId} on ${config.name}.`,
+            `This is a tier-3 destructive/reversing operation. Review the manifest first (fetch_archive_move_manifest).`,
+            `Call again with confirmed: true to proceed.`,
+          ].join("\n");
+        }
+        const path = op === "move_execute" ? "execute" : "rollback";
+        const token = buildApprovalToken(config, moveCanonical(op, config.name, jobId), 3);
+        const job = await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/${path}`, { approvalToken: token });
+        return `${tag} ${op === "move_execute" ? "Execute" : "Rollback"} started.\n${formatMoveJob(job)}`;
+      }
+      default:
+        return `${tag} Unknown move operation: ${op}`;
+    }
+  } catch (err) {
+    return `${tag} Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+function formatMoveJob(j: unknown): string {
+  const job = j as Record<string, unknown>;
+  const lines = [
+    `move ${job.id} — ${job.status}  (share: ${job.share}, mode: ${job.mode})`,
+    `planned=${job.planned} moved=${job.moved} verified=${job.verified} skipped=${job.skipped} failed=${job.failed} dirs_pruned=${job.dirs_pruned}`,
+  ];
+  if (job.current_path) lines.push(`current: ${job.current_path}`);
+  if (job.snapshot_id) lines.push(`snapshot: ${job.snapshot_id} (${job.snapshot_path})`);
+  if (job.preflight_note) lines.push(`preflight: ${job.preflight_note}`);
+  if (job.sync_exclusion_note) lines.push(`sync exclusion: ${job.sync_exclusion_note}`);
+  if (job.error) lines.push(`error: ${job.error}`);
+  return lines.join("\n");
+}
+
+function formatMoveList(jobs: unknown[]): string {
+  if (jobs.length === 0) return "No archive-move jobs found.";
+  return jobs
+    .map((j) => {
+      const job = j as Record<string, unknown>;
+      return `· ${job.id} [${job.status}] share=${job.share} mode=${job.mode} moved=${job.moved}/${job.planned}`;
+    })
+    .join("\n");
 }

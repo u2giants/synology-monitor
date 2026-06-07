@@ -1,7 +1,13 @@
 import { z } from "zod";
 
-/** Native nas-api file-inventory job operations (no shell command). */
-export type JobOp = "start" | "schedule" | "status" | "result" | "cancel";
+/** Native nas-api job operations (no shell command). Inventory ops (Phase 1) and
+ *  archive-move ops (Phase 2) both dispatch through job-client.ts. */
+export type JobOp =
+  // file inventory
+  | "start" | "schedule" | "status" | "result" | "cancel"
+  // archive move
+  | "move_plan" | "move_status" | "move_manifest"
+  | "move_execute" | "move_cancel" | "move_rollback" | "move_verify";
 
 export interface McpToolDef {
   name: string;
@@ -78,6 +84,36 @@ const sleepMsParam = z
   .number()
   .optional()
   .describe("Pause duration in milliseconds at each checkpoint (default: 25).");
+
+// ─── Archive-move (Phase 2) param shapes ──────────────────────────────────────
+const moveShareParam = z
+  .string()
+  .describe("The single shared folder to operate on (e.g. files, styleguides, Coldlion). Allowlisted server-side.");
+const moveModeParam = z
+  .enum(["move", "clean_empty_dirs"])
+  .optional()
+  .describe("'move' relocates old files into <share>/Archive (default). 'clean_empty_dirs' removes empty folders only, moving zero files.");
+const moveRootsParam = z
+  .string()
+  .optional()
+  .describe("Optional comma-separated sub-folder roots within the share to limit scope (e.g. 'clients/acme'). Omit for the whole share.");
+const moveIncludeParam = z
+  .string()
+  .optional()
+  .describe("Optional comma-separated include path globs (relative to the share).");
+const moveExcludeParam = z
+  .string()
+  .optional()
+  .describe("Optional comma-separated exclude path globs (relative to the share).");
+const movePruneParam = z
+  .boolean()
+  .optional()
+  .describe("Prune source folders emptied by the move, bottom-up (default: true).");
+const moveRemovePreexistingParam = z
+  .boolean()
+  .optional()
+  .describe("Also remove folders that were already empty before the move (default: false).");
+const moveJobIdParam = z.string().describe("The archive-move job id (from plan_archive_move).");
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -3386,6 +3422,95 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
+  // ─── Archive move (Phase 2 — native job tools, staged + reversible) ──────────
+  {
+    name: "plan_archive_move",
+    description:
+      "WRITE (tier 2) — Plans a DRY-RUN archive move: walks the share with the same rules as inventory and writes a manifest of exactly which old files would be relocated into <share>/Archive (or, in clean_empty_dirs mode, which empty folders would be removed). Nothing is moved or deleted — it only writes a plan to review. Requires cutoff_years for a move. Call again with confirmed: true to create the plan; then review it with fetch_archive_move_manifest before execute_archive_move.",
+    write: true,
+    job: { op: "move_plan" },
+    params: {
+      target,
+      share: moveShareParam,
+      mode: moveModeParam,
+      cutoff_years: cutoffYearsParam,
+      protect_newer_than: protectNewerThanParam,
+      roots: moveRootsParam,
+      include_globs: moveIncludeParam,
+      exclude_globs: moveExcludeParam,
+      prune_emptied_source_dirs: movePruneParam,
+      remove_preexisting_empty_dirs: moveRemovePreexistingParam,
+    },
+  },
+  {
+    name: "get_archive_move_status",
+    description:
+      "Read the status/progress of archive-move jobs: stage (planned/executing/verifying/complete/…), counts (planned/moved/verified/skipped/failed/dirs_pruned), snapshot id, and any preflight or sync-exclusion notes. Pass job_id for one job; omit to list recent move jobs.",
+    write: false,
+    job: { op: "move_status" },
+    params: {
+      target,
+      job_id: z.string().optional().describe("Archive-move job id. Omit to list recent move jobs."),
+    },
+  },
+  {
+    name: "fetch_archive_move_manifest",
+    description:
+      "Fetch a bounded, paginated slice of an archive-move manifest (one JSONL row per planned file move and per directory removal, with source/dest paths, identity fields, and per-row status). Use this to review a plan before executing. Use limit/cursor to page.",
+    write: false,
+    job: { op: "move_manifest" },
+    params: {
+      target,
+      job_id: moveJobIdParam,
+      limit: z.number().int().optional().describe("Max manifest rows to return (default 1000, max 5000)."),
+      cursor: z.number().int().optional().describe("Row offset for pagination (from a prior response's next_cursor)."),
+    },
+  },
+  {
+    name: "execute_archive_move",
+    description:
+      "WRITE (tier 3, DESTRUCTIVE) — Executes a previously-planned archive move: runs preflight safety gates, takes a read-only Btrfs snapshot, then atomically renames each planned file into <share>/Archive verifying identity per file (rolling back any file that does not match), prunes emptied source folders, and applies the Archive sync exclusion. Writes to user data. Requires a planned (or interrupted/cancelled, to resume) job_id. Call again with confirmed: true to execute.",
+    write: true,
+    job: { op: "move_execute" },
+    params: {
+      target,
+      job_id: moveJobIdParam,
+    },
+  },
+  {
+    name: "cancel_archive_move",
+    description:
+      "WRITE (tier 2) — Cancels a running archive-move (or a planned one). A cancelled execute leaves a consistent, resumable state — already-moved files stay moved and the rest can be resumed or rolled back. Call again with confirmed: true to cancel.",
+    write: true,
+    job: { op: "move_cancel" },
+    params: {
+      target,
+      job_id: moveJobIdParam,
+    },
+  },
+  {
+    name: "rollback_archive_move",
+    description:
+      "WRITE (tier 3, REVERSING) — Rolls back an archive move using its manifest: recreates pruned source folders, renames every moved file back to its original path, and removes the now-empty Archive folders. Restores the pre-move state. Call again with confirmed: true to roll back.",
+    write: true,
+    job: { op: "move_rollback" },
+    params: {
+      target,
+      job_id: moveJobIdParam,
+    },
+  },
+  {
+    name: "verify_archive_move",
+    description:
+      "Re-verify a completed archive move against the current filesystem (read-only): confirms each moved file is present at its Archive destination with matching identity and reports verified/missing/identity_mismatch counts. Changes nothing.",
+    write: false,
+    job: { op: "move_verify" },
+    params: {
+      target,
+      job_id: moveJobIdParam,
+    },
+  },
+
 ];
 
 // ─── Group taxonomy + tool_search registry ────────────────────────────────────
@@ -3401,6 +3526,14 @@ export const TOOL_GROUPS: Record<string, string> = {
   get_file_inventory_status: "archive",
   fetch_file_inventory_result: "archive",
   cancel_file_inventory: "archive",
+  // Archive-move job tools.
+  plan_archive_move: "archive",
+  get_archive_move_status: "archive",
+  fetch_archive_move_manifest: "archive",
+  execute_archive_move: "archive",
+  cancel_archive_move: "archive",
+  rollback_archive_move: "archive",
+  verify_archive_move: "archive",
 
   // system
   check_system_info: "system",
