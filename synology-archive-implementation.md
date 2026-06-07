@@ -100,8 +100,15 @@ its own `package.json` — check `name` field first.)
 Build the **smallest useful, fully GUI-covered** version:
 
 - Durable nas-api jobs mount (compose + env).
-- nas-api: job manager + mtime-year scanner + optional Drive/ShareSync overlay +
+- nas-api: job manager + mtime-year scanner + Drive/ShareSync overlay +
   six REST endpoints (start, schedule, list, status, result, cancel).
+
+> **The overlay is REQUIRED in this PR — build it.** Its purpose is safety: it
+> reports which folders had recent Synology Drive / ShareSync activity so the
+> operator never archives data that is still actively in use. "Best-effort" in
+> §5.4 refers only to *runtime error handling* (if a database is locked, skip
+> that source and record why) — it does **not** mean the feature is optional to
+> implement. The per-job `overlay` flag defaults to **on**.
 - nas-mcp: 5 MCP operations proxying those endpoints, correctly tiered.
 - web: `/archive-inventory` operator page covering **all five operations
   including scheduling**, plus the supporting Next.js API routes.
@@ -134,9 +141,12 @@ is already made here.
 6. **Scheduling lives in nas-api**, persisted to disk, re-armed on startup. A
    scheduled job has status `scheduled` + `scheduled_for`. A ticker promotes due
    jobs to `queued`. (Survives Watchtower container recreation via disk state.)
-7. **The Drive/ShareSync overlay uses the `sqlite3` CLI** already in the nas-api
-   runtime image (via `os/exec` on a *copy* of the DB files). No cgo, no Go
-   SQLite driver. Overlay failures are recorded, never fatal.
+7. **The Drive/ShareSync overlay is part of this PR (not deferred)** and exists
+   to prevent archiving active data. It uses the `sqlite3` CLI already in the
+   nas-api runtime image (via `os/exec` on a *copy* of the DB files). No cgo, no
+   Go SQLite driver. The per-job `overlay` flag defaults to **on**. "Best-effort"
+   means runtime degradation only: failures (locked/missing/malformed DB) are
+   recorded in `overlay_note` and skipped, never fatal to the job.
 8. **I/O priority is best-effort.** Lower the scanner goroutine's niceness and
    set idle ioprio via raw Linux syscalls; on any error, log and continue.
 9. **Result fetching is bounded** for MCP (paginated, capped rows/bytes). The
@@ -330,7 +340,13 @@ Set best-effort I/O priority at scan start: call `priority.LowerSelf()` (see 5.5
 inside the worker goroutine after `runtime.LockOSThread()` (priority is per-thread
 on Linux).
 
-### 5.4 `overlay.go` (best-effort, only if `j.Overlay`)
+### 5.4 `overlay.go` (required feature; runs when `j.Overlay`, which defaults true)
+
+> Build this in the first PR. It is the safety mechanism that stops the operator
+> from archiving folders that are still being synced/used. Default `overlay` to
+> `true` when the start/schedule request omits the field (decode into a pointer
+> or default after decode). "Best-effort" below = graceful runtime degradation,
+> not optional implementation.
 
 - Candidate DBs (read-only mounts already present):
   `/volume1/@synologydrive/...` and `/volume1/@SynologyDriveShareSync/...`
