@@ -521,6 +521,55 @@ manifest).
 - The Plan UI must render a **preview of the exact file set** (and totals) before
   any directory is created. Nothing is hidden behind a single "archive" button.
 
+### How directories are handled
+
+The move operates on files, but it must not leave the source tree littered with
+empty skeleton folders — that is exactly the "10,000 empty folders in origin"
+problem, and empty folders still get walked/synced. Directory handling is
+therefore a first-class, default part of the workflow, with three distinct cases:
+
+- **Folder with both candidate and non-candidate files** → only the candidate
+  files move; the folder stays because it still holds files. Never deleted.
+- **Folder emptied *by this move*** (all its files were candidates and moved, and
+  it has no remaining non-empty subdirectories) → the now-empty source folder is
+  **pruned by default** (option `prune_emptied_source_dirs`, default `true`).
+  Pruning is bottom-up so parents that become empty after their children are
+  pruned are also removed.
+- **Folder that was *already* empty before this move** (your existing 10,000) →
+  these are unrelated to the candidate files, so removing them is a *separate,
+  explicit decision*. The move can clean them up only when
+  `remove_preexisting_empty_dirs` is set (default `false`). They are also
+  removable on their own via the standalone empty-directory cleanup operation
+  (below) without moving any files.
+
+**What "empty" means (Synology-aware).** A directory counts as empty/prunable
+when, ignoring Synology system artifacts, it contains no regular files and no
+non-empty subdirectories. System artifacts that do **not** keep a directory
+alive: `@eaDir` (thumbnails/metadata), `.DS_Store`, `Thumbs.db`,
+`.SynologyWorkingDirectory`. When such a directory is pruned, its artifacts are
+removed with it. Anything else (a real file, a non-empty subdir, an unknown
+hidden file) makes the directory **not** empty and it is left untouched.
+
+**Recorded and reversible.** Every pruned or removed directory is written to the
+manifest with its path, mode, owner/group, and mtime so rollback can recreate it
+exactly. Pruning is part of the same snapshot-protected, manifest-audited run as
+the file moves.
+
+### Standalone empty-directory cleanup
+
+Because the pre-existing empty folders exist independently of any archive move,
+the move workflow also runs in a `mode: clean_empty_dirs` that removes empty
+directories under a chosen NAS → share → folder scope **without moving any
+files**. It is not a separate set of endpoints/tools — it is the same staged
+`archive_move` machinery (plan → preflight → snapshot → execute → verify →
+rollback) with zero file moves, selected by a `mode` field on the plan request.
+It uses the same "empty" definition, the same dry-run-first manifest (listing
+every directory that would be removed, for review), the same Btrfs snapshot safety
+net, and the same reversible rollback (directories are recreated from their
+recorded path/mode/owner/mtime). Phase 1's `dirs.csv` already reports `empty_dirs`
+per share, so the operator can see the scale before running it. Like any deletion,
+it is tier 3 and requires preview + approval + confirmation.
+
 ### Move job runtime
 
 - New job `type: "archive_move"`, persisted under
@@ -556,6 +605,19 @@ btime           RFC3339 (ns) — must be preserved (statx; fallback noted)
 planned_reason  e.g. "older_than_2021"
 status          planned | moved | verified | skipped | failed | rolled_back
 detail          skip/error reason, or verification result
+```
+
+The manifest also records **directory rows** for every source directory pruned or
+removed, so rollback can recreate them:
+
+```text
+kind            "dir"
+path            absolute source directory path
+mode            permission bits (octal)
+owner / group   uid:gid
+mtime           RFC3339
+removed_reason  emptied_by_move | preexisting_empty
+status          planned | removed | recreated
 ```
 
 ### Plan (dry-run) details
@@ -639,11 +701,15 @@ identity — it proves it, per file, and undoes anything that does not match.
 
 - Re-walk the manifest: for each `moved` file confirm `dest_abs` exists with
   matching identity and `source_abs` no longer exists; mark `verified`.
-- Emit the completion report (counts/bytes moved/verified/skipped/failed).
+- **Prune source directories emptied by the move** (default on; see *How
+  directories are handled*). Bottom-up, Synology-artifact-aware, never deleting a
+  directory that still holds non-candidate files. Each removed directory is
+  recorded in the manifest (path, mode, owner, mtime) for reversibility. If
+  `remove_preexisting_empty_dirs` is set, already-empty directories in scope are
+  removed in the same pass.
 - Apply the `Archive/` sync exclusion (next section).
-- Optionally prune source directories **emptied by the move** — never delete a
-  directory that still holds non-candidate files; record exactly which dirs were
-  removed.
+- Emit the completion report (counts/bytes moved/verified/skipped/failed, plus
+  `dirs_pruned`).
 
 ### Sync exclusion for `Archive/`
 
@@ -662,9 +728,12 @@ verified move, ensure each sync tool covering the share excludes
 
 ### Rollback (whole-run)
 
-- Using the manifest, reverse the move: for each `moved`/`verified` entry, rename
-  `dest_abs` → `source_abs`, verify identity, mark `rolled_back`; remove any
-  `Archive/` directories emptied by the rollback.
+- Using the manifest, reverse the move: first **recreate any pruned source
+  directories** from their recorded path/mode/owner/mtime (so files have a parent
+  to return to), then for each `moved`/`verified` entry rename `dest_abs` →
+  `source_abs`, verify identity, mark `rolled_back`; finally remove any `Archive/`
+  directories emptied by the rollback. Directories removed by
+  `remove_preexisting_empty_dirs` are likewise recreated.
 - If rename-based rollback is impossible for any entry, fall back to restoring
   from the pre-execute Btrfs snapshot, with the manual snapshot-restore procedure
   documented.
@@ -710,8 +779,8 @@ On the `/archive-inventory` page (or a sibling `/archive-move`), a staged panel:
 ### Result / report formats
 
 ```text
-manifest.jsonl     per-file (schema above)
-move-report.csv    nas,share,planned,moved,verified,skipped,failed,bytes_moved
+manifest.jsonl     per-file AND per-directory rows (schema above)
+move-report.csv    nas,share,planned,moved,verified,skipped,failed,bytes_moved,dirs_pruned
 preflight.json     per-gate pass/fail with details
 verify-report.csv  nas,share,verified,missing,identity_mismatch
 ```
@@ -747,19 +816,34 @@ share for the subvolume/snapshot/identity behavior.
     works.
 12. After finalize, `Archive/` is excluded from sync and from future inventory
     scans.
-13. Empty source dirs are pruned only when emptied by the move; non-empty dirs
-    are untouched.
-14. **End-to-end on a small real share (e.g. `Coldlion`): plan → execute →
-    verify → confirm sync no longer traverses `Archive/` → rollback → confirm the
-    original state is fully restored.** This is the end-to-end test that
+13. Source dirs emptied by the move are pruned bottom-up; a folder with any
+    remaining non-candidate file is left intact (mixed folder → folder stays,
+    only old files move).
+14. A directory containing only Synology artifacts (`@eaDir`, `.DS_Store`,
+    `Thumbs.db`) counts as empty and is pruned with its artifacts; a directory
+    with a real file or non-empty subdir is not.
+15. `remove_preexisting_empty_dirs=true` removes already-empty folders in scope;
+    with it `false` they are left untouched.
+16. `mode=clean_empty_dirs` removes empty directories and moves zero files;
+    its dry-run manifest lists exactly the directories that would be removed.
+17. Rollback recreates every pruned/removed directory (path, mode, owner, mtime)
+    before returning files, and restores the original state exactly.
+18. **End-to-end on a small real share (e.g. `Coldlion`): plan → execute →
+    verify → confirm sync no longer traverses `Archive/` → confirm no empty
+    skeleton folders remain in the source → rollback → confirm the original state
+    (files AND folders) is fully restored.** This is the end-to-end test that
     validates the whole system.
 
 ### Phase 2 PR scope
 
 - `archive_move` job type in the job manager
-  (plan / preflight / snapshot / execute / verify / cancel / rollback).
-- Manifest read/write plus resume.
+  (plan / preflight / snapshot / execute / verify / cancel / rollback), including
+  the `mode: clean_empty_dirs` variant.
+- Source-directory pruning (default on) and pre-existing empty-dir removal
+  (opt-in), Synology-artifact-aware and reversible.
+- Manifest read/write (file **and** directory rows) plus resume.
 - Seven NAS API endpoints and seven MCP operations, correctly tiered.
-- Web UI staged move flow with folder-level scope, previews, and confirmations.
+- Web UI staged move flow with folder-level scope, previews, the directory
+  options, and confirmations.
 - Sync-exclusion application/instructions.
 - Tests and docs.
