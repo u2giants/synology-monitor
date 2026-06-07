@@ -154,6 +154,19 @@ is already made here.
 10. **No feature branches.** Repo is single-branch `main` (see `CLAUDE.md`).
     Commit style: `area: short imperative`, co-author trailer
     `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+11. **Full option parity in the GUI.** *Every* scanner option is exposed in the
+    web page — not just the common ones. Beyond NAS/shares/cutoff/overlay/
+    schedule, the page exposes an **Advanced options** panel for I/O priority,
+    throttle (`max_files_per_second`), `sleep_every_files`, `sleep_ms`, and the
+    **date protection** control below. MCP exposes the same via tool params.
+12. **Date-based protection (whitelist), independent of activity.**
+    `protect_newer_than` (an RFC3339 UTC date) protects any file whose
+    *newest* timestamp — `max(mtime, ctime, btime)` — is at or after that date,
+    so recently-created or recently-changed files are never treated as archive
+    candidates **even if the activity overlay shows nothing**. Defaults to empty
+    (no extra protection) but is always exposed in the GUI and MCP. btime
+    (creation/birth time) is read via `statx`; if unavailable, fall back to
+    `max(mtime, ctime)` and note it.
 
 ---
 
@@ -281,10 +294,15 @@ type Job struct {
 
 // StartRequest is the body for POST /jobs/inventory and …/schedule.
 type StartRequest struct {
-	Shares       []string `json:"shares"`        // required, non-empty, allowlisted
-	CutoffYears  []int    `json:"cutoff_years"`  // optional
-	Overlay      bool     `json:"overlay"`       // optional
-	ScheduledFor string   `json:"scheduled_for"` // schedule endpoint only; RFC3339 UTC, future
+	Shares           []string `json:"shares"`             // required, non-empty, allowlisted
+	CutoffYears      []int    `json:"cutoff_years"`       // optional
+	Overlay          *bool    `json:"overlay"`            // optional; nil → default TRUE
+	ProtectNewerThan string   `json:"protect_newer_than"` // optional RFC3339 UTC date; see §2.11
+	MaxFilesPerSec   int      `json:"max_files_per_second"` // optional throttle; 0 = unlimited
+	UseIdleIO        *bool    `json:"use_idle_io_priority"` // optional; nil → default TRUE
+	SleepEveryFiles  int      `json:"sleep_every_files"`  // optional; default 5000
+	SleepMs          int      `json:"sleep_ms"`           // optional; default 25
+	ScheduledFor     string   `json:"scheduled_for"`      // schedule endpoint only; RFC3339 UTC, future
 }
 ```
 
@@ -329,6 +347,16 @@ Algorithm per the design doc (§Scanner Implementation):
     `empty_dirs` (a dir with zero non-excluded entries).
   - For regular files: `info, _ := d.Info()`; aggregate
     `byYear[share][info.ModTime().Year()] += {count:1, bytes:info.Size()}`.
+  - **Protection classification (§2.11):** compute the file's *newest* timestamp
+    `newest = max(mtime, ctime, btime)`. `mtime` = `info.ModTime()`; `ctime` =
+    `info.Sys().(*syscall.Stat_t).Ctim`; `btime` via `statx` (raw syscall —
+    `unix.Statx`/raw `SYS_STATX`, amd64; best-effort, fall back to `max(mtime,
+    ctime)` if statx unavailable). If `ProtectNewerThan` is set and
+    `newest >= ProtectNewerThan`, mark the file **protected**: still counted in
+    `yearly`, but excluded from archive-candidate totals in `cutoff` and tallied
+    into `protected_count`/`protected_bytes`. Protection is independent of the
+    activity overlay — a file is protected by date *even if it shows no sync
+    activity*, which is the point of the rule.
   - Every `sleep_every_files` (default 5000) files: persist progress
     (`m.store.SaveJob`), check `ctx.Err()` for cancellation (`return ctx.Err()`),
     and optional throttle `time.Sleep(sleep_ms)`.
@@ -499,7 +527,11 @@ Add helper `hostnameOrEmpty()` using `os.Hostname()`.
 - `scanner_test.go`: build a temp tree with `t.TempDir()`; assert year
   aggregation, exclusion of `@eaDir`/`#snapshot`/`Archive`/`@tmp`, **symlink
   skipping** (create a symlink, assert not counted/followed), **empty-dir
-  counting**, and cancellation (`ctx` cancelled mid-walk yields `cancelled`).
+  counting**, cancellation (`ctx` cancelled mid-walk yields `cancelled`), and
+  **date protection**: a file older than the cutoff year but with `mtime`
+  (and separately `ctime`) at/after `protect_newer_than` lands in
+  `protected_count`, NOT `candidate_count` — assert each timestamp triggers
+  protection independently.
 - `manager_test.go`: single-job invariant (second Start → `ErrBusy`); startup
   recovery (`running` → `interrupted`); scheduled-due promotion; atomic write
   (status.json never partially written — assert temp file gone after save).
@@ -566,9 +598,12 @@ export function buildApprovalToken(cfg: NasConfig, canonical: string): string {
    group `archive` (so `tool_search "archive"` / `"inventory"` surfaces them). Use
    shared `target` enum + zod params:
    - `start_file_inventory` (write:true, job.op:"start"): params `target`,
-     `shares` (string csv), `cutoff_years?`, `overlay?`.
-   - `schedule_file_inventory` (write:true, job.op:"schedule"): + `scheduled_for`
-     (ISO).
+     `shares` (string csv), `cutoff_years?`, `overlay?` (default true),
+     `protect_newer_than?` (ISO date), `max_files_per_second?`,
+     `use_idle_io_priority?` (default true), `sleep_every_files?`, `sleep_ms?`.
+     (Full parity with the GUI per §2.11/§2.12.)
+   - `schedule_file_inventory` (write:true, job.op:"schedule"): same params as
+     start, plus `scheduled_for` (ISO).
    - `get_file_inventory_status` (write:false, job.op:"status"): `target`, `job_id?`.
    - `fetch_file_inventory_result` (write:false, job.op:"result"): `target`,
      `job_id`, `result?` (yearly|cutoff|dirs|overlay, default yearly), `limit?`,
@@ -669,20 +704,30 @@ Page sections (all required for GUI parity):
 1. **Target NAS** selector.
 2. **Shares** checkbox list (the 10 allowlisted shares; source the list from a
    shared constant — see 7.5).
-3. Options: cutoff years (comma input), overlay toggle (checkbox).
-4. **Start now** button → `POST /api/archive/jobs`.
-5. **Schedule** row: `datetime-local` + **Schedule** button →
+3. Options: cutoff years (comma input), overlay toggle (checkbox, default on),
+   and a **"Protect files newer than"** `datetime-local` control → sent as
+   `protect_newer_than` (convert to UTC ISO). Inline help: "Files modified,
+   changed, or created on/after this date are never archive candidates, even if
+   they show no sync activity."
+4. **Advanced options** (collapsible `<details>` panel — full parity per §2.11):
+   - "Use idle I/O priority" checkbox → `use_idle_io_priority` (default on).
+   - "Max files/sec (0 = unlimited)" number → `max_files_per_second`.
+   - "Pause every N files" number → `sleep_every_files` (default 5000).
+   - "Pause duration (ms)" number → `sleep_ms` (default 25).
+5. **Start now** button → `POST /api/archive/jobs`.
+6. **Schedule** row: `datetime-local` + **Schedule** button →
    `POST /api/archive/jobs/schedule`. Convert local time → UTC ISO before
    sending (the input is local; do `new Date(value).toISOString()`).
-6. **Scheduled jobs** list (filter list for status `scheduled`) each with a
+7. **Scheduled jobs** list (filter list for status `scheduled`) each with a
    **Cancel** button → `POST /api/archive/jobs/[id]/cancel`.
-7. **Active job** panel: progress (files/bytes scanned, current share, elapsed),
+8. **Active job** panel: progress (files/bytes scanned, current share, elapsed),
    a **Cancel** button. Poll `GET /api/archive/jobs/[id]` every **2s** with
    `setInterval` (see use-metrics.ts pattern) while status is
    `queued`/`running`; stop on terminal status.
-8. **Results** (when `result_available`): the BarChart (yearly), the cutoff
-   summary table, the directory summary table, and **Download CSV** buttons
-   (links to `/api/archive/jobs/[id]/result?...&download=1` for each kind).
+9. **Results** (when `result_available`): the BarChart (yearly), the cutoff
+   summary table (incl. `protected_count`/`protected_bytes`), the directory
+   summary table, and **Download CSV** buttons (links to
+   `/api/archive/jobs/[id]/result?...&download=1` for each kind).
 
 Handle the `409` (busy), `503` (mount missing), and `403` errors with inline
 message boxes (`bg-critical/10 text-critical`).
@@ -731,7 +776,11 @@ fatal; confirm `fetch_file_inventory_result` honors `limit`/cap.
 
 Web: start an immediate job and watch live progress; schedule a future job, see
 it listed, cancel it before it fires; after completion see the yearly chart +
-cutoff + dirs tables; CSV downloads match the files nas-api wrote.
+cutoff + dirs tables; CSV downloads match the files nas-api wrote. **Confirm
+every option is reachable**: shares, cutoff, overlay toggle, "protect newer
+than" date, and the Advanced panel (I/O priority, max files/sec, sleep settings)
+— set each and confirm it reaches nas-api (echoed in the job's `status.json`).
+Confirm a recent file is reported `protected`, not `candidate`.
 
 MCP: `tool_search "inventory"` lists all 5; a read tool runs without `confirmed`;
 a write tool returns a preview without `confirmed` and executes with
@@ -798,14 +847,22 @@ three implementations (nas-api Go verifier, nas-mcp signer, web signer) must
 produce **identical** strings. Definition:
 
 ```
-start:    "inventory.start|nas=<NAS_NAME>|shares=<s1,s2,...>|cutoff=<y1,y2,...>|overlay=<true|false>"
-schedule: "inventory.schedule|nas=<NAS_NAME>|shares=<...>|cutoff=<...>|overlay=<...>|scheduled_for=<RFC3339 UTC>"
+start:    "inventory.start|nas=<NAS_NAME>|shares=<s1,s2,...>|cutoff=<y1,y2,...>|overlay=<true|false>|protect=<RFC3339 or empty>"
+schedule: "inventory.schedule|nas=<NAS_NAME>|shares=<...>|cutoff=<...>|overlay=<...>|protect=<...>|scheduled_for=<RFC3339 UTC>"
 cancel:   "inventory.cancel|nas=<NAS_NAME>|job_id=<id>"
 ```
 
+The token **must bind every safety-relevant field**, so `protect` (the
+`protect_newer_than` date) is included in the canonical string — a tampered
+request that weakened protection would then fail signature verification. The
+non-safety tuning fields (`max_files_per_second`, `sleep_*`,
+`use_idle_io_priority`) are *not* part of the signed string (they cannot cause
+data loss; binding them would only add brittleness).
+
 Rules: shares and cutoff years are sorted ascending and comma-joined with no
 spaces; booleans are lowercase `true`/`false`; empty cutoff → `cutoff=` (nothing
-after `=`); times are the exact RFC3339 string the client sent (UTC, `Z`). The
+after `=`); empty protect → `protect=`; times are the exact RFC3339 string the
+client sent (UTC, `Z`). The
 nas-api `requireApproval` middleware rebuilds this string from the **server-side
 NAS_NAME** and the request body — so the client must use the same NAS_NAME it
 targets (it does: it's resolving that NAS's config). Tier is always `2`. Token
@@ -817,7 +874,9 @@ the existing `/exec` token format in `auth.go` / `nas-api-client.ts`.
 
 ```
 yearly.csv : nas,share,year,file_count,total_bytes,total_gib
-cutoff.csv : nas,share,cutoff,file_count,total_bytes,total_gib      # cutoff e.g. "older_than_2021"
+cutoff.csv : nas,share,cutoff,candidate_count,candidate_bytes,candidate_gib,protected_count,protected_bytes
+             # cutoff e.g. "older_than_2021"; candidate_* = older-than AND not date-protected AND
+             # (if overlay on) not in an active folder; protected_* = excluded by protect_newer_than
 dirs.csv   : nas,share,total_dirs,empty_dirs
 overlay.csv: nas,share,source,first_seen,last_seen,event_count      # source: drive_log | sharesync_history
 ```
