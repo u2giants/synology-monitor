@@ -1,5 +1,15 @@
 # Synology Archive Inventory Plan
 
+> **Implementers read both documents.** This file is the **design and behavioral
+> specification** — *what* to build, the rules, the safety guarantees, the
+> operations, the UI requirements, and the verification plans. The **companion
+> build guide [`synology-archive-implementation.md`](synology-archive-implementation.md)**
+> is the *how* for this specific repository — exact file paths, Go/TypeScript
+> code skeletons, the nas-api / nas-mcp / web patterns to follow, the sandbox and
+> git gotchas, the build/test/deploy commands, and the byte-exact approval-token
+> appendix. A brand-new session needs **both** to implement flawlessly: this doc
+> tells you what is correct; the build guide tells you where and how in the code.
+
 ## Goal
 
 Build a NAS-side archive planning workflow that can classify old versus active files without forcing MCP calls to wait for multi-million-file scans.
@@ -693,6 +703,30 @@ identity — it proves it, per file, and undoes anything that does not match.
   every check passes, delete the source → on any failure, delete the
   *destination copy* (never the source) and abort. The source is never removed
   on a mismatch.
+#### ctime caveat (read before implementing)
+
+`ctime` (inode-change time) **cannot** be preserved by any relocation operation,
+and this is accepted by design — do not attempt to work around it.
+
+- Verified empirically on Linux: `mv` (which is `rename(2)` for a same-filesystem
+  move), and `link(2)`+`unlink(2)`, both **preserve atime/mtime but bump ctime to
+  now**. There is no operation that relocates a file's path without changing
+  ctime, and **no syscall to set/restore ctime** (`utimensat` sets only atime and
+  mtime). `mv` is not a different operation from `rename` — same syscall.
+- This is semantically correct: moving a file *does* change its inode namespace
+  metadata, which is exactly what ctime records.
+- **Impact:** tools that detect change by `mtime`+`size` — rsync (default), most
+  sync engines, Resilio — see moved files as unchanged, so the sync goal is met.
+  Tools that detect change by `ctime` — `find -cnewer`, and some incremental
+  backups (verify whether **HyperBackup** does) — may treat all moved files as
+  changed and re-scan/re-back-up them **once**. This is a one-time cost, not
+  corruption. Mitigation: run large moves just before a backup window. The
+  Btrfs read-only snapshot taken before execute preserves the pre-move ctimes if
+  a point-in-time reference is ever needed.
+- The verifier therefore treats a ctime change as **expected**, never as a
+  failure. (A read-only Btrfs snapshot would preserve ctime, but it does not
+  remove files from the source path, so it is not a substitute for the move.)
+
 - Every per-file outcome (`moved`/`verified`/`failed`/`rolled_back`) is written
   back to the manifest, producing a complete, auditable record of exactly what
   happened to every file.
