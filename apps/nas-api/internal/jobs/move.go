@@ -196,7 +196,7 @@ func (m *Manager) planDirs(ctx context.Context, job *MoveJob, scopeRoots []strin
 			if err != nil {
 				continue
 			}
-			job.Planned++
+			job.addPlannedDir(row)
 			if err := appendManifest(manifestPath, row); err != nil {
 				return err
 			}
@@ -562,6 +562,9 @@ func (m *Manager) verifyAndFinalize(job *MoveJob, shareRoot, archiveRoot string,
 				continue
 			}
 			row.Status = MStatusRemoved
+			if _, ok := plannedDirs[dir]; !ok {
+				job.addPlannedDir(row)
+			}
 			if idx, ok := plannedDirs[dir]; ok {
 				entries[idx] = row
 			} else {
@@ -763,6 +766,13 @@ func (m *Manager) scopeRoots(job *MoveJob) []string {
 		out = append(out, filepath.Join(shareRoot, r))
 	}
 	return out
+}
+
+func (job *MoveJob) addPlannedDir(row ManifestEntry) {
+	job.Planned++
+	job.PlannedDirs++
+	job.PlannedArtifactFiles += row.ArtifactFiles
+	job.PlannedArtifactDirs += row.ArtifactDirs
 }
 
 func (m *Manager) releaseActive(id string) {

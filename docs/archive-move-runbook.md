@@ -76,6 +76,9 @@ Notes / gotchas:
 2. Click **Plan (dry-run)**. The job goes `planning → planned`.
 3. **Review the plan:**
    - Check the **planned / skipped** counts look sane and small.
+   - Check the planned folder-cleanup line. Artifact files/folders are known
+     metadata (`.DS_Store`, `Thumbs.db`, `@eaDir`, `.SynologyWorkingDirectory`)
+     that will be removed only when their parent folder is otherwise empty.
    - Read the **manifest preview** (and click **report** to download it). Each
      `[file]` row shows `rel_path → Archive/rel_path`. Confirm the destination
      paths are under `<share>/Archive/` and the file list is what you expect.

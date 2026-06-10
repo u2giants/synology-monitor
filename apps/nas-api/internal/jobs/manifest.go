@@ -20,13 +20,13 @@ const (
 	MStatusSkipped    = "skipped"
 	MStatusFailed     = "failed"
 	MStatusRolledBack = "rolled_back"
-	MStatusRemoved    = "removed"    // dir rows
-	MStatusRecreated  = "recreated"  // dir rows
+	MStatusRemoved    = "removed"   // dir rows
+	MStatusRecreated  = "recreated" // dir rows
 )
 
 // Directory removal reasons.
 const (
-	ReasonEmptiedByMove   = "emptied_by_move"
+	ReasonEmptiedByMove    = "emptied_by_move"
 	ReasonPreexistingEmpty = "preexisting_empty"
 )
 
@@ -54,6 +54,8 @@ type ManifestEntry struct {
 	Owner         string `json:"owner,omitempty"` // uid
 	Group         string `json:"group,omitempty"` // gid
 	RemovedReason string `json:"removed_reason,omitempty"`
+	ArtifactFiles int64  `json:"artifact_files,omitempty"`
+	ArtifactDirs  int64  `json:"artifact_dirs,omitempty"`
 
 	// Shared.
 	Status string `json:"status"`

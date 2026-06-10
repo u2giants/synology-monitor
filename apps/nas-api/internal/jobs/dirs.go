@@ -88,6 +88,7 @@ func dirRowFor(path, reason string) (ManifestEntry, error) {
 	if err != nil {
 		return ManifestEntry{}, err
 	}
+	artifactFiles, artifactDirs := countImmediateArtifacts(path)
 	return ManifestEntry{
 		Kind:          KindDir,
 		Path:          path,
@@ -96,8 +97,38 @@ func dirRowFor(path, reason string) (ManifestEntry, error) {
 		Group:         strconv.FormatUint(uint64(gid), 10),
 		Mtime:         info.ModTime().UTC().Format(time.RFC3339Nano),
 		RemovedReason: reason,
+		ArtifactFiles: artifactFiles,
+		ArtifactDirs:  artifactDirs,
 		Status:        MStatusPlanned,
 	}, nil
+}
+
+// countImmediateArtifacts reports the known metadata artifacts directly held by
+// dir. Empty child directories are counted as their own rows by the planner, so
+// this deliberately does not descend into ordinary child directories.
+func countImmediateArtifacts(dir string) (files, dirs int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, 0
+	}
+	for _, e := range entries {
+		if !dirArtifacts[e.Name()] {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			dirs++
+			filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+				if err == nil && !d.IsDir() {
+					files++
+				}
+				return nil
+			})
+			continue
+		}
+		files++
+	}
+	return files, dirs
 }
 
 // pruneEmptyDir re-checks that dir is prunable-empty (guards against a race) and

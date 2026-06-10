@@ -81,6 +81,13 @@ type MoveJob struct {
 	DirsPruned int64 `json:"dirs_pruned"`
 	BytesMoved int64 `json:"bytes_moved"`
 
+	// Planned directory cleanup detail. Artifact counts cover known Synology,
+	// macOS, and Windows metadata that will be removed together with otherwise
+	// empty planned directories.
+	PlannedDirs          int64 `json:"planned_dirs"`
+	PlannedArtifactFiles int64 `json:"planned_artifact_files"`
+	PlannedArtifactDirs  int64 `json:"planned_artifact_dirs"`
+
 	StartedAt   string `json:"started_at"`
 	FinishedAt  string `json:"finished_at"`
 	CurrentPath string `json:"current_path"`
@@ -92,16 +99,16 @@ type MoveJob struct {
 
 // MovePlanRequest is the JSON body for POST /jobs/archive-move/plan.
 type MovePlanRequest struct {
-	Share                      string   `json:"share"`                          // required, allowlisted
-	Roots                      []string `json:"roots"`                          // optional sub-folder scope
-	IncludeGlobs               []string `json:"include_globs"`                  // optional
-	ExcludeGlobs               []string `json:"exclude_globs"`                  // optional
-	Mode                       string   `json:"mode"`                           // optional; default "move"
-	CutoffYears                []int    `json:"cutoff_years"`                   // optional
-	ProtectNewerThan           string   `json:"protect_newer_than"`             // optional RFC3339
-	Overlay                    *bool    `json:"overlay"`                        // optional; nil → true
-	PruneEmptiedSourceDirs     *bool    `json:"prune_emptied_source_dirs"`      // optional; nil → true
-	RemovePreexistingEmptyDirs *bool    `json:"remove_preexisting_empty_dirs"`  // optional; nil → false
+	Share                      string   `json:"share"`                         // required, allowlisted
+	Roots                      []string `json:"roots"`                         // optional sub-folder scope
+	IncludeGlobs               []string `json:"include_globs"`                 // optional
+	ExcludeGlobs               []string `json:"exclude_globs"`                 // optional
+	Mode                       string   `json:"mode"`                          // optional; default "move"
+	CutoffYears                []int    `json:"cutoff_years"`                  // optional
+	ProtectNewerThan           string   `json:"protect_newer_than"`            // optional RFC3339
+	Overlay                    *bool    `json:"overlay"`                       // optional; nil → true
+	PruneEmptiedSourceDirs     *bool    `json:"prune_emptied_source_dirs"`     // optional; nil → true
+	RemovePreexistingEmptyDirs *bool    `json:"remove_preexisting_empty_dirs"` // optional; nil → false
 }
 
 // Normalize fills defaults and trims simple inputs.
@@ -121,9 +128,13 @@ func (r *MovePlanRequest) Normalize() {
 	r.Roots = cleaned
 }
 
-func (r MovePlanRequest) overlayEffective() bool   { return r.Overlay == nil || *r.Overlay }
-func (r MovePlanRequest) pruneEffective() bool      { return r.PruneEmptiedSourceDirs == nil || *r.PruneEmptiedSourceDirs }
-func (r MovePlanRequest) removePreexisting() bool   { return r.RemovePreexistingEmptyDirs != nil && *r.RemovePreexistingEmptyDirs }
+func (r MovePlanRequest) overlayEffective() bool { return r.Overlay == nil || *r.Overlay }
+func (r MovePlanRequest) pruneEffective() bool {
+	return r.PruneEmptiedSourceDirs == nil || *r.PruneEmptiedSourceDirs
+}
+func (r MovePlanRequest) removePreexisting() bool {
+	return r.RemovePreexistingEmptyDirs != nil && *r.RemovePreexistingEmptyDirs
+}
 
 // Move operation identifiers for approval-token binding.
 const (

@@ -77,6 +77,29 @@ func TestListPrunableEmptyDirsBottomUp(t *testing.T) {
 	}
 }
 
+func TestDirRowForCountsImmediateArtifacts(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "empty")
+	mkdir(t, filepath.Join(dir, "@eaDir", "nested"))
+	touch(t, filepath.Join(dir, "@eaDir", "thumb.jpg"))
+	touch(t, filepath.Join(dir, "@eaDir", "nested", "thumb2.jpg"))
+	touch(t, filepath.Join(dir, ".DS_Store"))
+	touch(t, filepath.Join(dir, "Thumbs.db"))
+	mkdir(t, filepath.Join(dir, "child"))
+	touch(t, filepath.Join(dir, "child", ".DS_Store"))
+
+	row, err := dirRowFor(dir, ReasonPreexistingEmpty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ArtifactDirs != 1 {
+		t.Fatalf("artifact_dirs = %d, want 1", row.ArtifactDirs)
+	}
+	if row.ArtifactFiles != 4 {
+		t.Fatalf("artifact_files = %d, want 4", row.ArtifactFiles)
+	}
+}
+
 func TestPruneAndRecreateDir(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "gone")

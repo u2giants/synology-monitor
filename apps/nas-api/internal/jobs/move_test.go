@@ -267,6 +267,12 @@ func TestMovePlanIncludesPreexistingEmptyDirs(t *testing.T) {
 	if plan.Planned != 2 {
 		t.Fatalf("planned = %d, want 2 empty dirs", plan.Planned)
 	}
+	if plan.PlannedDirs != 2 {
+		t.Fatalf("planned_dirs = %d, want 2", plan.PlannedDirs)
+	}
+	if plan.PlannedArtifactFiles != 0 || plan.PlannedArtifactDirs != 0 {
+		t.Fatalf("planned artifacts = files:%d dirs:%d, want 0/0", plan.PlannedArtifactFiles, plan.PlannedArtifactDirs)
+	}
 	entries, err := readManifest(plan.ManifestPath)
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,9 @@ interface MoveJob {
   failed: number;
   dirs_pruned: number;
   bytes_moved: number;
+  planned_dirs: number;
+  planned_artifact_files: number;
+  planned_artifact_dirs: number;
   current_path: string;
   snapshot_id: string;
   snapshot_path: string;
@@ -347,6 +350,11 @@ export default function ArchiveMovePage() {
             <div className="mt-1 text-muted-foreground">
               planned {job.planned} · moved {job.moved} · verified {job.verified} · skipped {job.skipped} · failed {job.failed} · folders pruned {job.dirs_pruned}
             </div>
+            {(job.planned_dirs > 0 || job.planned_artifact_files > 0 || job.planned_artifact_dirs > 0) && (
+              <div className="mt-1 text-xs text-muted-foreground">
+                planned folder cleanup: {job.planned_dirs} folders · {job.planned_artifact_files} artifact files · {job.planned_artifact_dirs} artifact folders
+              </div>
+            )}
             {job.snapshot_id && <div className="mt-1 text-xs text-muted-foreground">snapshot: {job.snapshot_id} ({job.snapshot_path})</div>}
             {job.preflight_note && <div className="mt-1 text-xs text-critical">preflight: {job.preflight_note}</div>}
             {job.sync_exclusion_note && <div className="mt-1 text-xs text-muted-foreground">sync exclusion: {job.sync_exclusion_note}</div>}
@@ -488,7 +496,11 @@ function FolderTree({
 function prettyRow(line: string): string {
   try {
     const e = JSON.parse(line) as Record<string, unknown>;
-    if (e.kind === "dir") return `[dir] ${e.status}  ${e.removed_reason ?? ""}  ${e.path}`;
+    if (e.kind === "dir") {
+      const artifacts = Number(e.artifact_files ?? 0) + Number(e.artifact_dirs ?? 0);
+      const artifactText = artifacts > 0 ? ` artifacts(files=${e.artifact_files ?? 0}, folders=${e.artifact_dirs ?? 0})` : "";
+      return `[dir] ${e.status}  ${e.removed_reason ?? ""}${artifactText}  ${e.path}`;
+    }
     return `[file] ${e.status}${e.detail ? `(${e.detail})` : ""}  ${e.rel_path} → Archive/${e.rel_path}`;
   } catch {
     return line;
