@@ -96,6 +96,7 @@ func main() {
 	// Archive-move (Phase 2). Tier 2: plan, cancel. Tier 3: execute, rollback.
 	mux.HandleFunc("POST /jobs/archive-move/plan", requireAuth(v, requireApproval(v, jobs.OpMovePlan, 2, nasName, handleMovePlan(mgr))))
 	mux.HandleFunc("GET /jobs/archive-move", requireAuth(v, handleMoveList(mgr)))
+	mux.HandleFunc("GET /jobs/archive-move/tree", requireAuth(v, handleMoveTree))
 	mux.HandleFunc("GET /jobs/archive-move/{id}", requireAuth(v, handleMoveStatus(mgr)))
 	mux.HandleFunc("GET /jobs/archive-move/{id}/manifest", requireAuth(v, handleMoveManifest(mgr)))
 	mux.HandleFunc("GET /jobs/archive-move/{id}/result", requireAuth(v, handleMoveResult(mgr)))
@@ -562,6 +563,17 @@ func handleMoveList(mgr *jobs.Manager) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"jobs": list})
 	}
+}
+
+func handleMoveTree(w http.ResponseWriter, r *http.Request) {
+	share := r.URL.Query().Get("share")
+	path := r.URL.Query().Get("path")
+	list, err := jobs.ListShareDirs(share, path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errResp{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
 }
 
 func handleMoveStatus(mgr *jobs.Manager) http.HandlerFunc {

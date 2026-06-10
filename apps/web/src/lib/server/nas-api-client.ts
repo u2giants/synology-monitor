@@ -379,6 +379,11 @@ export async function listMoves(config: NasApiConfig): Promise<Response> {
   return inventoryFetch(config, "GET", "/jobs/archive-move");
 }
 
+export async function moveTree(config: NasApiConfig, share: string, path: string): Promise<Response> {
+  const qs = new URLSearchParams({ share, path });
+  return inventoryFetch(config, "GET", `/jobs/archive-move/tree?${qs.toString()}`);
+}
+
 export async function moveStatus(config: NasApiConfig, id: string): Promise<Response> {
   return inventoryFetch(config, "GET", `/jobs/archive-move/${encodeURIComponent(id)}`);
 }

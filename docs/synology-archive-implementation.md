@@ -944,12 +944,14 @@ rollback tools require a `job_id` referencing a planned manifest.
 
 Extend `apps/web/src/lib/server/nas-api-client.ts` with the seven move helpers
 (tier-3 ones sign a tier-3 canonical op string). Add API routes under
-`apps/web/src/app/api/archive/move/…` mirroring §7.2. Extend the
-`/archive-inventory` page (or add a sibling) with the staged panel from the
-design's *Web UI* subsection: folder-level scope picker, Plan (dry-run) →
-manifest preview (downloadable) → review gate → Execute (type-the-share-name
-confirmation, snapshot id shown, live per-file progress, cancel) → Verify
-(report download) → Rollback (own confirmation). Full option + operation parity.
+`apps/web/src/app/api/archive/move/…` mirroring §7.2, including a read-only folder
+tree proxy for immediate child-directory listing within an allowlisted share.
+Extend the `/archive-inventory` page (or add a sibling) with the staged panel
+from the design's *Web UI* subsection: visual folder-level scope picker with
+checkboxes and manual/paste fallback, Plan (dry-run) → manifest preview
+(downloadable) → review gate → Execute (type-the-share-name confirmation,
+snapshot id shown, live per-file progress, cancel) → Verify (report download) →
+Rollback (own confirmation). Full option + operation parity.
 
 ### 11.6 Phase 2 build + verification gate
 

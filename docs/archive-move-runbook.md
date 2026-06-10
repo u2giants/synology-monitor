@@ -38,7 +38,7 @@ The only data the owner wants archived is:
 | # | Share (UI dropdown) | Scope ("Limit to sub-folders") |
 |---|---|---|
 | 1 | `styleguides` | whole share (leave the box empty) |
-| 2 | `mac` | `Decor/character licensed, Decor/generic decor` |
+| 2 | `mac` | select `Decor/character licensed` and `Decor/generic decor` in the folder browser |
 
 **Do not archive any other share** (Coldlion in particular is out of scope).
 
@@ -54,8 +54,9 @@ Notes / gotchas:
   **0 files**, the path or capitalization is wrong — check the exact names on the
   NAS (is the share `mac` or `Mac`? is the folder `Decor`? are the sub-folders
   lowercase `character licensed` / `generic decor`?). Fix the scope and re-plan.
-- The "Limit to sub-folders" box is **comma-separated**; spaces inside a folder
-  name are fine (`Decor/character licensed, Decor/generic decor`).
+- Use **Browse `<share>`** under "Limit to sub-folders" to expand the directory
+  tree and tick the exact folders. The text box is still editable for paste/manual
+  fallback; spaces inside folder names are fine.
 - For **move** mode, pick a **cutoff year** that matches what "old enough to
   archive" means for these folders. Run an **Archive Inventory** on the share first
   to see the per-year file counts before choosing.
@@ -67,9 +68,10 @@ Notes / gotchas:
 
 ## 2. Plan (dry-run — nothing is moved)
 
-1. On **Archive Move**, set NAS → share → mode **"Move old files into Archive"** →
-   optional sub-folder → cutoff year (and optionally a "never archive newer than"
-   date).
+1. On **Archive Move**, set NAS → share → mode **"Move old files into Archive"**.
+   For a limited scope, click **Browse `<share>`**, expand the folder tree, tick
+   the sub-folders, then set the cutoff year (and optionally a "never archive
+   newer than" date).
 2. Click **Plan (dry-run)**. The job goes `planning → planned`.
 3. **Review the plan:**
    - Check the **planned / skipped** counts look sane and small.

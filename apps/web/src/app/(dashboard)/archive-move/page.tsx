@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ARCHIVE_SHARES, ARCHIVE_NAS_TARGETS, type ArchiveNasTarget } from "@synology-monitor/shared";
 import { cn } from "@/lib/utils";
-import { FileSearch, Play, Square, Undo2, ShieldCheck, Loader2, AlertTriangle, Download } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Download, FileSearch, Folder, Loader2, Play, ShieldCheck, Square, Undo2, X } from "lucide-react";
 
 interface MoveJob {
   id: string;
@@ -25,8 +25,23 @@ interface MoveJob {
   error: string;
 }
 
+interface TreeDir {
+  name: string;
+  path: string;
+}
+
+interface TreeNodeState {
+  dirs: TreeDir[];
+  loaded: boolean;
+  loading: boolean;
+  open: boolean;
+  error: string;
+}
+
 const ACTIVE = new Set(["planning", "preflight", "snapshotting", "executing", "verifying"]);
 const toUtcIso = (v: string) => (v ? new Date(v).toISOString() : "");
+const splitRoots = (value: string) => value.split(",").map((s) => s.trim().replace(/^\/+|\/+$/g, "")).filter(Boolean);
+const formatRoots = (values: string[]) => Array.from(new Set(values)).sort((a, b) => a.localeCompare(b)).join(", ");
 
 export default function ArchiveMovePage() {
   const [nas, setNas] = useState<ArchiveNasTarget>(ARCHIVE_NAS_TARGETS[0]);
@@ -46,6 +61,7 @@ export default function ArchiveMovePage() {
   const [confirmText, setConfirmText] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const [tree, setTree] = useState<Record<string, TreeNodeState>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -65,6 +81,10 @@ export default function ArchiveMovePage() {
     setConfirmText("");
     refresh();
   }, [nas, refresh]);
+
+  useEffect(() => {
+    setTree({});
+  }, [nas, share]);
 
   // Poll the active job while it is in a live stage.
   useEffect(() => {
@@ -106,6 +126,45 @@ export default function ArchiveMovePage() {
     },
     [nas],
   );
+
+  const loadTree = useCallback(
+    async (path = "") => {
+      setTree((prev) => ({
+        ...prev,
+        [path]: { dirs: prev[path]?.dirs ?? [], loaded: prev[path]?.loaded ?? false, loading: true, open: true, error: "" },
+      }));
+      try {
+        const qs = new URLSearchParams({ nas, share, path });
+        const res = await fetch(`/api/archive/move/tree?${qs.toString()}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `Folder load failed (HTTP ${res.status}).`);
+        setTree((prev) => ({
+          ...prev,
+          [path]: { dirs: (data.dirs as TreeDir[]) ?? [], loaded: true, loading: false, open: true, error: "" },
+        }));
+      } catch (err) {
+        setTree((prev) => ({
+          ...prev,
+          [path]: { dirs: prev[path]?.dirs ?? [], loaded: prev[path]?.loaded ?? false, loading: false, open: true, error: err instanceof Error ? err.message : "Folder load failed." },
+        }));
+      }
+    },
+    [nas, share],
+  );
+
+  function toggleTree(path: string) {
+    const node = tree[path];
+    if (!node?.loaded) {
+      loadTree(path);
+      return;
+    }
+    setTree((prev) => ({ ...prev, [path]: { ...node, open: !node.open } }));
+  }
+
+  function setRootSelected(path: string, selected: boolean) {
+    const current = splitRoots(roots);
+    setRoots(formatRoots(selected ? [...current, path] : current.filter((r) => r !== path)));
+  }
 
   function planBody() {
     const body: Record<string, unknown> = { nas, share, mode, prune_emptied_source_dirs: prune, remove_preexisting_empty_dirs: removePreexisting };
@@ -170,6 +229,7 @@ export default function ArchiveMovePage() {
   }
 
   const isMove = mode === "move";
+  const selectedRoots = new Set(splitRoots(roots));
   const planned = job?.status === "planned";
   const canExecute = planned && reviewed && confirmText === share && !busy;
   const completed = job?.status === "complete";
@@ -208,7 +268,7 @@ export default function ArchiveMovePage() {
           </label>
           <label className="block text-sm">
             <span className="mb-1 block text-muted-foreground">Shared folder</span>
-            <select value={share} onChange={(e) => setShare(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm">
+            <select value={share} onChange={(e) => { setShare(e.target.value); setRoots(""); }} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm">
               {ARCHIVE_SHARES.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           </label>
@@ -219,10 +279,37 @@ export default function ArchiveMovePage() {
               <option value="clean_empty_dirs">Only remove empty folders</option>
             </select>
           </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-muted-foreground">Limit to sub-folders (optional, comma-separated)</span>
-            <input value={roots} onChange={(e) => setRoots(e.target.value)} placeholder="clients/acme, projects/old" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-          </label>
+          <div className="space-y-2 text-sm sm:col-span-2">
+            <label className="block">
+              <span className="mb-1 block text-muted-foreground">Limit to sub-folders</span>
+              <input value={roots} onChange={(e) => setRoots(e.target.value)} placeholder="No limit selected" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
+            </label>
+            <div className="rounded-md border border-border bg-background p-2">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <button type="button" onClick={() => toggleTree("")} className="inline-flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted">
+                  {tree[""]?.loading ? <Loader2 className="h-3 w-3 animate-spin" /> : tree[""]?.open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                  <Folder className="h-3 w-3" /> Browse {share}
+                </button>
+                {selectedRoots.size > 0 && (
+                  <button type="button" onClick={() => setRoots("")} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
+                    <X className="h-3 w-3" /> Clear
+                  </button>
+                )}
+              </div>
+              {tree[""]?.open && (
+                <FolderTree path="" tree={tree} selected={selectedRoots} onToggle={toggleTree} onSelect={setRootSelected} />
+              )}
+              {selectedRoots.size > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {[...selectedRoots].map((path) => (
+                    <button key={path} type="button" onClick={() => setRootSelected(path, false)} className="inline-flex max-w-full items-center gap-1 rounded-md bg-muted px-2 py-1 text-xs">
+                      <span className="truncate">{path}</span><X className="h-3 w-3 shrink-0" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
           {isMove && (
             <>
               <label className="block text-sm">
@@ -345,6 +432,55 @@ export default function ArchiveMovePage() {
         )}
       </section>
     </div>
+  );
+}
+
+function FolderTree({
+  path,
+  tree,
+  selected,
+  onToggle,
+  onSelect,
+}: {
+  path: string;
+  tree: Record<string, TreeNodeState>;
+  selected: Set<string>;
+  onToggle: (path: string) => void;
+  onSelect: (path: string, selected: boolean) => void;
+}) {
+  const node = tree[path];
+  if (!node) return null;
+  if (node.error) return <div className="rounded-md border border-critical/40 bg-critical/10 px-2 py-1 text-xs text-critical">{node.error}</div>;
+  if (node.loading && node.dirs.length === 0) return <div className="px-2 py-1 text-xs text-muted-foreground">Loading folders...</div>;
+  if (node.loaded && node.dirs.length === 0) return <div className="px-2 py-1 text-xs text-muted-foreground">No sub-folders here.</div>;
+
+  return (
+    <ul className="space-y-0.5">
+      {node.dirs.map((dir) => {
+        const child = tree[dir.path];
+        const isOpen = child?.open ?? false;
+        const isSelected = selected.has(dir.path);
+        return (
+          <li key={dir.path}>
+            <div className="flex min-w-0 items-center gap-1 rounded-md px-1 py-1 hover:bg-muted">
+              <button type="button" onClick={() => onToggle(dir.path)} className="grid h-6 w-6 shrink-0 place-items-center rounded hover:bg-background">
+                {child?.loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              </button>
+              <label className="flex min-w-0 flex-1 items-center gap-2">
+                <input type="checkbox" checked={isSelected} onChange={(e) => onSelect(dir.path, e.target.checked)} />
+                <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="truncate">{dir.name}</span>
+              </label>
+            </div>
+            {isOpen && (
+              <div className="ml-6 border-l border-border pl-2">
+                <FolderTree path={dir.path} tree={tree} selected={selected} onToggle={onToggle} onSelect={onSelect} />
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

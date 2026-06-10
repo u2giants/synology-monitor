@@ -437,8 +437,9 @@ required in the first PR.
 top-level shared folder (the set of read-only mounts the NAS API container has).
 Sub-folder selection is *not* part of the inventory UI. When the separate archive
 **move** workflow is built (see Archive Move Follow-Up), its UI must let the
-operator choose archive scope at the folder level within a share and preview the
-exact set of files that would move before anything happens.
+operator choose archive scope at the folder level within a share using a visual
+directory tree, with manual/paste path entry as a fallback, and preview the exact
+set of files that would move before anything happens.
 
 ## Verification Plan
 
@@ -534,8 +535,10 @@ manifest).
 ### Scope selection (folder-level)
 
 - The operator chooses **NAS → share → optional sub-folder roots** within the
-  share. Scoping is folder-level, not whole-share-only, and supports per-run
-  include/exclude path globs.
+  share. The web UI provides a browseable directory tree with checkbox selection
+  for sub-folder roots; the underlying text field remains editable for
+  manual/paste fallback. Scoping is folder-level, not whole-share-only, and
+  supports per-run include/exclude path globs.
 - The archive root for a share is `/<share>/Archive`. Files keep their relative
   path beneath it:
   `/<share>/clients/acme/logo.ai` → `/<share>/Archive/clients/acme/logo.ai`.
@@ -807,8 +810,10 @@ manifest/job id so a tampered request fails verification.
 
 On the `/archive-inventory` page (or a sibling `/archive-move`), a staged panel:
 
-- **Scope:** NAS → share → folder picker (tree and/or include/exclude path
-  globs).
+- **Scope:** NAS → share → folder picker backed by a read-only child-directory
+  listing endpoint; selected folder roots populate the same scope field used by
+  the plan request. Include/exclude path globs remain available for advanced
+  scoping.
 - **Rules:** cutoff, protect-newer-than, overlay toggle — prefilled from the most
   recent inventory.
 - **Plan move (dry-run):** shows the manifest summary plus a browsable and
