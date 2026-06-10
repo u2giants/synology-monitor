@@ -313,7 +313,7 @@ export default function ArchiveMovePage() {
           {isMove && (
             <>
               <label className="block text-sm">
-                <span className="mb-1 block text-muted-foreground">Archive files older than (year)</span>
+                <span className="mb-1 block text-muted-foreground">Archive files modified before year</span>
                 <input value={cutoffYears} onChange={(e) => setCutoffYears(e.target.value)} placeholder="2022" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
               </label>
               <label className="block text-sm">

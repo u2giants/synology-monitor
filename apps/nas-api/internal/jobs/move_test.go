@@ -13,10 +13,10 @@ import (
 // the temp filesystem without requiring Btrfs or CAP_SYS_ADMIN.
 type stubFS struct{}
 
-func (stubFS) subvolID(string) (uint64, error)            { return 256, nil }
+func (stubFS) subvolID(string) (uint64, error)              { return 256, nil }
 func (stubFS) createROSnapshot(_, _ string) (uint64, error) { return 999, nil }
-func (stubFS) deleteSnapshot(string) error                { return nil }
-func (stubFS) snapshotSupported(string) error             { return nil }
+func (stubFS) deleteSnapshot(string) error                  { return nil }
+func (stubFS) snapshotSupported(string) error               { return nil }
 
 func newMoveManager(t *testing.T, shareRoot string) *Manager {
 	t.Helper()
@@ -243,6 +243,52 @@ func TestMoveCleanEmptyDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "keep", "f.txt")); err != nil {
 		t.Error("keep/ must be untouched")
+	}
+}
+
+func TestMovePlanIncludesPreexistingEmptyDirs(t *testing.T) {
+	root := shareDir(t)
+	mkdir(t, filepath.Join(root, "Decor", "Generic Decor", "Polygon Animals", "Sarbani"))
+	keep := filepath.Join(root, "Decor", "Generic Decor", "Keep", "file.txt")
+	touch(t, keep)
+	removePreexisting := true
+	m := newMoveManager(t, root)
+
+	plan := planAndWait(t, m, MovePlanRequest{
+		Share:                      "files",
+		Mode:                       ModeMove,
+		Roots:                      []string{"Decor/Generic Decor/Polygon Animals"},
+		CutoffYears:                []int{2021},
+		RemovePreexistingEmptyDirs: &removePreexisting,
+	})
+	if plan.Status != MovePlanned {
+		t.Fatalf("status = %s, want planned", plan.Status)
+	}
+	if plan.Planned != 2 {
+		t.Fatalf("planned = %d, want 2 empty dirs", plan.Planned)
+	}
+	entries, err := readManifest(plan.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Kind != KindDir || e.RemovedReason != ReasonPreexistingEmpty {
+			t.Fatalf("entry = %#v, want preexisting empty dir row", e)
+		}
+	}
+
+	done := executeAndWait(t, m, plan.ID)
+	if done.Status != MoveComplete {
+		t.Fatalf("status = %s (err %s), want complete", done.Status, done.Error)
+	}
+	if done.DirsPruned != 2 {
+		t.Fatalf("dirs_pruned = %d, want 2", done.DirsPruned)
+	}
+	if _, err := os.Stat(filepath.Join(root, "Decor", "Generic Decor", "Polygon Animals")); !os.IsNotExist(err) {
+		t.Error("empty selected scope should be removed")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("non-empty sibling must be untouched")
 	}
 }
 

@@ -58,8 +58,9 @@ Notes / gotchas:
   tree and tick the exact folders. The text box is still editable for paste/manual
   fallback; spaces inside folder names are fine.
 - For **move** mode, pick a **cutoff year** that matches what "old enough to
-  archive" means for these folders. Run an **Archive Inventory** on the share first
-  to see the per-year file counts before choosing.
+  archive" means for these folders. The cutoff is exclusive: `2022` means files
+  modified before 2022. Run an **Archive Inventory** on the share first to see the
+  per-year file counts before choosing.
 - If you want to archive **everything** in these folders regardless of age, set the
   cutoff to next year (e.g. `2027`) so every file qualifies — but prefer a real
   age cutoff unless you truly want all of it moved.

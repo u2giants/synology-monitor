@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	errNotEmpty   = errors.New("directory is not prunable-empty")
-	ErrMoveBusy   = errors.New("a heavyweight job is already running on this NAS")
-	ErrMoveState  = errors.New("move job is not in a state that allows this operation")
+	errNotEmpty      = errors.New("directory is not prunable-empty")
+	ErrMoveBusy      = errors.New("a heavyweight job is already running on this NAS")
+	ErrMoveState     = errors.New("move job is not in a state that allows this operation")
 	movePersistEvery = 200 // files between manifest/job persists
 )
 
@@ -168,10 +168,21 @@ func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot str
 			return werr
 		}
 	}
+	if job.RemovePreexistingEmptyDirs {
+		return m.planPreexistingEmptyDirs(ctx, job, scopeRoots, manifestPath)
+	}
 	return nil
 }
 
 func (m *Manager) planCleanDirs(ctx context.Context, job *MoveJob, scopeRoots []string, manifestPath string) error {
+	return m.planDirs(ctx, job, scopeRoots, manifestPath, ReasonPreexistingEmpty)
+}
+
+func (m *Manager) planPreexistingEmptyDirs(ctx context.Context, job *MoveJob, scopeRoots []string, manifestPath string) error {
+	return m.planDirs(ctx, job, scopeRoots, manifestPath, ReasonPreexistingEmpty)
+}
+
+func (m *Manager) planDirs(ctx context.Context, job *MoveJob, scopeRoots []string, manifestPath, reason string) error {
 	for _, root := range scopeRoots {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -181,7 +192,7 @@ func (m *Manager) planCleanDirs(ctx context.Context, job *MoveJob, scopeRoots []
 			return err
 		}
 		for _, dir := range dirs {
-			row, err := dirRowFor(dir, ReasonPreexistingEmpty)
+			row, err := dirRowFor(dir, reason)
 			if err != nil {
 				continue
 			}
@@ -390,7 +401,11 @@ func (m *Manager) executeCleanDirs(ctx context.Context, job *MoveJob, entries []
 func (m *Manager) preflight(job *MoveJob, shareRoot, archiveRoot string, entries []ManifestEntry) error {
 	gates := map[string]string{}
 	pass := func(name string) { gates[name] = "pass" }
-	fail := func(name string, err error) error { gates[name] = "fail: " + err.Error(); m.writePreflight(job, gates); return err }
+	fail := func(name string, err error) error {
+		gates[name] = "fail: " + err.Error()
+		m.writePreflight(job, gates)
+		return err
+	}
 
 	if _, err := os.Stat(shareRoot); err != nil {
 		return fail("share_exists", err)
@@ -489,8 +504,13 @@ func (m *Manager) takeSnapshot(job *MoveJob, shareRoot string) error {
 
 func (m *Manager) verifyAndFinalize(job *MoveJob, shareRoot, archiveRoot string, entries []ManifestEntry, manifestPath string) {
 	touched := map[string]bool{}
+	plannedDirs := map[string]int{}
 	for i := range entries {
 		e := &entries[i]
+		if e.Kind == KindDir && e.Status == MStatusPlanned {
+			plannedDirs[e.Path] = i
+			continue
+		}
 		if e.Kind != KindFile || e.Status != MStatusMoved {
 			continue
 		}
@@ -542,7 +562,11 @@ func (m *Manager) verifyAndFinalize(job *MoveJob, shareRoot, archiveRoot string,
 				continue
 			}
 			row.Status = MStatusRemoved
-			entries = append(entries, row)
+			if idx, ok := plannedDirs[dir]; ok {
+				entries[idx] = row
+			} else {
+				entries = append(entries, row)
+			}
 			job.DirsPruned++
 		}
 	}
