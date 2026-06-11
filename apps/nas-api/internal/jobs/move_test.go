@@ -298,6 +298,60 @@ func TestMovePlanIncludesPreexistingEmptyDirs(t *testing.T) {
 	}
 }
 
+func TestMovePlanForceArchiveIgnoresFileModifiedYear(t *testing.T) {
+	root := shareDir(t)
+	f := filepath.Join(root, "Decor", "Generic Decor", "Polygon Animals", "new-date.txt")
+	touch(t, f)
+	setMtimeYear(t, f, 2026)
+	m := newMoveManager(t, root)
+
+	ordinary := planAndWait(t, m, MovePlanRequest{
+		Share:       "files",
+		Mode:        ModeMove,
+		Roots:       []string{"Decor/Generic Decor/Polygon Animals"},
+		CutoffYears: []int{2022},
+	})
+	if ordinary.Planned != 0 {
+		t.Fatalf("ordinary planned = %d, want 0", ordinary.Planned)
+	}
+
+	forced := planAndWait(t, m, MovePlanRequest{
+		Share:        "files",
+		Mode:         ModeMove,
+		Roots:        []string{"Decor/Generic Decor/Polygon Animals"},
+		CutoffYears:  []int{2022},
+		ForceArchive: true,
+	})
+	if forced.Status != MovePlanned {
+		t.Fatalf("status = %s, want planned", forced.Status)
+	}
+	if forced.Planned != 1 {
+		t.Fatalf("forced planned = %d, want 1", forced.Planned)
+	}
+	entries, err := readManifest(forced.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].PlannedReason != ReasonForceArchive {
+		t.Fatalf("manifest = %#v, want one force_archive row", entries)
+	}
+}
+
+func TestMovePlanForceArchiveRequiresScopedRoot(t *testing.T) {
+	root := shareDir(t)
+	touch(t, filepath.Join(root, "new-date.txt"))
+	m := newMoveManager(t, root)
+
+	_, err := m.PlanMove(MovePlanRequest{
+		Share:        "files",
+		Mode:         ModeMove,
+		ForceArchive: true,
+	})
+	if err == nil {
+		t.Fatal("PlanMove succeeded, want force_archive scope error")
+	}
+}
+
 func TestMoveCancelMidRunResumable(t *testing.T) {
 	// A large tree so cancel can land mid-run; cutoff makes all of them candidates.
 	root := shareDir(t)

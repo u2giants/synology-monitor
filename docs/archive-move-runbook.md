@@ -61,9 +61,10 @@ Notes / gotchas:
   archive" means for these folders. The cutoff is exclusive: `2022` means files
   modified before 2022. Run an **Archive Inventory** on the share first to see the
   per-year file counts before choosing.
-- If you want to archive **everything** in these folders regardless of age, set the
-  cutoff to next year (e.g. `2027`) so every file qualifies — but prefer a real
-  age cutoff unless you truly want all of it moved.
+- If file modified dates are known to be wrong, tick **Force archive selected
+  sub-folders despite file dates**. This requires a selected sub-folder scope and
+  ignores the cutoff year only; the optional "never archive files newer than"
+  safety date still applies.
 
 ---
 

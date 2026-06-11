@@ -320,6 +320,7 @@ export interface MovePlanInput {
   exclude_globs?: string[];
   cutoff_years?: number[];
   protect_newer_than?: string;
+  force_archive?: boolean;
   prune_emptied_source_dirs?: boolean;
   remove_preexisting_empty_dirs?: boolean;
 }
@@ -331,6 +332,7 @@ function moveCanonicalPlan(nas: string, p: Required<Pick<MovePlanInput, "share">
   exclude: string[];
   cutoffYears: number[];
   protect: string;
+  forceArchive: boolean;
   prune: boolean;
   removePreexisting: boolean;
 }): string {
@@ -338,6 +340,7 @@ function moveCanonicalPlan(nas: string, p: Required<Pick<MovePlanInput, "share">
     `move.plan|nas=${nas}|share=${p.share}|mode=${p.mode}` +
     `|roots=${canonShares(p.roots)}|include=${canonShares(p.include)}|exclude=${canonShares(p.exclude)}` +
     `|cutoff=${canonYears(p.cutoffYears)}|protect=${p.protect}` +
+    `|force=${p.forceArchive ? "true" : "false"}` +
     `|prune=${p.prune ? "true" : "false"}|rmpre=${p.removePreexisting ? "true" : "false"}`
   );
 }
@@ -352,6 +355,7 @@ function prepMovePlan(config: NasApiConfig, raw: MovePlanInput) {
     exclude: (raw.exclude_globs ?? []).map((s) => s.trim()).filter(Boolean),
     cutoffYears: (raw.cutoff_years ?? []).filter((n) => Number.isFinite(n)),
     protect: (raw.protect_newer_than ?? "").trim(),
+    forceArchive: raw.force_archive === true,
     prune: raw.prune_emptied_source_dirs !== false, // undefined → true
     removePreexisting: raw.remove_preexisting_empty_dirs === true, // undefined → false
   };
@@ -363,6 +367,7 @@ function prepMovePlan(config: NasApiConfig, raw: MovePlanInput) {
     exclude_globs: p.exclude,
     cutoff_years: p.cutoffYears,
     protect_newer_than: p.protect,
+    force_archive: p.forceArchive,
     prune_emptied_source_dirs: p.prune,
     remove_preexisting_empty_dirs: p.removePreexisting,
   };

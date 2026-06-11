@@ -270,6 +270,7 @@ interface MovePlanParams {
   exclude: string[];
   cutoffYears: number[];
   protect: string;
+  forceArchive: boolean;
   prune: boolean;
   removePreexisting: boolean;
 }
@@ -286,6 +287,7 @@ function parseMovePlan(input: Record<string, unknown>): MovePlanParams {
     exclude: toStringArray(input.exclude_globs),
     cutoffYears: toYearArray(input.cutoff_years),
     protect: String(input.protect_newer_than ?? "").trim(),
+    forceArchive: input.force_archive === true,
     prune: input.prune_emptied_source_dirs !== false, // undefined → true
     removePreexisting: input.remove_preexisting_empty_dirs === true, // undefined → false
   };
@@ -299,6 +301,7 @@ function moveCanonical(op: string, nas: string, jobId: string, p?: MovePlanParam
       `move.plan|nas=${nas}|share=${params.share}|mode=${params.mode}` +
       `|roots=${canonStrings(params.roots)}|include=${canonStrings(params.include)}|exclude=${canonStrings(params.exclude)}` +
       `|cutoff=${canonYears(params.cutoffYears)}|protect=${params.protect}` +
+      `|force=${params.forceArchive ? "true" : "false"}` +
       `|prune=${params.prune ? "true" : "false"}|rmpre=${params.removePreexisting ? "true" : "false"}`
     );
   }
@@ -319,6 +322,7 @@ function moveBody(p: MovePlanParams): Record<string, unknown> {
     exclude_globs: p.exclude,
     cutoff_years: p.cutoffYears,
     protect_newer_than: p.protect,
+    force_archive: p.forceArchive,
     prune_emptied_source_dirs: p.prune,
     remove_preexisting_empty_dirs: p.removePreexisting,
   };
@@ -360,11 +364,12 @@ async function runMoveTool(
       case "move_plan": {
         const p = parseMovePlan(input);
         if (!p.share) return `${tag} share is required.`;
-        if (p.mode === "move" && p.cutoffYears.length === 0) return `${tag} cutoff_years is required for a move (it sets the archive boundary).`;
+        if (p.mode === "move" && p.forceArchive && p.roots.length === 0) return `${tag} force_archive requires at least one sub-folder root.`;
+        if (p.mode === "move" && p.cutoffYears.length === 0 && !p.forceArchive) return `${tag} cutoff_years is required for a move (it sets the archive boundary).`;
         if (!input.confirmed) {
           return [
             `${tag} This will create a DRY-RUN archive-move plan on ${config.name} for share '${p.share}' (mode: ${p.mode}).`,
-            p.mode === "move" ? `Files last modified before ${Math.max(...p.cutoffYears)} would be relocated into ${p.share}/Archive.` : `Empty folders under the scope would be listed for removal.`,
+            p.mode === "move" ? (p.forceArchive ? `Files under the selected roots would be relocated into ${p.share}/Archive regardless of modified year.` : `Files last modified before ${Math.max(...p.cutoffYears)} would be relocated into ${p.share}/Archive.`) : `Empty folders under the scope would be listed for removal.`,
             `Nothing is moved or deleted by planning. Call again with confirmed: true to create the plan, then review it with fetch_archive_move_manifest.`,
           ].join("\n");
         }

@@ -107,6 +107,10 @@ func (m *Manager) runPlan(ctx context.Context, job *MoveJob) {
 func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot string, scopeRoots []string, manifestPath string) error {
 	cutoff := maxInt(job.CutoffYears)
 	protect, protectSet := parseProtect(job.ProtectNewerThan)
+	plannedReason := reasonForCutoff(cutoff)
+	if job.ForceArchive {
+		plannedReason = ReasonForceArchive
+	}
 	count := 0
 	for _, root := range scopeRoots {
 		werr := walkFiles(ctx, root, func(path string, d fs.DirEntry) error {
@@ -121,7 +125,7 @@ func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot str
 			if err != nil {
 				return nil
 			}
-			if info.ModTime().Year() >= cutoff {
+			if !job.ForceArchive && info.ModTime().Year() >= cutoff {
 				return nil // newer than the cutoff boundary
 			}
 			id, err := identityOf(path)
@@ -142,7 +146,7 @@ func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot str
 				DevID:         id.dev,
 				Mtime:         id.mtime.UTC().Format(time.RFC3339Nano),
 				Ctime:         id.ctime.UTC().Format(time.RFC3339Nano),
-				PlannedReason: reasonForCutoff(cutoff),
+				PlannedReason: plannedReason,
 				Status:        MStatusPlanned,
 			}
 			if id.hasBt {
@@ -750,6 +754,7 @@ func (m *Manager) buildMoveJob(req MovePlanRequest) *MoveJob {
 		Mode:                       req.Mode,
 		CutoffYears:                req.CutoffYears,
 		ProtectNewerThan:           req.ProtectNewerThan,
+		ForceArchive:               req.ForceArchive,
 		Overlay:                    req.overlayEffective(),
 		PruneEmptiedSourceDirs:     req.pruneEffective(),
 		RemovePreexistingEmptyDirs: req.removePreexisting(),
@@ -912,7 +917,10 @@ func validateMoveRequest(req MovePlanRequest) error {
 	if req.Mode != ModeMove && req.Mode != ModeCleanEmptyDirs {
 		return fmt.Errorf("mode must be %q or %q", ModeMove, ModeCleanEmptyDirs)
 	}
-	if req.Mode == ModeMove && len(req.CutoffYears) == 0 {
+	if req.Mode == ModeMove && req.ForceArchive && len(req.Roots) == 0 {
+		return errors.New("force_archive requires at least one sub-folder root")
+	}
+	if req.Mode == ModeMove && len(req.CutoffYears) == 0 && !req.ForceArchive {
 		return errors.New("cutoff_years is required for a move (it defines the archive boundary)")
 	}
 	return nil

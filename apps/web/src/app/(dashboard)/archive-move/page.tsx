@@ -53,6 +53,7 @@ export default function ArchiveMovePage() {
   const [roots, setRoots] = useState("");
   const [cutoffYears, setCutoffYears] = useState("2022");
   const [protect, setProtect] = useState("");
+  const [forceArchive, setForceArchive] = useState(false);
   const [prune, setPrune] = useState(true);
   const [removePreexisting, setRemovePreexisting] = useState(false);
 
@@ -170,8 +171,9 @@ export default function ArchiveMovePage() {
   }
 
   function planBody() {
-    const body: Record<string, unknown> = { nas, share, mode, prune_emptied_source_dirs: prune, remove_preexisting_empty_dirs: removePreexisting };
-    if (roots.trim()) body.roots = roots.split(",").map((s) => s.trim()).filter(Boolean);
+    const selected = splitRoots(roots);
+    const body: Record<string, unknown> = { nas, share, mode, force_archive: forceArchive, prune_emptied_source_dirs: prune, remove_preexisting_empty_dirs: removePreexisting };
+    if (selected.length) body.roots = selected;
     const cy = cutoffYears.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n));
     if (cy.length) body.cutoff_years = cy;
     if (protect) body.protect_newer_than = toUtcIso(protect);
@@ -185,6 +187,10 @@ export default function ArchiveMovePage() {
     setReviewed(false);
     setConfirmText("");
     try {
+      if (mode === "move" && forceArchive && splitRoots(roots).length === 0) {
+        setNotice({ kind: "error", text: "Force archive requires at least one selected sub-folder." });
+        return;
+      }
       const res = await fetch(`/api/archive/move`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -322,6 +328,13 @@ export default function ArchiveMovePage() {
               <label className="block text-sm">
                 <span className="mb-1 block text-muted-foreground">Never archive files newer than (optional)</span>
                 <input type="datetime-local" value={protect} onChange={(e) => setProtect(e.target.value)} className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
+              </label>
+              <label className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm sm:col-span-2">
+                <input type="checkbox" className="mt-1" checked={forceArchive} onChange={(e) => setForceArchive(e.target.checked)} />
+                <span>
+                  <span className="block font-medium">Force archive selected sub-folders despite file dates</span>
+                  <span className="text-muted-foreground">Use when modified dates are wrong. The optional newer-than safety date still applies.</span>
+                </span>
               </label>
             </>
           )}

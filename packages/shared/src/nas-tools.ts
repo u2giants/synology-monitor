@@ -3426,7 +3426,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   {
     name: "plan_archive_move",
     description:
-      "WRITE (tier 2) — Plans a DRY-RUN archive move: walks the share with the same rules as inventory and writes a manifest of exactly which old files would be relocated into <share>/Archive (or, in clean_empty_dirs mode, which empty folders would be removed). Nothing is moved or deleted — it only writes a plan to review. Requires cutoff_years for a move. Call again with confirmed: true to create the plan; then review it with fetch_archive_move_manifest before execute_archive_move.",
+      "WRITE (tier 2) — Plans a DRY-RUN archive move: walks the share with the same rules as inventory and writes a manifest of exactly which old files would be relocated into <share>/Archive (or, in clean_empty_dirs mode, which empty folders would be removed). Nothing is moved or deleted — it only writes a plan to review. Requires cutoff_years for a move unless force_archive is true for selected roots. Call again with confirmed: true to create the plan; then review it with fetch_archive_move_manifest before execute_archive_move.",
     write: true,
     job: { op: "move_plan" },
     params: {
@@ -3435,6 +3435,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       mode: moveModeParam,
       cutoff_years: cutoffYearsParam,
       protect_newer_than: protectNewerThanParam,
+      force_archive: z.boolean().optional().describe("Move files in the selected roots even when their modified dates are newer than the cutoff. Requires roots and still respects protect_newer_than."),
       roots: moveRootsParam,
       include_globs: moveIncludeParam,
       exclude_globs: moveExcludeParam,

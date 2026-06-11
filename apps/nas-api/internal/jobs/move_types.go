@@ -60,6 +60,7 @@ type MoveJob struct {
 	// Applied classification rules (recorded for audit; same semantics as Phase 1).
 	CutoffYears      []int  `json:"cutoff_years"`
 	ProtectNewerThan string `json:"protect_newer_than"`
+	ForceArchive     bool   `json:"force_archive"`
 	Overlay          bool   `json:"overlay"`
 
 	// Directory handling.
@@ -106,6 +107,7 @@ type MovePlanRequest struct {
 	Mode                       string   `json:"mode"`                          // optional; default "move"
 	CutoffYears                []int    `json:"cutoff_years"`                  // optional
 	ProtectNewerThan           string   `json:"protect_newer_than"`            // optional RFC3339
+	ForceArchive               bool     `json:"force_archive"`                 // optional; bypass cutoff year for selected roots
 	Overlay                    *bool    `json:"overlay"`                       // optional; nil → true
 	PruneEmptiedSourceDirs     *bool    `json:"prune_emptied_source_dirs"`     // optional; nil → true
 	RemovePreexistingEmptyDirs *bool    `json:"remove_preexisting_empty_dirs"` // optional; nil → false
@@ -155,11 +157,11 @@ func MoveCanonicalOpString(op Op, nasName, jobID string, req *MovePlanRequest) s
 	switch op {
 	case OpMovePlan:
 		return fmt.Sprintf(
-			"move.plan|nas=%s|share=%s|mode=%s|roots=%s|include=%s|exclude=%s|cutoff=%s|protect=%s|prune=%s|rmpre=%s",
+			"move.plan|nas=%s|share=%s|mode=%s|roots=%s|include=%s|exclude=%s|cutoff=%s|protect=%s|force=%s|prune=%s|rmpre=%s",
 			nasName, req.Share, req.Mode,
 			canonSorted(req.Roots), canonSorted(req.IncludeGlobs), canonSorted(req.ExcludeGlobs),
 			canonYears(req.CutoffYears), req.ProtectNewerThan,
-			canonBool(req.pruneEffective()), canonBool(req.removePreexisting()),
+			canonBool(req.ForceArchive), canonBool(req.pruneEffective()), canonBool(req.removePreexisting()),
 		)
 	case OpMoveExecute, OpMoveCancel, OpMoveRollback:
 		return fmt.Sprintf("%s|nas=%s|job_id=%s", op, nasName, jobID)
@@ -190,3 +192,5 @@ func MoveStatusTerminal(s MoveStatus) bool {
 
 // reasonForCutoff renders the planned_reason for a candidate at a cutoff year.
 func reasonForCutoff(year int) string { return "older_than_" + strconv.Itoa(year) }
+
+const ReasonForceArchive = "force_archive"
