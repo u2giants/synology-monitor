@@ -190,9 +190,11 @@ Phase 2 adds a staged, reversible **archive-move** API under
 `/jobs/archive-move/*` (`plan`, `{id}`, `{id}/manifest`, `{id}/result`,
 `{id}/execute`, `{id}/cancel`, `{id}/rollback`, `{id}/verify`). The move state
 machine (plan → preflight → snapshot → execute → verify → rollback, plus a
-`clean_empty_dirs` mode) relocates old files into `<share>/Archive` by atomic
+`clean_empty_dirs` mode) relocates cutoff-qualified files, or selected-root files
+when `force_archive` is explicitly enabled, into `<share>/Archive` by atomic
 **rename within the same Btrfs subvolume** (verifying inode/size/mtime/btime per
-file, rolling back any mismatch), takes a read-only Btrfs snapshot before any
+file, rolling back any mismatch). `protect_newer_than` still blocks force-mode
+candidates. The executor takes a read-only Btrfs snapshot before any
 write, and records every file and pruned directory in a JSONL manifest for
 reversibility. It writes via the **writable `/btrfs/volume1/<share>`** mount (the
 per-share `/volume1/<share>` mounts stay read-only); `execute` and `rollback` are

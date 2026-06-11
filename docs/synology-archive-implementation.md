@@ -975,19 +975,23 @@ produce **identical** strings. Definition:
 start:    "inventory.start|nas=<NAS_NAME>|shares=<s1,s2,...>|cutoff=<y1,y2,...>|overlay=<true|false>|protect=<RFC3339 or empty>"
 schedule: "inventory.schedule|nas=<NAS_NAME>|shares=<...>|cutoff=<...>|overlay=<...>|protect=<...>|scheduled_for=<RFC3339 UTC>"
 cancel:   "inventory.cancel|nas=<NAS_NAME>|job_id=<id>"
+move.plan:"move.plan|nas=<NAS_NAME>|share=<share>|mode=<move|clean_empty_dirs>|roots=<r1,r2,...>|include=<g1,g2,...>|exclude=<g1,g2,...>|cutoff=<y1,y2,...>|protect=<RFC3339 or empty>|force=<true|false>|prune=<true|false>|rmpre=<true|false>"
 ```
 
 The token **must bind every safety-relevant field**, so `protect` (the
-`protect_newer_than` date) is included in the canonical string — a tampered
-request that weakened protection would then fail signature verification. The
+`protect_newer_than` date) and archive-move's `force` flag are included in the
+canonical string — a tampered request that weakened protection or enabled force
+mode would then fail signature verification. The
 non-safety tuning fields (`max_files_per_second`, `sleep_*`,
 `use_idle_io_priority`) are *not* part of the signed string (they cannot cause
 data loss; binding them would only add brittleness).
 
-Rules: shares and cutoff years are sorted ascending and comma-joined with no
-spaces; booleans are lowercase `true`/`false`; empty cutoff → `cutoff=` (nothing
-after `=`); empty protect → `protect=`; times are the exact RFC3339 string the
-client sent (UTC, `Z`). The
+Rules: shares, archive-move roots/globs, and cutoff years are sorted ascending
+and comma-joined with no spaces; booleans are lowercase `true`/`false`; empty
+cutoff → `cutoff=` (nothing after `=`); empty protect → `protect=`; times are
+the exact RFC3339 string the client sent (UTC, `Z`). `force_archive` is allowed
+only for selected folder roots and bypasses only the cutoff-year test;
+`protect_newer_than` still excludes protected files. The
 nas-api `requireApproval` middleware rebuilds this string from the **server-side
 NAS_NAME** and the request body — so the client must use the same NAS_NAME it
 targets (it does: it's resolving that NAS's config). Tier is always `2`. Token

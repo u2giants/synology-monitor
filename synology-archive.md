@@ -488,7 +488,10 @@ reversible workflow with hard safety gates between stages.
 
 - Phase 2 reuses Phase 1's classification logic (cutoff years,
   `protect_newer_than`, the Drive/ShareSync activity overlay) and the same
-  scanner core (symlink-skipping, default exclusions, idle I/O priority).
+  scanner core (symlink-skipping, default exclusions, idle I/O priority). When
+  an operator knows file modified dates are wrong, `force_archive` can override
+  the cutoff-year test for selected folder roots only; `protect_newer_than`
+  remains a hard safety gate.
 - It re-evaluates every rule at **plan time with fresh `stat` data** — a stored
   inventory result is treated as guidance, never as the authority for what to
   move (files may have changed since the inventory ran).
@@ -803,8 +806,9 @@ On the `/archive-inventory` page (or a sibling `/archive-move`), a staged panel:
   listing endpoint; selected folder roots populate the same scope field used by
   the plan request. Include/exclude path globs remain available for advanced
   scoping.
-- **Rules:** cutoff, protect-newer-than, overlay toggle — prefilled from the most
-  recent inventory.
+- **Rules:** cutoff, protect-newer-than, force-archive toggle, overlay toggle —
+  prefilled from the most recent inventory where applicable. Force archive
+  requires selected folder roots and ignores only the cutoff-year test.
 - **Plan move (dry-run):** shows the manifest summary plus a browsable and
   downloadable file-list preview. Nothing destructive happens.
 - **Review gate:** an explicit "I reviewed N files / X TB" confirmation.
