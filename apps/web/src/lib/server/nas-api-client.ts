@@ -181,6 +181,30 @@ export async function executeNasCommand(
   };
 }
 
+export async function executeNasCommandOnConfig(
+  config: NasApiConfig,
+  command: string,
+  timeoutMs = 90_000,
+): Promise<NasCommandResult> {
+  const preview = await nasApiPreview(config, command);
+  if (preview.blocked || preview.tier < 1 || preview.tier > 3) {
+    throw new Error(`Command is blocked by NAS API validation: ${preview.summary}`);
+  }
+
+  const tier = preview.tier as 1 | 2 | 3;
+  let approvalToken: string | undefined;
+  if (tier === 2 || tier === 3) {
+    approvalToken = buildNasApiApprovalToken(config, command, tier);
+  }
+
+  const result = await nasApiExec(config, command, tier, approvalToken, timeoutMs);
+  return {
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+    exitCode: result.exit_code,
+  };
+}
+
 // ─── File-inventory jobs (Phase 1) ────────────────────────────────────────────
 //
 // These hit the native nas-api /jobs/inventory/* REST endpoints (NOT /exec).

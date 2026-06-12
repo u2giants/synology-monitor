@@ -15,6 +15,7 @@ import {
   Bot,
   Archive,
   FolderInput,
+  FileSearch,
   Settings,
 } from "lucide-react";
 
@@ -28,6 +29,7 @@ const navItems = [
   { href: "/docker", label: "Docker", icon: Container },
   { href: "/ai-insights", label: "Issue Insights", icon: Brain },
   { href: "/assistant", label: "Issue Agent", icon: Bot },
+  { href: "/file-search", label: "File Search", icon: FileSearch },
   { href: "/archive-inventory", label: "Archive Inventory", icon: Archive },
   { href: "/archive-move", label: "Archive Move", icon: FolderInput },
   { href: "/settings", label: "Settings", icon: Settings },
