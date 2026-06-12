@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { cn, formatBytes, timeAgo } from "@/lib/utils";
-import { Container, Download, Hammer, Play, RotateCw, Square } from "lucide-react";
+import { Container, Play, RotateCw, Square } from "lucide-react";
 
 interface NasUnit {
   id: string;
@@ -208,18 +208,6 @@ export default function DockerPage() {
                       icon={RotateCw}
                       loading={actionLoading === `${nas.name}:restart_monitor_agent`}
                       onClick={() => runDockerAction(nas.name, "restart_monitor_agent")}
-                    />
-                    <DockerActionButton
-                      label="Pull"
-                      icon={Download}
-                      loading={actionLoading === `${nas.name}:pull_monitor_agent`}
-                      onClick={() => runDockerAction(nas.name, "pull_monitor_agent")}
-                    />
-                    <DockerActionButton
-                      label="Build"
-                      icon={Hammer}
-                      loading={actionLoading === `${nas.name}:build_monitor_agent`}
-                      onClick={() => runDockerAction(nas.name, "build_monitor_agent")}
                     />
                   </div>
                 </div>

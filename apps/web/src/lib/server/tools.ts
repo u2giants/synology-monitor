@@ -58,10 +58,10 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     buildPreview: () => "df -h /volume1",
   },
   check_agent_container: {
-    description: "Read-only. Confirm whether the Synology Monitor agent container is running.",
+    description: "Read-only. Confirm whether the Synology Monitor agent container is running via DSM Container Manager WebAPI.",
     write: false,
     buildPreview: () =>
-      "/usr/local/bin/docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=list 2>/dev/null | grep -E 'synology-monitor-(agent|nas-api)' || true",
   },
   check_cpu_iowait: {
     description: "Read-only. Measure CPU iowait directly on the NAS using vmstat and /proc/stat so the operator can compare before/after a suspected I/O-heavy action.",
@@ -109,29 +109,36 @@ export const TOOL_DEFINITIONS: Record<CopilotToolName, ToolDefinition> = {
     },
   },
   restart_monitor_agent: {
-    description: "Write. Restart the Synology Monitor agent container on the NAS.",
+    description: "Write. Restart the Synology Monitor agent container through DSM Container Manager WebAPI.",
     write: true,
-    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose restart",
+    buildPreview: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='\"synology-monitor-agent\"' && sleep 3 && /usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=start name='\"synology-monitor-agent\"'",
   },
   stop_monitor_agent: {
-    description: "Write. Stop the Synology Monitor agent stack via docker compose on the NAS.",
+    description: "Write. Stop the Synology Monitor agent container through DSM Container Manager WebAPI.",
     write: true,
-    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose stop",
+    buildPreview: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='\"synology-monitor-agent\"'",
   },
   start_monitor_agent: {
-    description: "Write. Start the Synology Monitor agent stack via docker compose on the NAS.",
+    description: "Write. Start the Synology Monitor agent container through DSM Container Manager WebAPI.",
     write: true,
-    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose up -d",
+    buildPreview: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=start name='\"synology-monitor-agent\"'",
   },
   pull_monitor_agent: {
-    description: "Write. Pull the latest monitor agent images via docker compose on the NAS.",
+    description: "Unsupported. Image pulls must be handled by the backend deploy/update pipeline, not Docker compose from the monitor UI.",
     write: true,
-    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose pull",
+    buildPreview: () => {
+      throw new Error("Pull is disabled here because Docker compose mutations desync DSM Container Manager. Use the backend deploy/update pipeline.");
+    },
   },
   build_monitor_agent: {
-    description: "Write. Rebuild the monitor agent stack locally via docker compose on the NAS.",
+    description: "Unsupported. Local image builds must not be run from the monitor UI because they bypass DSM Container Manager state.",
     write: true,
-    buildPreview: () => "cd /volume1/docker/synology-monitor-agent && docker compose build --pull",
+    buildPreview: () => {
+      throw new Error("Build is disabled here because Docker compose mutations desync DSM Container Manager. Use the backend deploy/update pipeline.");
+    },
   },
   restart_synology_drive_server: {
     description: "Write. Restart the Synology Drive package.",

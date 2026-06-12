@@ -16,8 +16,6 @@ const ALLOWED_DOCKER_ACTIONS: CopilotToolName[] = [
   "stop_monitor_agent",
   "start_monitor_agent",
   "restart_monitor_agent",
-  "pull_monitor_agent",
-  "build_monitor_agent",
 ];
 
 export async function POST(request: Request) {

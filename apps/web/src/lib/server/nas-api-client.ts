@@ -462,7 +462,7 @@ export async function collectNasDiagnostics(lookbackHours = 2) {
     "echo '## volume1'",
     "df -h /volume1 2>/dev/null || true",
     "echo '## agent'",
-    "/usr/local/bin/docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
+    "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=list 2>/dev/null | grep -E 'synology-monitor-(agent|nas-api)' || true",
     "echo '## drive_log'",
     `tail -n ${driveLines} /var/log/synologydrive.log 2>/dev/null || true`,
     "echo '## sharesync_log'",

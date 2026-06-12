@@ -183,6 +183,7 @@ var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bionice\b.*-c`), // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
 	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),  // dd writing anywhere (device/proc covered by hard-block above)
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
+	regexp.MustCompile(`(?i)SYNO\.Docker\.Container.*method=(stop|start)`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+(start|stop|restart|rm)\b`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+compose\s+(restart|stop|up|pull|build)\b`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)ssh-keygen\b`),
@@ -213,12 +214,8 @@ var (
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart SynologyDriveShareSync$`),
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg restart HyperBackup$`),
 		regexp.MustCompile(`^/(?:host/)?usr/syno/bin/synopkg status [A-Za-z0-9._-]+(?: 2>&1)?(?: \|\| .+)?$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose restart$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose restart nas-api$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose stop$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose up -d$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose pull$`),
-		regexp.MustCompile(`^cd /volume1/docker/synology-monitor-agent && docker compose build --pull$`),
+		regexp.MustCompile(`^/usr/syno/bin/synowebapi --exec api=SYNO\.Docker\.Container version=1 method=(start|stop) name='"synology-monitor-agent"'$`),
+		regexp.MustCompile(`^/usr/syno/bin/synowebapi --exec api=SYNO\.Docker\.Container version=1 method=stop name='"synology-monitor-agent"' && sleep 3 && /usr/syno/bin/synowebapi --exec api=SYNO\.Docker\.Container version=1 method=start name='"synology-monitor-agent"'$`),
 	}
 
 	allowedReadDockerCommands = []*regexp.Regexp{
@@ -258,6 +255,11 @@ func Validate(command string, requestedTier int) error {
 				return errors.New("service command is not in the allowlist")
 			}
 		}
+	}
+	if strings.Contains(command, "SYNO.Docker.Container") && matchesAny(command, []*regexp.Regexp{
+		regexp.MustCompile(`(?i)method=(start|stop)`),
+	}) && !matchesAny(command, allowedServiceCommands) {
+		return errors.New("DSM container service command is not in the allowlist")
 	}
 
 	// 2. Tier 1: must be read-only
@@ -377,7 +379,7 @@ func BlockExplanation(command string) string {
 	case matchesAny(command, []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\bdocker\s+(run|create|cp|plugin|network|volume|context|swarm|stack|builder|buildx)\b`),
 	}):
-		return "This docker subcommand grants host-level control and is outside the small monitor-stack allowlist, so it is blocked. Read-only docker (ps/stats/inspect/logs) and the monitor-agent compose ops are permitted." + footer
+		return "This docker subcommand grants host-level control and is outside the small monitor-stack allowlist, so it is blocked. Use DSM Container Manager WebAPI for container lifecycle operations." + footer
 	default:
 		return "This command matches a permanent safety rule (it could destroy data, modify the OS/firmware, manage accounts, or take the NAS offline)." + footer
 	}
@@ -392,6 +394,15 @@ func Summary(command string) string {
 	}
 	if strings.Contains(cmd, "synopkg restart") {
 		return "Restart Synology package"
+	}
+	if strings.Contains(cmd, "SYNO.Docker.Container") && strings.Contains(cmd, "method=stop") && strings.Contains(cmd, "method=start") {
+		return "Restart DSM-managed container"
+	}
+	if strings.Contains(cmd, "SYNO.Docker.Container") && strings.Contains(cmd, "method=stop") {
+		return "Stop DSM-managed container"
+	}
+	if strings.Contains(cmd, "SYNO.Docker.Container") && strings.Contains(cmd, "method=start") {
+		return "Start DSM-managed container"
 	}
 	if strings.Contains(cmd, "docker") && strings.Contains(cmd, "restart") {
 		return "Restart Docker container"
@@ -412,21 +423,5 @@ func matchesAny(command string, patterns []*regexp.Regexp) bool {
 }
 
 func disallowedDockerCompose(command string) bool {
-	cmd := strings.TrimSpace(command)
-	if !strings.Contains(cmd, "docker compose") {
-		return false
-	}
-	allowed := []string{
-		"docker compose restart",
-		"docker compose stop",
-		"docker compose up -d",
-		"docker compose pull",
-		"docker compose build --pull",
-	}
-	for _, prefix := range allowed {
-		if strings.Contains(cmd, prefix) {
-			return false
-		}
-	}
-	return true
+	return strings.Contains(strings.TrimSpace(command), "docker compose")
 }

@@ -188,4 +188,28 @@ func TestDockerAllowlistStillAppliesToActualDockerCommands(t *testing.T) {
 	if got := ClassifyTier("docker compose ls"); got != -1 {
 		t.Fatalf("docker compose ls ClassifyTier() = %d, want -1", got)
 	}
+
+	if got := ClassifyTier("cd /volume1/docker/synology-monitor-agent && docker compose restart"); got != -1 {
+		t.Fatalf("docker compose restart ClassifyTier() = %d, want -1", got)
+	}
+}
+
+func TestDSMContainerManagerWebAPIServiceAllowlist(t *testing.T) {
+	start := `/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=start name='"synology-monitor-agent"'`
+	stop := `/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='"synology-monitor-agent"'`
+	restart := stop + ` && sleep 3 && ` + start
+
+	for _, command := range []string{start, stop, restart} {
+		if got := ClassifyTier(command); got != TierService {
+			t.Fatalf("ClassifyTier(%q) = %d, want %d", command, got, TierService)
+		}
+		if err := Validate(command, TierService); err != nil {
+			t.Fatalf("Validate(TierService) rejected %q: %v", command, err)
+		}
+	}
+
+	otherContainer := `/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='"postgres"'`
+	if err := Validate(otherContainer, TierService); err == nil {
+		t.Fatal("Validate(TierService) unexpectedly allowed DSM WebAPI stop for an arbitrary container")
+	}
 }

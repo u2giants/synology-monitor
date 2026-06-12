@@ -26,7 +26,8 @@ const ACTIONS = {
   },
   check_agent_container: {
     write: false,
-    buildCommand: () => "docker ps --format '{{.Image}}|{{.Status}}|{{.Names}}' | grep synology-monitor-agent || true",
+    buildCommand: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=list 2>/dev/null | grep -E 'synology-monitor-(agent|nas-api)' || true",
   },
   check_cpu_iowait: {
     write: false,
@@ -82,23 +83,30 @@ const ACTIONS = {
   },
   restart_monitor_agent: {
     write: true,
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose restart",
+    buildCommand: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='\"synology-monitor-agent\"' && sleep 3 && /usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=start name='\"synology-monitor-agent\"'",
   },
   stop_monitor_agent: {
     write: true,
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose stop",
+    buildCommand: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=stop name='\"synology-monitor-agent\"'",
   },
   start_monitor_agent: {
     write: true,
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose up -d",
+    buildCommand: () =>
+      "/usr/syno/bin/synowebapi --exec api=SYNO.Docker.Container version=1 method=start name='\"synology-monitor-agent\"'",
   },
   pull_monitor_agent: {
     write: true,
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose pull",
+    buildCommand: () => {
+      throw new Error("pull_monitor_agent is disabled because Docker compose mutations desync DSM Container Manager. Use the backend deploy/update pipeline.");
+    },
   },
   build_monitor_agent: {
     write: true,
-    buildCommand: () => "cd /volume1/docker/synology-monitor-agent && docker compose build --pull",
+    buildCommand: () => {
+      throw new Error("build_monitor_agent is disabled because Docker compose mutations desync DSM Container Manager. Use the backend deploy/update pipeline.");
+    },
   },
   restart_synology_drive_server: {
     write: true,
