@@ -95,7 +95,7 @@ function treeKey(target: BrowseTarget, path: string): string {
 }
 
 export default function FileSearchPage() {
-  const [target, setTarget] = useState<Target>("both");
+  const [target, setTarget] = useState<Target>("edgesynology1");
   const [browseTarget, setBrowseTarget] = useState<BrowseTarget>("edgesynology1");
   const [rootPath, setRootPath] = useState("");
   const [namePattern, setNamePattern] = useState("*.xls*");
@@ -182,6 +182,19 @@ export default function FileSearchPage() {
     }
   }
 
+  function selectBrowseTarget(nextTarget: BrowseTarget) {
+    setBrowseTarget(nextTarget);
+    setTarget(nextTarget);
+    setRootPath("");
+    setResponse(null);
+  }
+
+  function selectRootPath(path: string) {
+    if (target === "both") setTarget(browseTarget);
+    setRootPath(path);
+    setResponse(null);
+  }
+
   function toggleFolder(path: string) {
     const normalized = path || "/";
     const key = treeKey(browseTarget, normalized);
@@ -223,7 +236,7 @@ export default function FileSearchPage() {
             </button>
             <button
               type="button"
-              onClick={() => setRootPath(entry.path)}
+              onClick={() => selectRootPath(entry.path)}
               className="flex min-w-0 items-center gap-2 text-left"
             >
               {isExpanded ? <FolderOpen className="h-4 w-4 shrink-0" /> : <Folder className="h-4 w-4 shrink-0" />}
@@ -311,7 +324,7 @@ export default function FileSearchPage() {
               {target === "both" && (
                 <select
                   value={browseTarget}
-                  onChange={(event) => setBrowseTarget(event.target.value as BrowseTarget)}
+                  onChange={(event) => selectBrowseTarget(event.target.value as BrowseTarget)}
                   className="h-9 rounded-md border border-border bg-card px-3 text-sm"
                 >
                   {browseTargetOptions.map((option) => (
@@ -323,7 +336,7 @@ export default function FileSearchPage() {
               )}
               <button
                 type="button"
-                onClick={() => setRootPath("")}
+                onClick={() => selectRootPath("")}
                 className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm hover:bg-muted"
               >
                 <HardDrive className="h-4 w-4" />
@@ -353,7 +366,7 @@ export default function FileSearchPage() {
                   <ChevronRight className="h-4 w-4" />
                 )}
               </button>
-              <button type="button" onClick={() => setRootPath("")} className="flex min-w-0 items-center gap-2 text-left">
+              <button type="button" onClick={() => selectRootPath("")} className="flex min-w-0 items-center gap-2 text-left">
                 <HardDrive className="h-4 w-4 shrink-0" />
                 <span className="truncate">All mounted volumes</span>
               </button>
