@@ -206,13 +206,31 @@ the logic is unit-tested on temp trees.
 | Tier | Label | Approval required | Examples |
 |---|---|---|---|
 | 1 | read-only | No — auto-executes | `cat /proc/mdstat`, `df -h`, `smartctl -a`, `tail -n 100 /var/log/kern.log` |
-| 2 | service ops | HMAC approval token | `synopkg restart SynologyDrive`, `docker compose restart` |
+| 2 | service ops | HMAC approval token | `synopkg restart SynologyDrive`, DSM WebAPI `SYNO.Docker.Container` start/stop for the monitor agent |
 | 3 | file ops | HMAC approval token | `mv /volume1/file.old /volume1/file`, `btrfs scrub start /volume1` |
 
 ### Validator (`internal/validator/validator.go`)
 
 `ClassifyTier(command)` returns the minimum required tier. `Validate(command, tier)`
 enforces that the requested tier is sufficient and that no hard-block patterns match.
+
+### DSM Container Manager lifecycle
+
+What changed:
+Monitor-agent container status/actions exposed by the web dashboard and tool
+catalogs use DSM Container Manager WebAPI (`SYNO.Docker.Container`) rather than
+`docker compose`/`docker stop`/`docker start`.
+
+Why:
+Container lifecycle changes made directly through Docker CLI can leave Synology
+Container Manager's GUI state stale or incorrect. The monitor UI should match
+the backend/DSM source of truth.
+
+Future sessions should:
+Keep dashboard/tool lifecycle actions on DSM WebAPI paths. `docker compose` is
+blocked by the NAS API validator for routine service actions; use it only for the
+documented exceptional deployment/configuration cases where compose state itself
+must be applied.
 
 **Hard-blocked regardless of tier:** disk destruction (`mkfs`, `fdisk`, `parted`,
 `dd if=`, `wipefs`), root filesystem destruction (`rm -rf /`), DSM binary writes,
@@ -222,8 +240,8 @@ flags (`--security-`, `-y`, `-Y`, `-W`), user account changes (`useradd`,
 `userdel`, `passwd <user>`), shutdown/reboot/poweroff, package managers
 (`apt-get install`, `opkg install`, `pip install`), recursive grep on
 `@synologydrive`/`@SynologyDriveShareSync` (a 4-day runaway grep incident on
-production triggered this — see AGENTS.md §13), unrestricted `docker run/create`
-(only the monitor-stack compose subset is allowed).
+production triggered this — see AGENTS.md §13), unrestricted Docker host-control
+commands (`docker run/create`, arbitrary compose lifecycle, etc.).
 
 **Tier 1 enforcement:** `writePatterns` (regex list) is checked; any match elevates
 to tier 2+. Real output redirection (`> file`, not `>/dev/null` or `2>&1`) is also

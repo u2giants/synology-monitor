@@ -150,6 +150,24 @@ Docker build and nas-mcp can silently deploy an old tool catalog.
 > $DOCKER compose -f compose.yaml up -d
 > ```
 
+### Container Manager lifecycle rule
+
+What changed:
+Routine monitor-agent start/stop/restart actions are driven through the backend
+using DSM Container Manager WebAPI (`SYNO.Docker.Container`), not Docker CLI
+lifecycle commands.
+
+Why:
+Starting, stopping, removing, or recreating containers from ad hoc Docker CLI
+commands can make Synology Container Manager's GUI stop reporting status
+correctly.
+
+Future sessions should:
+Use the web dashboard/backend actions or DSM Container Manager itself for routine
+container lifecycle. Keep `docker compose up -d` limited to the exceptional cases
+above where a compose-file change must be materialized, and document any such
+manual operation.
+
 No manual steps are needed. Allow up to 5 minutes for the update to propagate after the image push completes.
 
 Because Watchtower recreates the NAS API automatically, a bad image can put both
@@ -188,17 +206,12 @@ $DOCKER ps --format 'table {{.Names}}\t{{.Image}}'
 
 ### Forcing an immediate update
 
-Only needed if Watchtower itself is down or you cannot wait for the next 5-minute poll:
-
-```sh
-DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
-cd /volume1/docker/synology-monitor-agent
-
-$DOCKER compose -f compose.yaml pull
-$DOCKER stop synology-monitor-agent || true
-$DOCKER rm synology-monitor-agent || true
-$DOCKER compose -f compose.yaml up -d synology-monitor-agent
-```
+Prefer waiting for Watchtower's 5-minute poll. If an update truly cannot wait,
+use Synology Container Manager's UI/backend-managed project update path so DSM
+remains the source of truth. Avoid `docker stop`, `docker rm`, `docker start`,
+or ad hoc compose lifecycle commands for routine updates; those can desync the
+Container Manager GUI. Use compose manually only for the documented exceptional
+config-application or recovery cases in this doc.
 
 ### First deployment to a new NAS
 

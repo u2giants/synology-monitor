@@ -326,8 +326,10 @@ must be able to classify the generated command at the right tier.
 - **Tier 2** (service ops — reversible, no `/volume*` touch): the command probably
   already matches a `writePatterns` regex. Verify with a test.
 - **Tier 3** (file ops — touches `/volume*`): ensure a `filePatterns` entry matches.
-- **Allowlisted Docker compose commands**: add to `allowedServiceCommands` in
-  `validator.go` if it's a `docker compose ...` variant.
+- **DSM-managed container lifecycle**: use DSM WebAPI (`SYNO.Docker.Container`)
+  commands and add tight `allowedServiceCommands` entries/tests for the exact
+  container name. Routine `docker compose` lifecycle commands are blocked because
+  they can desync Synology Container Manager's GUI state.
 
 Always add a test in `apps/nas-api/internal/validator/validator_test.go`:
 

@@ -635,6 +635,10 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
   `docker compose up -d` are exceptional recovery/config-application steps only
   (for example, applying compose mount/capability changes or recovering a crashed
   NAS API) and must be reflected in the repo/docs.
+- Do not manage DSM Container Manager containers through ad hoc Docker CLI
+  lifecycle commands from monitor features. Use backend-owned DSM WebAPI
+  (`SYNO.Docker.Container`) status/start/stop paths instead. CLI/compose
+  mutations can make the DSM Container Manager GUI report stale or wrong state.
 - Do not hotfix the live NAS/VPS and commit after the fact.
 - Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands, SSH, or server-side scripts (see `AI_OPERATING_RULES.md`).
 - Do not add a sender payload field without a matching Supabase column/migration.
