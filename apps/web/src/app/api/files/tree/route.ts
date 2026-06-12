@@ -96,6 +96,7 @@ export async function GET(request: NextRequest) {
       exit_code: result.exitCode,
     });
   } catch (err) {
-    return nasUnreachable(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return nasUnreachable(new Error(`${config.name}: ${msg}`));
   }
 }

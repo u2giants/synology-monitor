@@ -99,16 +99,27 @@ export async function POST(request: NextRequest) {
   try {
     const results = await Promise.all(
       configs.map(async (config) => {
-        const command = tool.buildCommand!({ target: config.name, ...args });
-        const result = await executeNasCommandOnConfig(config, command, 120_000);
-        return {
-          target: config.name,
-          ok: result.exitCode === 0,
-          exit_code: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          matches: parseMatches(result.stdout),
-        };
+        try {
+          const command = tool.buildCommand!({ target: config.name, ...args });
+          const result = await executeNasCommandOnConfig(config, command, 120_000);
+          return {
+            target: config.name,
+            ok: result.exitCode === 0,
+            exit_code: result.exitCode,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            matches: parseMatches(result.stdout),
+          };
+        } catch (err) {
+          return {
+            target: config.name,
+            ok: false,
+            exit_code: -1,
+            stdout: "",
+            stderr: err instanceof Error ? err.message : "Unknown NAS API error",
+            matches: [],
+          };
+        }
       }),
     );
 

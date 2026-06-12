@@ -113,6 +113,7 @@ export async function nasApiExec(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.apiSecret}`,
+      Connection: "close",
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs + 8_000),
@@ -139,6 +140,7 @@ export async function nasApiPreview(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${config.apiSecret}`,
+      Connection: "close",
     },
     body: JSON.stringify({ command }),
     signal: AbortSignal.timeout(10_000),
@@ -289,6 +291,7 @@ async function inventoryFetch(
   const headers: Record<string, string> = { Authorization: `Bearer ${config.apiSecret}` };
   if (opts.body) headers["Content-Type"] = "application/json";
   if (opts.approvalToken) headers["X-Approval-Token"] = opts.approvalToken;
+  headers.Connection = "close";
   return fetch(`${config.url}${path}`, {
     method,
     headers,
