@@ -6,9 +6,9 @@
 // SAME useResolution() hook and API routes. See the handoff README §6 for the
 // frontend-vs-backend split (reject-reason, agent alternatives, reopen).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bot, HardDrive, Loader2, Play } from "lucide-react";
+import { Bot, HardDrive, Loader2, Play, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useResolution, type ResolutionFull } from "@/hooks/use-resolution";
 import { buildTimeline, hasActiveIssueJob, isAgentThinking, thinkingLabel } from "@/lib/timeline-view";
@@ -31,6 +31,9 @@ export default function AssistantPage() {
 
   const [draft, setDraft] = useState("");
   const [executing, setExecuting] = useState(false);
+  const [newIssue, setNewIssue] = useState<{ title: string; desc: string } | null>(null);
+  const [creatingIssue, setCreatingIssue] = useState(false);
+  const [newIssueError, setNewIssueError] = useState<string | null>(null);
 
   useEffect(() => { fetchList(); }, [fetchList]);
 
@@ -119,13 +122,40 @@ export default function AssistantPage() {
     document.querySelector<HTMLTextAreaElement>("[data-composer] textarea")?.focus();
   }, []);
 
+  const onSubmitNewIssue = useCallback(async (title: string, desc: string) => {
+    const cleanTitle = title.trim();
+    if (!cleanTitle) {
+      setNewIssueError("Add a title before creating the issue.");
+      return;
+    }
+
+    setCreatingIssue(true);
+    setNewIssueError(null);
+    try {
+      const id = await createResolution({
+        originType: "manual",
+        title: cleanTitle,
+        description: desc.trim(),
+      });
+      if (id) {
+        setNewIssue(null);
+        fetchList();
+        router.replace(`/assistant?resolutionId=${id}`);
+      } else {
+        setNewIssueError("Could not create the issue. Try again.");
+      }
+    } finally {
+      setCreatingIssue(false);
+    }
+  }, [createResolution, fetchList, router]);
+
   return (
     <div className="grid gap-4 lg:grid-cols-[288px_1fr]">
       <IssueQueue
         items={resolutions}
         activeId={current?.resolution.id ?? null}
         onSelect={(id) => { loadResolution(id); router.replace(`/assistant?resolutionId=${id}`); }}
-        onNew={() => createResolution({ originType: "manual", title: "New issue", description: "" }).then((id) => id && router.replace(`/assistant?resolutionId=${id}`))}
+        onNew={() => { setNewIssueError(null); setNewIssue({ title: "", desc: "" }); }}
         onImport={() => createResolution({ originType: "manual", importCurrentFindings: true }).then((id) => id && router.replace(`/assistant?resolutionId=${id}`))}
         importing={loading}
       />
@@ -167,6 +197,79 @@ export default function AssistantPage() {
           />
         </main>
       )}
+      {newIssue !== null && (
+        <NewIssueDialog
+          value={newIssue}
+          onChange={setNewIssue}
+          onSubmit={onSubmitNewIssue}
+          onCancel={() => { if (!creatingIssue) setNewIssue(null); }}
+          submitting={creatingIssue}
+          error={newIssueError}
+        />
+      )}
+    </div>
+  );
+}
+
+function NewIssueDialog({
+  value, onChange, onSubmit, onCancel, submitting, error,
+}: {
+  value: { title: string; desc: string };
+  onChange: (v: { title: string; desc: string }) => void;
+  onSubmit: (title: string, desc: string) => void;
+  onCancel: () => void;
+  submitting: boolean;
+  error: string | null;
+}) {
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!submitting) onSubmit(value.title, value.desc);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onClick={onCancel}>
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-issue-title"
+        onSubmit={submit}
+        className="w-full max-w-md rounded-[14px] border border-border bg-card p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="new-issue-title" className="text-base font-bold">New issue</h2>
+          <button type="button" onClick={onCancel} disabled={submitting} className="rounded-lg p-1 text-muted-foreground hover:text-foreground disabled:opacity-50"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="flex flex-col gap-3">
+          <input
+            autoFocus
+            placeholder="Issue title"
+            value={value.title}
+            onChange={(e) => onChange({ ...value, title: e.target.value })}
+            disabled={submitting}
+            className="w-full rounded-[9px] border border-border bg-muted px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          <textarea
+            placeholder="Describe the issue (optional)"
+            value={value.desc}
+            onChange={(e) => onChange({ ...value, desc: e.target.value })}
+            disabled={submitting}
+            rows={3}
+            className="w-full resize-none rounded-[9px] border border-border bg-muted px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          {error && <p className="text-xs font-medium text-critical">{error}</p>}
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={onCancel} disabled={submitting} className="rounded-[9px] px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground disabled:opacity-50">Cancel</button>
+            <button
+              type="submit"
+              disabled={!value.title.trim() || submitting}
+              className="rounded-[9px] bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:brightness-110 disabled:opacity-40"
+            >
+              {submitting ? "Creating..." : "Create"}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   );
 }
