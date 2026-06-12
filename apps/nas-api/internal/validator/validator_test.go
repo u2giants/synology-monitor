@@ -59,6 +59,17 @@ func TestReadOnlyDiagnosticsStayTierRead(t *testing.T) {
 			name:    "tee to dev null stays read tier",
 			command: "printf data | tee /dev/null",
 		},
+		{
+			name: "live filename glob search stays read tier",
+			command: strings.Join([]string{
+				"ROOT='/volume1/Share'",
+				"PATTERN='*budget*.xls*'",
+				"MAX_RESULTS=500",
+				"find \"$ROOT\" \\( -path '*/@eaDir/*' -o -path '*/.SynologyWorkingDirectory/*' \\) -prune -o -type f -name \"$PATTERN\" -print 2>/dev/null | head -n \"$MAX_RESULTS\" | while IFS= read -r f; do",
+				"  stat -c '%F\t%s bytes\t%y\t%U:%G\t%n' \"$f\" 2>/dev/null || printf '%s\\n' \"$f\"",
+				"done",
+			}, "\n"),
+		},
 	}
 
 	for _, tt := range tests {

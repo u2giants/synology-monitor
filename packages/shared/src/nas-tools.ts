@@ -115,6 +115,16 @@ const moveRemovePreexistingParam = z
   .describe("Also remove folders that were already empty before the move (default: false).");
 const moveJobIdParam = z.string().describe("The archive-move job id (from plan_archive_move).");
 
+const rootPath = z
+  .string()
+  .optional()
+  .default("")
+  .describe("Absolute directory to search. Leave empty to search all mounted /volumeN data volumes.");
+
+const namePattern = z
+  .string()
+  .describe("Strict filename glob to match against basenames only, e.g. '*budget*.xls*'. This is not fuzzy search and does not search file contents.");
+
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
@@ -1835,6 +1845,105 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         "echo ''",
         "echo '=== PATH STAT ==='",
         `stat ${quote(p)} 2>&1`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "live_file_search",
+    description: "Strict live filesystem search by filename glob, with no indexing, no fuzzy matching, and no content search. Use when Universal Search or Windows Search ignore filters or return too much noise. Examples: name_pattern='*pattern*.xls*', root_path='/volume1/Share'. Returns matching paths with type, size, mtime, owner, and group.",
+    write: false,
+    params: {
+      target,
+      root_path: rootPath,
+      name_pattern: namePattern,
+      entry_type: z
+        .enum(["file", "directory", "any"])
+        .optional()
+        .default("file")
+        .describe("Limit matches by filesystem entry type. Default: file."),
+      case_sensitive: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("Use case-sensitive glob matching by default. Set false to use find -iname."),
+      max_depth: z
+        .number()
+        .int()
+        .optional()
+        .default(0)
+        .describe("Maximum directory depth below root_path. 0 means unlimited. Clamped to [0, 30]."),
+      max_results: z
+        .number()
+        .int()
+        .optional()
+        .default(500)
+        .describe("Maximum matches to print. Default 500, clamped to [1, 2000]."),
+      include_synology_metadata: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Include @eaDir and .SynologyWorkingDirectory metadata trees. Default false."),
+    },
+    buildCommand: (input) => {
+      const root = (input.root_path as string | undefined)?.trim() || "";
+      const pattern = (input.name_pattern as string).trim();
+      const entryType = (input.entry_type as string | undefined) ?? "file";
+      const caseSensitive = (input.case_sensitive as boolean | undefined) ?? true;
+      const maxDepth = clamp(Math.floor((input.max_depth as number) ?? 0), 0, 30);
+      const maxResults = clamp(Math.floor((input.max_results as number) ?? 500), 1, 2000);
+      const includeSynologyMetadata = (input.include_synology_metadata as boolean | undefined) ?? false;
+
+      if (!pattern) throw new Error("live_file_search: name_pattern is required.");
+      if (pattern.includes("/")) {
+        throw new Error("live_file_search: name_pattern must be a basename glob only. Put directories in root_path.");
+      }
+      if (pattern.length > 200) throw new Error("live_file_search: name_pattern must be 200 characters or less.");
+      if (root && !root.startsWith("/")) throw new Error("live_file_search: root_path must be absolute, e.g. /volume1/Share.");
+      if (root === "/") throw new Error("live_file_search: refusing to search /. Use /volume1, /volume2, or a share path.");
+      if (root && !/^\/(volume[0-9]+|home)(\/|$)/.test(root)) {
+        throw new Error("live_file_search: root_path must be under /volumeN or /home.");
+      }
+
+      const typeClause =
+        entryType === "file" ? "-type f" :
+        entryType === "directory" ? "-type d" :
+        "";
+      const nameOp = caseSensitive ? "-name" : "-iname";
+      const depthClause = maxDepth > 0 ? `-maxdepth ${maxDepth}` : "";
+      const pruneClause = includeSynologyMetadata
+        ? ""
+        : "\\( -path '*/@eaDir/*' -o -path '*/.SynologyWorkingDirectory/*' \\) -prune -o";
+
+      return [
+        `ROOT=${quote(root)}`,
+        `PATTERN=${quote(pattern)}`,
+        `MAX_RESULTS=${maxResults}`,
+        "echo '=== LIVE FILE SEARCH (no index, strict basename glob) ==='",
+        `printf 'root_path=%s\\nname_pattern=%s\\nentry_type=%s\\ncase_sensitive=%s\\nmax_depth=%s\\nmax_results=%s\\n' "$ROOT" "$PATTERN" ${quote(entryType)} ${quote(String(caseSensitive))} ${quote(String(maxDepth))} "$MAX_RESULTS"`,
+        "echo ''",
+        "echo '=== MATCHES ==='",
+        "found=0",
+        "search_one_root() {",
+        "  search_root=\"$1\"",
+        "  [ -d \"$search_root\" ] || { printf 'SKIP missing root: %s\\n' \"$search_root\"; return 0; }",
+        `  find "$search_root" ${depthClause} ${pruneClause} ${typeClause} ${nameOp} "$PATTERN" -print 2>/dev/null | head -n "$MAX_RESULTS" | while IFS= read -r f; do`,
+        "    found=1",
+        "    stat -c '%F\t%s bytes\t%y\t%U:%G\t%n' \"$f\" 2>/dev/null || printf '%s\\n' \"$f\"",
+        "  done",
+        "}",
+        "if [ -n \"$ROOT\" ]; then",
+        "  search_one_root \"$ROOT\"",
+        "else",
+        "  for v in /volume[0-9]*; do",
+        "    [ -d \"$v\" ] || continue",
+        "    search_one_root \"$v\"",
+        "  done",
+        "fi",
+        "echo ''",
+        "echo '=== NOTE ==='",
+        "echo 'Results are live find(1) basename-glob matches. No Synology index, Windows index, fuzzy expansion, or content scan was used.'",
+        "echo 'If you hit max_results, rerun with a narrower root_path/name_pattern or a higher max_results.'",
       ].join("\n");
     },
   },
@@ -3612,6 +3721,7 @@ export const TOOL_GROUPS: Record<string, string> = {
   inspect_path_acl: "files",
   inspect_effective_permissions: "files",
   find_recent_path_changes: "files",
+  live_file_search: "files",
   find_path_versions_and_snapshots: "files",
   search_file_access_audit: "files",
   search_file_access_log: "files",
@@ -3704,6 +3814,13 @@ export const KEYWORD_TO_GROUPS: Record<string, string[]> = {
   iowait: ["performance"],
   log: ["logs", "drive_sync"],
   logs: ["logs", "drive_sync"],
+  search: ["files", "logs", "drive_sync"],
+  universal: ["files"],
+  excel: ["files"],
+  xls: ["files"],
+  xlsx: ["files"],
+  spreadsheet: ["files"],
+  pattern: ["files"],
   package: ["packages", "write_restart"],
   packages: ["packages", "write_restart"],
   restart: ["write_restart"],
