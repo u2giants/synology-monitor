@@ -1,10 +1,23 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
-import { AlertCircle, CaseSensitive, Database, FileSearch, Folder, Loader2, Search } from "lucide-react";
+import { FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  CaseSensitive,
+  ChevronDown,
+  ChevronRight,
+  Database,
+  FileSearch,
+  Folder,
+  FolderOpen,
+  HardDrive,
+  Loader2,
+  Search,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Target = "both" | "edgesynology1" | "edgesynology2";
+type BrowseTarget = "edgesynology1" | "edgesynology2";
 type EntryType = "file" | "directory" | "any";
 
 interface SearchMatch {
@@ -30,8 +43,26 @@ interface SearchResponse {
   error?: string;
 }
 
+interface TreeEntry {
+  name: string;
+  path: string;
+  modified_at: string;
+  owner_group: string;
+}
+
+interface TreeResponse {
+  ok: boolean;
+  entries: TreeEntry[];
+  error?: string;
+}
+
 const targetOptions: Array<{ value: Target; label: string }> = [
   { value: "both", label: "Both NASes" },
+  { value: "edgesynology1", label: "Edge Synology 1" },
+  { value: "edgesynology2", label: "Edge Synology 2" },
+];
+
+const browseTargetOptions: Array<{ value: BrowseTarget; label: string }> = [
   { value: "edgesynology1", label: "Edge Synology 1" },
   { value: "edgesynology2", label: "Edge Synology 2" },
 ];
@@ -59,8 +90,13 @@ function basename(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
 }
 
+function treeKey(target: BrowseTarget, path: string): string {
+  return `${target}:${path || "/"}`;
+}
+
 export default function FileSearchPage() {
   const [target, setTarget] = useState<Target>("both");
+  const [browseTarget, setBrowseTarget] = useState<BrowseTarget>("edgesynology1");
   const [rootPath, setRootPath] = useState("");
   const [namePattern, setNamePattern] = useState("*.xls*");
   const [entryType, setEntryType] = useState<EntryType>("file");
@@ -69,13 +105,51 @@ export default function FileSearchPage() {
   const [maxResults, setMaxResults] = useState(500);
   const [includeMetadata, setIncludeMetadata] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [treeLoading, setTreeLoading] = useState("");
   const [error, setError] = useState("");
+  const [treeError, setTreeError] = useState("");
   const [response, setResponse] = useState<SearchResponse | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({ "/": true });
+  const [childrenByPath, setChildrenByPath] = useState<Record<string, TreeEntry[]>>({});
 
   const totalMatches = useMemo(
     () => response?.results.reduce((sum, result) => sum + result.matches.length, 0) ?? 0,
     [response],
   );
+
+  const selectedLabel = rootPath || "All mounted volumes";
+
+  const loadTree = useCallback(
+    async (path: string) => {
+      const normalized = path || "/";
+      const key = treeKey(browseTarget, normalized);
+
+      setTreeLoading(key);
+      setTreeError("");
+      try {
+        const params = new URLSearchParams({ target: browseTarget, path: normalized });
+        const res = await fetch(`/api/files/tree?${params.toString()}`);
+        const data = (await res.json().catch(() => ({}))) as TreeResponse;
+        if (!res.ok) throw new Error(data.error ?? `Failed to load folder tree (${res.status})`);
+        setChildrenByPath((current) => ({ ...current, [key]: data.entries ?? [] }));
+      } catch (err) {
+        setTreeError(err instanceof Error ? err.message : "Failed to load folder tree.");
+      } finally {
+        setTreeLoading("");
+      }
+    },
+    [browseTarget],
+  );
+
+  useEffect(() => {
+    if (target !== "both") setBrowseTarget(target);
+  }, [target]);
+
+  useEffect(() => {
+    setExpanded({ "/": true });
+    setChildrenByPath({});
+    void loadTree("/");
+  }, [browseTarget, loadTree]);
 
   async function runSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -108,6 +182,63 @@ export default function FileSearchPage() {
     }
   }
 
+  function toggleFolder(path: string) {
+    const normalized = path || "/";
+    const key = treeKey(browseTarget, normalized);
+    const nextExpanded = !expanded[normalized];
+    setExpanded((current) => ({ ...current, [normalized]: nextExpanded }));
+    if (nextExpanded && !childrenByPath[key]) void loadTree(normalized);
+  }
+
+  function renderTreeNodes(entries: TreeEntry[], level: number): ReactNode[] {
+    return entries.map((entry) => {
+      const isExpanded = expanded[entry.path] === true;
+      const key = treeKey(browseTarget, entry.path);
+      const children = childrenByPath[key] ?? [];
+      const isSelected = rootPath === entry.path;
+      const isLoading = treeLoading === key;
+
+      return (
+        <div key={entry.path}>
+          <div
+            className={cn(
+              "grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+              isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted",
+            )}
+            style={{ paddingLeft: `${8 + level * 18}px` }}
+          >
+            <button
+              type="button"
+              onClick={() => toggleFolder(entry.path)}
+              className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-background"
+              aria-label={isExpanded ? "Collapse folder" : "Expand folder"}
+            >
+              {isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : isExpanded ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setRootPath(entry.path)}
+              className="flex min-w-0 items-center gap-2 text-left"
+            >
+              {isExpanded ? <FolderOpen className="h-4 w-4 shrink-0" /> : <Folder className="h-4 w-4 shrink-0" />}
+              <span className="truncate">{entry.name}</span>
+            </button>
+            <span className="hidden text-xs text-muted-foreground md:inline">{entry.owner_group}</span>
+          </div>
+          {isExpanded && children.length > 0 && renderTreeNodes(children, level + 1)}
+        </div>
+      );
+    });
+  }
+
+  const rootChildren = childrenByPath[treeKey(browseTarget, "/")] ?? [];
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -121,11 +252,11 @@ export default function FileSearchPage() {
       </div>
 
       <form onSubmit={runSearch} className="rounded-lg border border-border bg-card p-4">
-        <div className="grid gap-3 lg:grid-cols-[190px_minmax(220px,1fr)_minmax(220px,1fr)_140px]">
+        <div className="grid gap-3 lg:grid-cols-[190px_minmax(220px,1fr)_140px]">
           <label className="text-sm">
             <span className="mb-1 flex items-center gap-2 text-muted-foreground">
               <Database className="h-4 w-4" />
-              Target
+              Search Target
             </span>
             <select
               value={target}
@@ -138,19 +269,6 @@ export default function FileSearchPage() {
                 </option>
               ))}
             </select>
-          </label>
-
-          <label className="text-sm">
-            <span className="mb-1 flex items-center gap-2 text-muted-foreground">
-              <Folder className="h-4 w-4" />
-              Root Path
-            </span>
-            <input
-              value={rootPath}
-              onChange={(event) => setRootPath(event.target.value)}
-              placeholder="/volume1/files"
-              className="h-10 w-full rounded-md border border-border bg-background px-3 font-mono text-sm"
-            />
           </label>
 
           <label className="text-sm">
@@ -182,6 +300,86 @@ export default function FileSearchPage() {
             </select>
           </label>
         </div>
+
+        <div className="mt-4 rounded-md border border-border bg-background">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-3 py-3">
+            <div className="min-w-0">
+              <div className="text-xs text-muted-foreground">Search Root</div>
+              <div className="truncate font-mono text-sm">{selectedLabel}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              {target === "both" && (
+                <select
+                  value={browseTarget}
+                  onChange={(event) => setBrowseTarget(event.target.value as BrowseTarget)}
+                  className="h-9 rounded-md border border-border bg-card px-3 text-sm"
+                >
+                  {browseTargetOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                type="button"
+                onClick={() => setRootPath("")}
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm hover:bg-muted"
+              >
+                <HardDrive className="h-4 w-4" />
+                All Volumes
+              </button>
+            </div>
+          </div>
+
+          <div className="max-h-[360px] overflow-auto p-2">
+            <div
+              className={cn(
+                "grid grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-sm",
+                rootPath === "" ? "bg-primary/10 text-primary" : "hover:bg-muted",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => toggleFolder("/")}
+                className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-background"
+                aria-label={expanded["/"] ? "Collapse mounted volumes" : "Expand mounted volumes"}
+              >
+                {treeLoading === treeKey(browseTarget, "/") ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : expanded["/"] ? (
+                  <ChevronDown className="h-4 w-4" />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </button>
+              <button type="button" onClick={() => setRootPath("")} className="flex min-w-0 items-center gap-2 text-left">
+                <HardDrive className="h-4 w-4 shrink-0" />
+                <span className="truncate">All mounted volumes</span>
+              </button>
+              <span className="hidden text-xs text-muted-foreground md:inline">{browseTarget}</span>
+            </div>
+
+            {expanded["/"] && (
+              <div className="mt-1">
+                {rootChildren.length > 0 ? (
+                  renderTreeNodes(rootChildren, 1)
+                ) : treeLoading ? (
+                  <div className="px-3 py-3 text-sm text-muted-foreground">Loading folders...</div>
+                ) : (
+                  <div className="px-3 py-3 text-sm text-muted-foreground">No mounted folders found.</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {treeError && (
+          <div className="mt-3 flex items-start gap-3 rounded-md border border-critical/30 bg-critical/5 p-3 text-sm text-critical">
+            <AlertCircle className="mt-0.5 h-4 w-4" />
+            <span>{treeError}</span>
+          </div>
+        )}
 
         <div className="mt-4 grid gap-3 md:grid-cols-[170px_170px_1fr_auto]">
           <label className="text-sm">
