@@ -104,6 +104,7 @@ func main() {
 	mux.HandleFunc("POST /jobs/archive-move/{id}/cancel", requireAuth(v, requireApproval(v, jobs.OpMoveCancel, 2, nasName, handleMoveCancel(mgr))))
 	mux.HandleFunc("POST /jobs/archive-move/{id}/rollback", requireAuth(v, requireApproval(v, jobs.OpMoveRollback, 3, nasName, handleMoveRollback(mgr))))
 	mux.HandleFunc("POST /jobs/archive-move/{id}/verify", requireAuth(v, handleMoveVerify(mgr)))
+	mux.HandleFunc("POST /jobs/archive-move/{id}/repair-dir-mtimes", requireAuth(v, requireApproval(v, jobs.OpMoveRepair, 3, nasName, handleMoveRepairDirMtimes(mgr))))
 
 	addr := ":" + port
 	log.Printf("Listening on %s", addr)
@@ -303,7 +304,7 @@ func buildCanonical(w http.ResponseWriter, op jobs.Op, nasName, id string, body 
 		}
 		req.Normalize()
 		return jobs.MoveCanonicalOpString(op, nasName, "", &req), true
-	case jobs.OpMoveExecute, jobs.OpMoveCancel, jobs.OpMoveRollback:
+	case jobs.OpMoveExecute, jobs.OpMoveCancel, jobs.OpMoveRollback, jobs.OpMoveRepair:
 		return jobs.MoveCanonicalOpString(op, nasName, id, nil), true
 	default:
 		writeJSON(w, http.StatusBadRequest, errResp{"unknown operation"})
@@ -693,5 +694,19 @@ func handleMoveVerify(mgr *jobs.Manager) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"job": job, "verify_report": string(report)})
+	}
+}
+
+func handleMoveRepairDirMtimes(mgr *jobs.Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !jobsReady(w, mgr) {
+			return
+		}
+		job, report, err := mgr.RepairDirMtimesFromSnapshot(r.PathValue("id"))
+		if err != nil {
+			moveStateErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"job": job, "repair_report": string(report)})
 	}
 }

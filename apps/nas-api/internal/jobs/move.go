@@ -2,13 +2,17 @@ package jobs
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +24,10 @@ var (
 	ErrMoveState     = errors.New("move job is not in a state that allows this operation")
 	movePersistEvery = 200 // files between manifest/job persists
 )
+
+const suspiciousHashMaxBytes int64 = 512 * 1024 * 1024
+
+var xmpDateRe = regexp.MustCompile(`<xmp:(CreateDate|ModifyDate|MetadataDate)>([^<]+)</xmp:[^>]+>`)
 
 // ── Read operations ────────────────────────────────────────────────────────────
 
@@ -125,33 +133,31 @@ func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot str
 			if err != nil {
 				return nil
 			}
-			if !job.ForceArchive && info.ModTime().Year() >= cutoff {
-				return nil // newer than the cutoff boundary
-			}
 			id, err := identityOf(path)
 			if err != nil {
 				return nil
 			}
+			if !job.ForceArchive && info.ModTime().Year() >= cutoff {
+				if detail := suspiciousFreshDateEvidence(path, shareRoot, rel, id, cutoff); detail != "" {
+					dest := filepath.Join(shareRoot, ArchiveDirName, rel)
+					entry := manifestEntryForFile(rel, path, dest, id, ReasonSuspiciousFreshDate)
+					entry.Status = MStatusSkipped
+					entry.Detail = detail
+					job.Skipped++
+					count++
+					if count%movePersistEvery == 0 {
+						_ = m.store.SaveMoveJob(job)
+					}
+					return appendManifest(manifestPath, entry)
+				}
+				return nil // newer than the cutoff boundary
+			}
 			if protectSet && protectedByNewest(id.mtime, id.ctime, id.btime, id.hasBt, protect) {
 				return nil // held back by the protect date
 			}
+			captureDirMtimes(job, shareRoot, filepath.Dir(path))
 			dest := filepath.Join(shareRoot, ArchiveDirName, rel)
-			entry := ManifestEntry{
-				Kind:          KindFile,
-				RelPath:       rel,
-				SourceAbs:     path,
-				DestAbs:       dest,
-				Size:          id.size,
-				Inode:         id.inode,
-				DevID:         id.dev,
-				Mtime:         id.mtime.UTC().Format(time.RFC3339Nano),
-				Ctime:         id.ctime.UTC().Format(time.RFC3339Nano),
-				PlannedReason: plannedReason,
-				Status:        MStatusPlanned,
-			}
-			if id.hasBt {
-				entry.Btime = id.btime.UTC().Format(time.RFC3339Nano)
-			}
+			entry := manifestEntryForFile(rel, path, dest, id, plannedReason)
 			if sid, serr := m.fs.subvolID(path); serr == nil {
 				entry.SubvolID = sid
 			}
@@ -580,6 +586,7 @@ func (m *Manager) verifyAndFinalize(job *MoveJob, shareRoot, archiveRoot string,
 	_ = writeManifest(manifestPath, entries)
 
 	// Apply the Archive/ sync exclusion (best-effort + operator guidance).
+	restoreArchiveDirMtimes(job, archiveRoot)
 	job.SyncExclusionNote = applySyncExclusion(shareRoot)
 }
 
@@ -740,6 +747,98 @@ func (m *Manager) ReVerifyMove(id string) (*MoveJob, []byte, error) {
 	return job, report, nil
 }
 
+// RepairDirMtimesFromSnapshot restores Archive directory mtimes for an already-
+// executed move by mapping Archive/<rel-dir> back to the read-only snapshot's
+// <rel-dir>. It only changes directory access/modified timestamps, never file
+// contents or locations.
+//
+// Cross-NAS timestamp evidence must stay outside this native job path. When
+// edgesynology2 is used as an authority for edgesynology1 repairs, callers should
+// write only to edgesynology1 unless an operator explicitly requests both sides;
+// writing both NASes can create competing ShareSync metadata events and inode
+// churn on edgesynology1.
+func (m *Manager) RepairDirMtimesFromSnapshot(id string) (*MoveJob, []byte, error) {
+	job, err := m.store.LoadMoveJob(id)
+	if err != nil {
+		return nil, nil, ErrNotFound
+	}
+	if job.SnapshotPath == "" {
+		return nil, nil, fmt.Errorf("%w: job has no snapshot_path", ErrMoveState)
+	}
+	switch job.Status {
+	case MoveComplete, MoveFailed, MoveCancelled, MoveInterrupted:
+	default:
+		return nil, nil, fmt.Errorf("%w: cannot repair directory mtimes from status %s", ErrMoveState, job.Status)
+	}
+	entries, err := readManifest(job.ManifestPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	archiveRoot := filepath.Join(m.moveRootFor(job.Share), ArchiveDirName)
+	type repairRow struct {
+		rel    string
+		dest   string
+		source string
+		mtime  time.Time
+		status string
+		detail string
+	}
+	rowsByRel := map[string]repairRow{}
+	for i := range entries {
+		e := entries[i]
+		if e.Kind != KindFile || (e.Status != MStatusMoved && e.Status != MStatusVerified) {
+			continue
+		}
+		for _, rel := range relDirAncestors(e.RelPath) {
+			if _, seen := rowsByRel[rel]; seen {
+				continue
+			}
+			src := filepath.Join(job.SnapshotPath, filepath.FromSlash(rel))
+			dst := filepath.Join(archiveRoot, filepath.FromSlash(rel))
+			info, serr := os.Stat(src)
+			if serr != nil {
+				rowsByRel[rel] = repairRow{rel: rel, dest: dst, source: src, status: "skipped", detail: "snapshot dir missing: " + serr.Error()}
+				continue
+			}
+			rowsByRel[rel] = repairRow{rel: rel, dest: dst, source: src, mtime: info.ModTime(), status: "planned"}
+		}
+	}
+	rels := make([]string, 0, len(rowsByRel))
+	for rel := range rowsByRel {
+		rels = append(rels, rel)
+	}
+	sort.Slice(rels, func(i, j int) bool { return len(rels[i]) > len(rels[j]) })
+	for _, rel := range rels {
+		row := rowsByRel[rel]
+		if row.status != "planned" {
+			rowsByRel[rel] = row
+			continue
+		}
+		if err := os.Chtimes(row.dest, row.mtime, row.mtime); err != nil {
+			row.status = "failed"
+			row.detail = err.Error()
+		} else {
+			row.status = "restored"
+		}
+		rowsByRel[rel] = row
+	}
+
+	var report strings.Builder
+	report.WriteString("nas,share,rel_dir,archive_dir,snapshot_dir,snapshot_mtime,status,detail\n")
+	for _, rel := range rels {
+		row := rowsByRel[rel]
+		mtime := ""
+		if !row.mtime.IsZero() {
+			mtime = row.mtime.UTC().Format(time.RFC3339Nano)
+		}
+		fmt.Fprintf(&report, "%s,%s,%q,%q,%q,%s,%s,%q\n",
+			job.NAS, job.Share, rel, row.dest, row.source, mtime, row.status, row.detail)
+	}
+	out := []byte(report.String())
+	_ = m.store.WriteMoveResult(id, "dir-mtime-repair", out)
+	return job, out, nil
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 func (m *Manager) buildMoveJob(req MovePlanRequest) *MoveJob {
@@ -758,6 +857,7 @@ func (m *Manager) buildMoveJob(req MovePlanRequest) *MoveJob {
 		Overlay:                    req.overlayEffective(),
 		PruneEmptiedSourceDirs:     req.pruneEffective(),
 		RemovePreexistingEmptyDirs: req.removePreexisting(),
+		DirMtimes:                  map[string]string{},
 	}
 }
 
@@ -846,6 +946,26 @@ func (m *Manager) writeMoveReports(job *MoveJob, entries []ManifestEntry) {
 	_ = m.store.WriteMoveResult(job.ID, "verify-report", []byte(vr.String()))
 }
 
+func manifestEntryForFile(rel, src, dest string, id fileIdentity, reason string) ManifestEntry {
+	entry := ManifestEntry{
+		Kind:          KindFile,
+		RelPath:       rel,
+		SourceAbs:     src,
+		DestAbs:       dest,
+		Size:          id.size,
+		Inode:         id.inode,
+		DevID:         id.dev,
+		Mtime:         id.mtime.UTC().Format(time.RFC3339Nano),
+		Ctime:         id.ctime.UTC().Format(time.RFC3339Nano),
+		PlannedReason: reason,
+		Status:        MStatusPlanned,
+	}
+	if id.hasBt {
+		entry.Btime = id.btime.UTC().Format(time.RFC3339Nano)
+	}
+	return entry
+}
+
 // identityMatches compares a post-rename file to its planned manifest identity.
 // inode, size, mtime, and btime must match; ctime is expected to change.
 func identityMatches(planned *ManifestEntry, got fileIdentity) (bool, string) {
@@ -882,6 +1002,233 @@ func ensureDestParent(srcFile, destFile string) error {
 		_ = os.Chown(destDir, int(uid), int(gid))
 	}
 	return nil
+}
+
+// captureDirMtimes records the original mtimes for the source file's containing
+// directory and each ancestor inside the share. File renames update directory
+// mtimes, so these plan-time values are the only reliable source for restoring
+// Archive folder dates after execution.
+func captureDirMtimes(job *MoveJob, shareRoot, dir string) {
+	if job.DirMtimes == nil {
+		job.DirMtimes = map[string]string{}
+	}
+	for pathWithin(dir, shareRoot) {
+		rel, err := filepath.Rel(shareRoot, dir)
+		if err != nil {
+			return
+		}
+		key := filepath.ToSlash(rel)
+		if key == "." {
+			key = ""
+		}
+		if _, seen := job.DirMtimes[key]; !seen {
+			if info, err := os.Lstat(dir); err == nil {
+				job.DirMtimes[key] = info.ModTime().UTC().Format(time.RFC3339Nano)
+			}
+		}
+		if dir == shareRoot {
+			return
+		}
+		next := filepath.Dir(dir)
+		if next == dir {
+			return
+		}
+		dir = next
+	}
+}
+
+// restoreArchiveDirMtimes applies captured source-directory mtimes to their
+// corresponding Archive directories. Deepest-first is intentional: setting a
+// child directory mtime must not be followed by file moves or child creation.
+func restoreArchiveDirMtimes(job *MoveJob, archiveRoot string) {
+	if len(job.DirMtimes) == 0 {
+		return
+	}
+	dirs := make([]string, 0, len(job.DirMtimes))
+	for rel := range job.DirMtimes {
+		dirs = append(dirs, rel)
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, rel := range dirs {
+		raw := job.DirMtimes[rel]
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			continue
+		}
+		dest := archiveRoot
+		if rel != "" {
+			dest = filepath.Join(archiveRoot, filepath.FromSlash(rel))
+		}
+		_ = os.Chtimes(dest, t, t)
+	}
+}
+
+func relDirAncestors(relFile string) []string {
+	rel := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relFile)))
+	if rel == "." || rel == "" {
+		return nil
+	}
+	var out []string
+	for rel != "." && rel != "" {
+		out = append(out, rel)
+		parent := filepath.ToSlash(filepath.Dir(filepath.FromSlash(rel)))
+		if parent == rel {
+			break
+		}
+		rel = parent
+	}
+	return out
+}
+
+func suspiciousFreshDateEvidence(path, shareRoot, rel string, id fileIdentity, cutoff int) string {
+	var evidence []string
+	if xmp := oldEmbeddedXMPDate(path, cutoff); xmp != "" {
+		evidence = append(evidence, xmp)
+	}
+	if snap := oldSnapshotEvidence(path, shareRoot, rel, id, cutoff); snap != "" {
+		evidence = append(evidence, snap)
+	}
+	return strings.Join(evidence, "; ")
+}
+
+func oldEmbeddedXMPDate(path string, cutoff int) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != ".psd" && ext != ".psb" && ext != ".ai" && ext != ".pdf" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 3*1024*1024))
+	if err != nil {
+		return ""
+	}
+	matches := xmpDateRe.FindAllSubmatch(data, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	dates := map[string]string{}
+	oldest := ""
+	newest := time.Time{}
+	for _, m := range matches {
+		key := string(m[1])
+		value := strings.TrimSpace(string(m[2]))
+		if _, seen := dates[key]; !seen {
+			dates[key] = value
+		}
+		t, ok := parseXMPTime(value)
+		if !ok {
+			continue
+		}
+		if oldest == "" || t.Before(mustParseXMP(oldest)) {
+			oldest = value
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	if newest.IsZero() || newest.Year() >= cutoff {
+		return ""
+	}
+	parts := make([]string, 0, len(dates))
+	for _, key := range []string{"ModifyDate", "MetadataDate", "CreateDate"} {
+		if v := dates[key]; v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+	return "embedded_xmp_old(" + strings.Join(parts, ",") + ")"
+}
+
+func parseXMPTime(s string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339, "2006:01:02 15:04:05", "2006-01-02T15:04:05-07:00"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func mustParseXMP(s string) time.Time {
+	t, _ := parseXMPTime(s)
+	return t
+}
+
+func oldSnapshotEvidence(path, shareRoot, rel string, id fileIdentity, cutoff int) string {
+	for _, root := range snapshotRootsForShare(shareRoot) {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		checked := 0
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			checked++
+			if checked > 300 {
+				break
+			}
+			snapPath := filepath.Join(root, entry.Name(), filepath.FromSlash(rel))
+			sid, err := identityOf(snapPath)
+			if err != nil || sid.size != id.size || sid.mtime.Year() >= cutoff {
+				continue
+			}
+			if sid.inode == id.inode && sid.dev == id.dev {
+				return fmt.Sprintf("snapshot_old_same_inode(snapshot=%s,mtime=%s)", entry.Name(), sid.mtime.UTC().Format(time.RFC3339Nano))
+			}
+			if id.size <= suspiciousHashMaxBytes && sameSHA256(path, snapPath) {
+				return fmt.Sprintf("snapshot_old_hash_match(snapshot=%s,mtime=%s)", entry.Name(), sid.mtime.UTC().Format(time.RFC3339Nano))
+			}
+		}
+	}
+	return ""
+}
+
+func snapshotRootsForShare(shareRoot string) []string {
+	roots := []string{filepath.Join(shareRoot, "#snapshot")}
+	share := filepath.Base(shareRoot)
+	if share != "" && share != "." && share != string(os.PathSeparator) {
+		roots = append(roots, filepath.Join("/volume1", share, "#snapshot"))
+	}
+	seen := map[string]bool{}
+	out := roots[:0]
+	for _, root := range roots {
+		if !seen[root] {
+			seen[root] = true
+			out = append(out, root)
+		}
+	}
+	return out
+}
+
+func sameSHA256(a, b string) bool {
+	ha, err := sha256File(a)
+	if err != nil {
+		return false
+	}
+	hb, err := sha256File(b)
+	if err != nil {
+		return false
+	}
+	return ha == hb
+}
+
+func sha256File(path string) ([32]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return [32]byte{}, err
+	}
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out, nil
 }
 
 // walkFiles invokes fn for every regular file under root, skipping excluded dirs

@@ -95,6 +95,8 @@ func (s *Store) MoveResultPath(id, kind string) (string, bool) {
 		return filepath.Join(s.MoveJobDir(id), "preflight.json"), true
 	case "verify-report":
 		return filepath.Join(s.MoveJobDir(id), "verify-report.csv"), true
+	case "dir-mtime-repair":
+		return filepath.Join(s.MoveJobDir(id), "dir-mtime-repair.csv"), true
 	default:
 		return "", false
 	}

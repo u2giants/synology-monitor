@@ -228,6 +228,9 @@ export default function ArchiveMovePage() {
       } else if (path === "verify") {
         setJob((data.job as MoveJob) ?? job);
         setNotice({ kind: "info", text: `Re-verify: ${data.verify_report ?? ""}` });
+      } else if (path === "repair-dir-mtimes") {
+        setJob((data.job as MoveJob) ?? job);
+        setNotice({ kind: "info", text: `Folder dates repaired from snapshot. ${data.repair_report ?? ""}` });
       }
       refresh();
     } catch (err) {
@@ -421,6 +424,11 @@ export default function ArchiveMovePage() {
             <a href={`/api/archive/move/${job!.id}/result?nas=${nas}&kind=verify-report&download=1`} className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted">
               <Download className="h-4 w-4" /> verify report
             </a>
+            {completed && (
+              <button onClick={() => action(job!.id, "repair-dir-mtimes", "Repair folder dates")} disabled={busy} className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm disabled:opacity-40">
+                <ShieldCheck className="h-4 w-4" /> Repair folder dates
+              </button>
+            )}
           </div>
           {completed && (
             <div className="space-y-2">

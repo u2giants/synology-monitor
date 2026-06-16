@@ -73,6 +73,12 @@ type MoveJob struct {
 
 	ManifestPath string `json:"manifest_path"`
 
+	// Source directory mtimes captured during planning, keyed by share-relative
+	// directory path. After files are moved into Archive, these are applied to
+	// the corresponding Archive directories so folder modified dates do not all
+	// become the move date.
+	DirMtimes map[string]string `json:"dir_mtimes,omitempty"`
+
 	// Counters (updated through the stages).
 	Planned    int64 `json:"planned"`
 	Moved      int64 `json:"moved"`
@@ -144,6 +150,7 @@ const (
 	OpMoveExecute  Op = "move.execute"
 	OpMoveCancel   Op = "move.cancel"
 	OpMoveRollback Op = "move.rollback"
+	OpMoveRepair   Op = "move.repair_dir_mtimes"
 )
 
 // MoveCanonicalOpString builds the deterministic string a move approval token
@@ -163,7 +170,7 @@ func MoveCanonicalOpString(op Op, nasName, jobID string, req *MovePlanRequest) s
 			canonYears(req.CutoffYears), req.ProtectNewerThan,
 			canonBool(req.ForceArchive), canonBool(req.pruneEffective()), canonBool(req.removePreexisting()),
 		)
-	case OpMoveExecute, OpMoveCancel, OpMoveRollback:
+	case OpMoveExecute, OpMoveCancel, OpMoveRollback, OpMoveRepair:
 		return fmt.Sprintf("%s|nas=%s|job_id=%s", op, nasName, jobID)
 	default:
 		return string(op)
@@ -194,3 +201,4 @@ func MoveStatusTerminal(s MoveStatus) bool {
 func reasonForCutoff(year int) string { return "older_than_" + strconv.Itoa(year) }
 
 const ReasonForceArchive = "force_archive"
+const ReasonSuspiciousFreshDate = "suspicious_fresh_date"

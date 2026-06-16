@@ -434,7 +434,7 @@ export async function verifyMove(config: NasApiConfig, id: string): Promise<Resp
   return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/verify`);
 }
 
-function moveTokenFor(config: NasApiConfig, op: "execute" | "cancel" | "rollback", id: string): string {
+function moveTokenFor(config: NasApiConfig, op: "execute" | "cancel" | "rollback" | "repair_dir_mtimes", id: string): string {
   const canonical = `move.${op}|nas=${config.name}|job_id=${id}`;
   const tier: 2 | 3 = op === "cancel" ? 2 : 3;
   return buildNasApiApprovalToken(config, canonical, tier);
@@ -450,6 +450,10 @@ export async function cancelMove(config: NasApiConfig, id: string): Promise<Resp
 
 export async function rollbackMove(config: NasApiConfig, id: string): Promise<Response> {
   return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/rollback`, { approvalToken: moveTokenFor(config, "rollback", id) });
+}
+
+export async function repairMoveDirMtimes(config: NasApiConfig, id: string): Promise<Response> {
+  return inventoryFetch(config, "POST", `/jobs/archive-move/${encodeURIComponent(id)}/repair-dir-mtimes`, { approvalToken: moveTokenFor(config, "repair_dir_mtimes", id) });
 }
 
 export async function collectNasDiagnostics(lookbackHours = 2) {

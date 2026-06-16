@@ -181,7 +181,40 @@ Not relevant to active development; do not read or index (already in
 `*.tsbuildinfo`, `pnpm-lock.yaml`, `package-lock.json`, `**/*.bak`, `evals/` (unless working on
 agent evaluation), and the vestigial scratch file `ersahazan2Desktopsynology-monitor`.
 
-## 11. Intentional quirks and non-obvious decisions
+## 11. Direct NAS maintenance safety
+
+Direct SSH work on the production NASes is exceptional. It is acceptable only for
+operator-requested diagnostics/maintenance, not as a deployment path. Avoid large
+NAS crawls, timestamp repairs, archive moves, or other metadata-heavy operations
+while SMB users are active.
+
+Both NASes currently have Entware `ionice` installed at `/opt/bin/ionice`
+(`edgesynology1` and `edgesynology2`, installed 2026-06-15). For any read-only
+audit, snapshot comparison, timestamp repair, or other file-tree crawl on a NAS,
+prefer the lowest-impact wrapper:
+
+```sh
+/opt/bin/ionice -c3 nice -n 19 <command>
+```
+
+Example:
+
+```sh
+/opt/bin/ionice -c3 nice -n 19 python3 /tmp/edges2_timestamp_audit.py
+```
+
+`ionice -c3` means idle I/O class. It reduces interference with normal NAS work,
+but it does not make millions of metadata reads free. Schedule full audits and
+repairs for quiet windows and verify Synology Drive/ShareSync has settled before
+running archive moves.
+
+Cross-NAS timestamp repair rule: use `edgesynology2` as evidence/authority only
+unless the operator explicitly says otherwise. Apply timestamp repairs to
+`edgesynology1` only, then let Synology Drive/ShareSync propagate or settle. Do
+not "repair both sides" by default; touching both NASes can create competing
+metadata events and may cause inode churn on `edgesynology1`.
+
+## 12. Intentional quirks and non-obvious decisions
 
 ### NAS MCP is fully stateless (FastMCP HTTP Stream)
 Looks like: a bug — the server refuses to rely on persistent MCP session state.
@@ -381,7 +414,7 @@ will miss Snapshot Replication state and scheduler/package artifacts on one NAS.
 Read-only tools should check `/host/packages` and `/btrfs/volumeN`, and may use
 DSM WebAPI read methods as a fallback when SQLite/config paths are not mounted.
 
-## 12. Credentials and environment
+## 13. Credentials and environment
 
 Full reference: [docs/configuration.md](docs/configuration.md). No secret values
 live in the repo (example files use placeholders; real values live in Coolify and
@@ -409,7 +442,7 @@ each NAS `.env`).
 
 NAS API URLs are Tailscale IPs; Tailscale must be connected for live NAS calls.
 
-## 13. Deployment
+## 14. Deployment
 
 Push to `main` → `.github/workflows/{agent,nas-api,nas-mcp,web}-image.yml` build
 and push to GHCR (each has a `paths:` filter; tags `latest`, `sha-<sha>`, `main`):
@@ -435,7 +468,7 @@ Rollback: redeploy a previous tag in Coolify, or pin `AGENT_IMAGE_TAG` to a SHA
 on the NAS, or `git revert` + push. **SSH is not a routine deploy path** — public
 SSH on the VPS is disabled by design; manual container rebuilds create drift.
 
-## 14. Critical incidents
+## 15. Critical incidents
 
 ### 2026-05-29 — Log/alert ingestion silently frozen + pg_partman broken
 
@@ -605,7 +638,7 @@ Added multi-path freshest-by-mtime discovery plus a staleness banner.
 Rule added to prevent recurrence:
 Backup diagnostics must enumerate candidate paths and surface freshness metadata.
 
-## 15. Pending work
+## 16. Pending work
 
 | Status | Item | Owner / next action |
 |---|---|---|
@@ -628,7 +661,7 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | done | Compact `inspect_snapshot_replication` so the generated NAS API command stays under the 4096-byte `maxCommandLength`; split deeper work into separate read-only tools | Commit `d65047a` |
 | done | De-curate AI-stage model dropdowns: live per-provider model lists (`provider-models.ts` → `/api/ai-models`), `MODEL_CATALOG` demoted to metadata override + fallback, runtime resolves `catalog → derived → live-map`, "inferred model" UI warning | Commits `4f8ee0e`, `4ea43f3` (2026-06-02) |
 
-## 16. Non-negotiable rules
+## 17. Non-negotiable rules
 
 - Commit only to `main`; never create feature branches.
 - Do not build Docker images manually on the VPS/NAS. Container restarts or

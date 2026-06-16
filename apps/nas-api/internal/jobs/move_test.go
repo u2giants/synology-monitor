@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +33,13 @@ func newMoveManager(t *testing.T, shareRoot string) *Manager {
 func setMtimeYear(t *testing.T, path string, year int) {
 	t.Helper()
 	tm := time.Date(year, 6, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, tm, tm); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setMtime(t *testing.T, path string, tm time.Time) {
+	t.Helper()
 	if err := os.Chtimes(path, tm, tm); err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +200,77 @@ func TestMoveExecuteVerifyAndPrune(t *testing.T) {
 	}
 }
 
+func TestMoveRestoresArchiveDirectoryMtimes(t *testing.T) {
+	root := shareDir(t)
+	projectDir := filepath.Join(root, "Projects")
+	clientDir := filepath.Join(projectDir, "ClientA")
+	touch(t, filepath.Join(clientDir, "old.txt"))
+	setMtimeYear(t, filepath.Join(clientDir, "old.txt"), 2020)
+	projectMtime := time.Date(2017, 3, 4, 5, 6, 7, 0, time.UTC)
+	clientMtime := time.Date(2018, 4, 5, 6, 7, 8, 0, time.UTC)
+	setMtime(t, clientDir, clientMtime)
+	setMtime(t, projectDir, projectMtime)
+
+	m := newMoveManager(t, root)
+	plan := planAndWait(t, m, moveReq("files"))
+	done := executeAndWait(t, m, plan.ID)
+	if done.Status != MoveComplete {
+		t.Fatalf("status = %s (err=%s), want complete", done.Status, done.Error)
+	}
+
+	gotProject, err := os.Stat(filepath.Join(root, "Archive", "Projects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotClient, err := os.Stat(filepath.Join(root, "Archive", "Projects", "ClientA"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotProject.ModTime().Equal(projectMtime) {
+		t.Fatalf("Archive/Projects mtime = %s, want %s", gotProject.ModTime(), projectMtime)
+	}
+	if !gotClient.ModTime().Equal(clientMtime) {
+		t.Fatalf("Archive/Projects/ClientA mtime = %s, want %s", gotClient.ModTime(), clientMtime)
+	}
+}
+
+func TestRepairDirMtimesFromSnapshot(t *testing.T) {
+	root := shareDir(t)
+	clientDir := filepath.Join(root, "Projects", "ClientA")
+	touch(t, filepath.Join(clientDir, "old.txt"))
+	setMtimeYear(t, filepath.Join(clientDir, "old.txt"), 2020)
+	snapshotMtime := time.Date(2016, 2, 3, 4, 5, 6, 0, time.UTC)
+
+	m := newMoveManager(t, root)
+	plan := planAndWait(t, m, moveReq("files"))
+	done := executeAndWait(t, m, plan.ID)
+	if done.Status != MoveComplete {
+		t.Fatalf("status = %s (err=%s), want complete", done.Status, done.Error)
+	}
+
+	snapshotDir := filepath.Join(done.SnapshotPath, "Projects", "ClientA")
+	mkdir(t, snapshotDir)
+	setMtime(t, snapshotDir, snapshotMtime)
+	archiveDir := filepath.Join(root, "Archive", "Projects", "ClientA")
+	dirtyMtime := time.Date(2026, 6, 15, 1, 2, 3, 0, time.UTC)
+	setMtime(t, archiveDir, dirtyMtime)
+
+	_, report, err := m.RepairDirMtimesFromSnapshot(plan.ID)
+	if err != nil {
+		t.Fatalf("RepairDirMtimesFromSnapshot: %v", err)
+	}
+	if !strings.Contains(string(report), "restored") {
+		t.Fatalf("repair report missing restored row:\n%s", report)
+	}
+	got, err := os.Stat(archiveDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ModTime().Equal(snapshotMtime) {
+		t.Fatalf("archive dir mtime = %s, want %s", got.ModTime(), snapshotMtime)
+	}
+}
+
 func TestMoveWholeRunRollback(t *testing.T) {
 	root := buildShareTree(t)
 	m := newMoveManager(t, root)
@@ -334,6 +413,73 @@ func TestMovePlanForceArchiveIgnoresFileModifiedYear(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].PlannedReason != ReasonForceArchive {
 		t.Fatalf("manifest = %#v, want one force_archive row", entries)
+	}
+}
+
+func TestMovePlanFlagsSuspiciousFreshDateFromEmbeddedXMP(t *testing.T) {
+	root := shareDir(t)
+	f := filepath.Join(root, "Art", "false-fresh.psd")
+	xmp := `8BPS
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF>
+    <rdf:Description>
+      <xmp:CreateDate>2020-04-08T12:48:39-04:00</xmp:CreateDate>
+      <xmp:MetadataDate>2020-04-08T15:29:05-04:00</xmp:MetadataDate>
+      <xmp:ModifyDate>2020-04-08T15:29:05-04:00</xmp:ModifyDate>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>`
+	if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte(xmp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtimeYear(t, f, 2026)
+	m := newMoveManager(t, root)
+
+	plan := planAndWait(t, m, moveReq("files"))
+	entries, err := readManifest(plan.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Planned != 0 || plan.Skipped != 1 {
+		t.Fatalf("planned=%d skipped=%d, want 0/1", plan.Planned, plan.Skipped)
+	}
+	if len(entries) != 1 || entries[0].PlannedReason != ReasonSuspiciousFreshDate || !strings.Contains(entries[0].Detail, "embedded_xmp_old") {
+		t.Fatalf("manifest = %#v, want suspicious embedded XMP row", entries)
+	}
+}
+
+func TestMovePlanFlagsSuspiciousFreshDateFromSnapshot(t *testing.T) {
+	root := shareDir(t)
+	rel := filepath.Join("Art", "false-fresh.bin")
+	f := filepath.Join(root, rel)
+	touch(t, f)
+	if err := os.WriteFile(f, []byte("same-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtimeYear(t, f, 2026)
+	snap := filepath.Join(root, "#snapshot", "GMT-05-2026.01.30-20.00.01", rel)
+	if err := os.MkdirAll(filepath.Dir(snap), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snap, []byte("same-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setMtimeYear(t, snap, 2020)
+	m := newMoveManager(t, root)
+
+	plan := planAndWait(t, m, moveReq("files"))
+	entries, err := readManifest(plan.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Planned != 0 || plan.Skipped != 1 {
+		t.Fatalf("planned=%d skipped=%d, want 0/1", plan.Planned, plan.Skipped)
+	}
+	if len(entries) != 1 || entries[0].PlannedReason != ReasonSuspiciousFreshDate || !strings.Contains(entries[0].Detail, "snapshot_old_hash_match") {
+		t.Fatalf("manifest = %#v, want suspicious snapshot hash row", entries)
 	}
 }
 

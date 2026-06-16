@@ -67,6 +67,26 @@ AI must not:
 - create a second deployment system
 - recommend storing production runtime configuration only in ad hoc server files
 
+## NAS maintenance safety
+
+Direct SSH maintenance on the production NASes is exceptional and must be
+operator-requested. For any file-tree audit, snapshot comparison, timestamp
+repair, or other metadata-heavy NAS command, use the installed Entware `ionice`
+wrapper and schedule full runs for quiet windows:
+
+```sh
+/opt/bin/ionice -c3 nice -n 19 <command>
+```
+
+Both `edgesynology1` and `edgesynology2` have `/opt/bin/ionice` installed as of
+2026-06-15. The wrapper lowers impact, but does not make large metadata crawls
+free; avoid running them while SMB users are active.
+
+For timestamp repair work, treat `edgesynology2` as an evidence source by
+default. Apply repairs only to `edgesynology1` unless the operator explicitly
+requests writes on both NASes. Writing the same metadata to both sides can cause
+ShareSync to replace file entries and churn inodes.
+
 ## Secrets rule
 
 - GitHub Secrets are for CI/CD and build-time secrets
