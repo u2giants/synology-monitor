@@ -72,25 +72,27 @@ Notes / gotchas:
 
 ### Folder modified dates
 
-As of NAS API build `8ccd8330ae11032a1e2a9e4a771942b890c4602f` (deployed
-2026-06-16), archive moves capture source directory mtimes during planning and
-restore the matching `Archive/<rel-dir>` directory mtimes after execute/verify.
+As of NAS API builds after `8ccd8330ae11032a1e2a9e4a771942b890c4602f`
+(deployed 2026-06-16), archive moves capture source directory mtimes during
+planning and restore folder dates after execute/verify.
 
 What changed:
-Future moves should no longer leave every Archive folder stamped with the move
-date.
+Future moves should no longer leave moved Archive folders, or source folders
+that remain after a partial move, stamped with the move date.
 
 Why:
-Renaming files into `Archive/` updates destination directory mtimes. The move job
-now records the original source directory mtimes and applies them deepest-first
-after the file operations are complete.
+Renaming files into `Archive/` updates destination directory mtimes. Removing
+entries from a source directory also updates that source directory's mtime when
+newer files remain behind. The move job records original source directory mtimes
+and applies them deepest-first after the file operations are complete.
 
 Future sessions should:
-Confirm `GET /health` on the NAS API reports build `8ccd8330...` or newer before
-assuming this behavior is live. For completed moves created before this fix, use
-the **Repair folder dates** action if the job's snapshot is still available, or
-repair from an explicit evidence CSV with `edgesynology2` as authority and
-`edgesynology1` as the write target.
+Confirm `GET /health` on the NAS API reports the current build before assuming
+this behavior is live. For completed moves created before the source-directory
+fix, restore surviving source folder dates from an explicit evidence CSV. For
+Archive folder dates, use the **Repair folder dates** action if the job's
+snapshot is still available, or repair from an explicit evidence CSV with
+`edgesynology2` as authority and `edgesynology1` as the write target.
 
 ---
 

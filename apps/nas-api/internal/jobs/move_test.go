@@ -234,6 +234,45 @@ func TestMoveRestoresArchiveDirectoryMtimes(t *testing.T) {
 	}
 }
 
+func TestMoveRestoresRemainingSourceDirectoryMtimes(t *testing.T) {
+	root := shareDir(t)
+	projectDir := filepath.Join(root, "Projects")
+	clientDir := filepath.Join(projectDir, "ClientA")
+	touch(t, filepath.Join(clientDir, "old.txt"))
+	touch(t, filepath.Join(clientDir, "new.txt"))
+	setMtimeYear(t, filepath.Join(clientDir, "old.txt"), 2020)
+	setMtimeYear(t, filepath.Join(clientDir, "new.txt"), 2024)
+	projectMtime := time.Date(2017, 3, 4, 5, 6, 7, 0, time.UTC)
+	clientMtime := time.Date(2018, 4, 5, 6, 7, 8, 0, time.UTC)
+	setMtime(t, clientDir, clientMtime)
+	setMtime(t, projectDir, projectMtime)
+
+	m := newMoveManager(t, root)
+	plan := planAndWait(t, m, moveReq("files"))
+	done := executeAndWait(t, m, plan.ID)
+	if done.Status != MoveComplete {
+		t.Fatalf("status = %s (err=%s), want complete", done.Status, done.Error)
+	}
+
+	if _, err := os.Stat(filepath.Join(clientDir, "new.txt")); err != nil {
+		t.Fatal(err)
+	}
+	gotProject, err := os.Stat(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotClient, err := os.Stat(clientDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotProject.ModTime().Equal(projectMtime) {
+		t.Fatalf("Projects mtime = %s, want %s", gotProject.ModTime(), projectMtime)
+	}
+	if !gotClient.ModTime().Equal(clientMtime) {
+		t.Fatalf("Projects/ClientA mtime = %s, want %s", gotClient.ModTime(), clientMtime)
+	}
+}
+
 func TestRepairDirMtimesFromSnapshot(t *testing.T) {
 	root := shareDir(t)
 	clientDir := filepath.Join(root, "Projects", "ClientA")

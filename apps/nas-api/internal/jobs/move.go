@@ -585,8 +585,10 @@ func (m *Manager) verifyAndFinalize(job *MoveJob, shareRoot, archiveRoot string,
 	}
 	_ = writeManifest(manifestPath, entries)
 
-	// Apply the Archive/ sync exclusion (best-effort + operator guidance).
+	restoreSourceDirMtimes(job, shareRoot)
 	restoreArchiveDirMtimes(job, archiveRoot)
+
+	// Apply the Archive/ sync exclusion (best-effort + operator guidance).
 	job.SyncExclusionNote = applySyncExclusion(shareRoot)
 }
 
@@ -1007,7 +1009,7 @@ func ensureDestParent(srcFile, destFile string) error {
 // captureDirMtimes records the original mtimes for the source file's containing
 // directory and each ancestor inside the share. File renames update directory
 // mtimes, so these plan-time values are the only reliable source for restoring
-// Archive folder dates after execution.
+// folder dates after execution.
 func captureDirMtimes(job *MoveJob, shareRoot, dir string) {
 	if job.DirMtimes == nil {
 		job.DirMtimes = map[string]string{}
@@ -1034,6 +1036,32 @@ func captureDirMtimes(job *MoveJob, shareRoot, dir string) {
 			return
 		}
 		dir = next
+	}
+}
+
+// restoreSourceDirMtimes puts back mtimes on source directories that survived a
+// partial archive. Moving or pruning entries refreshes those directories even
+// when some newer files remain in place.
+func restoreSourceDirMtimes(job *MoveJob, shareRoot string) {
+	if len(job.DirMtimes) == 0 {
+		return
+	}
+	dirs := make([]string, 0, len(job.DirMtimes))
+	for rel := range job.DirMtimes {
+		if rel == "" {
+			continue
+		}
+		dirs = append(dirs, rel)
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, rel := range dirs {
+		raw := job.DirMtimes[rel]
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			continue
+		}
+		src := filepath.Join(shareRoot, filepath.FromSlash(rel))
+		_ = os.Chtimes(src, t, t)
 	}
 }
 
