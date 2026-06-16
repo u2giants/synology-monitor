@@ -1,6 +1,6 @@
 # Archive Move — First Live Validation Runbook
 
-Last updated: 2026-06-07
+Last updated: 2026-06-16
 
 This is the **operator runbook for the first real-data test** of the archive-move
 feature (Phase 2). The move logic is fully unit-tested on temporary files, but the
@@ -65,6 +65,32 @@ Notes / gotchas:
   sub-folders despite file dates**. This requires a selected sub-folder scope and
   ignores the cutoff year only; the optional "never archive files newer than"
   safety date still applies.
+- Prefer repairing known-bad file mtimes before using Force Archive. In June 2026,
+  `edgesynology2` snapshots were used as evidence, while repairs were applied to
+  `edgesynology1` only. Do not repair both NASes by default; simultaneous metadata
+  edits can cause ShareSync to replace entries and churn inodes.
+
+### Folder modified dates
+
+As of NAS API build `8ccd8330ae11032a1e2a9e4a771942b890c4602f` (deployed
+2026-06-16), archive moves capture source directory mtimes during planning and
+restore the matching `Archive/<rel-dir>` directory mtimes after execute/verify.
+
+What changed:
+Future moves should no longer leave every Archive folder stamped with the move
+date.
+
+Why:
+Renaming files into `Archive/` updates destination directory mtimes. The move job
+now records the original source directory mtimes and applies them deepest-first
+after the file operations are complete.
+
+Future sessions should:
+Confirm `GET /health` on the NAS API reports build `8ccd8330...` or newer before
+assuming this behavior is live. For completed moves created before this fix, use
+the **Repair folder dates** action if the job's snapshot is still available, or
+repair from an explicit evidence CSV with `edgesynology2` as authority and
+`edgesynology1` as the write target.
 
 ---
 
@@ -109,6 +135,8 @@ rules and re-plan. Nothing has been touched.
 
 ✅ **Checkpoint — verify on the NAS** (SMB/File Station):
 - Files now live under `<share>/Archive/<same folder structure>`.
+- `Archive/` folders should show their original source-folder modified dates, not
+  the move date.
 - Original paths are gone.
 - Folders emptied by the move are removed; folders that still hold other files are
   left intact.
