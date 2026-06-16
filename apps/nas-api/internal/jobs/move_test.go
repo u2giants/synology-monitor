@@ -158,6 +158,39 @@ func TestMovePlanManifestAndCollision(t *testing.T) {
 	}
 }
 
+func TestMovePlanIncludesNestedArchiveNamedSourceDir(t *testing.T) {
+	root := shareDir(t)
+	nested := filepath.Join(root, "Projects", "ClientA", "Archive")
+	touch(t, filepath.Join(nested, "old.ai"))
+	setMtimeYear(t, filepath.Join(nested, "old.ai"), 2020)
+	touch(t, filepath.Join(root, "Archive", "already-moved.ai"))
+	setMtimeYear(t, filepath.Join(root, "Archive", "already-moved.ai"), 2020)
+
+	m := newMoveManager(t, root)
+	job := planAndWait(t, m, moveReq("files"))
+	if job.Status != MovePlanned {
+		t.Fatalf("status = %s, want planned", job.Status)
+	}
+	if job.Planned != 1 {
+		t.Fatalf("planned=%d, want 1", job.Planned)
+	}
+	entries, err := readManifest(job.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("manifest entries=%d, want 1", len(entries))
+	}
+	wantRel := filepath.Join("Projects", "ClientA", "Archive", "old.ai")
+	if entries[0].RelPath != wantRel || entries[0].Status != MStatusPlanned {
+		t.Fatalf("entry = %#v, want planned %s", entries[0], wantRel)
+	}
+	wantDest := filepath.Join(root, "Archive", "Projects", "ClientA", "Archive", "old.ai")
+	if entries[0].DestAbs != wantDest {
+		t.Fatalf("dest = %s, want %s", entries[0].DestAbs, wantDest)
+	}
+}
+
 func TestMoveExecuteVerifyAndPrune(t *testing.T) {
 	root := buildShareTree(t)
 	m := newMoveManager(t, root)

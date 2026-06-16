@@ -94,6 +94,22 @@ Archive folder dates, use the **Repair folder dates** action if the job's
 snapshot is still available, or repair from an explicit evidence CSV with
 `edgesynology2` as authority and `edgesynology1` as the write target.
 
+### Folders named `Archive`
+
+What changed:
+Archive planning skips only the share-level `/<share>/Archive` tree. Nested
+project folders named `Archive`, such as `Projects/Client/Archive`, are ordinary
+source folders and remain eligible for cutoff-based archive moves.
+
+Why:
+Some older product/project folders legitimately contain a folder named
+`Archive`. Skipping every directory with that name caused old files inside those
+folders to be invisible to the planner.
+
+Future sessions should:
+Treat skipped files inside nested `Archive` folders as a planner bug unless
+`GET /health` shows the NAS API is still on a build before this fix.
+
 ---
 
 ## 2. Plan (dry-run — nothing is moved)

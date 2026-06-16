@@ -120,8 +120,9 @@ func (m *Manager) planMoveFiles(ctx context.Context, job *MoveJob, shareRoot str
 		plannedReason = ReasonForceArchive
 	}
 	count := 0
+	archiveRoot := filepath.Join(shareRoot, ArchiveDirName)
 	for _, root := range scopeRoots {
-		werr := walkFiles(ctx, root, func(path string, d fs.DirEntry) error {
+		werr := walkFiles(ctx, root, archiveRoot, func(path string, d fs.DirEntry) error {
 			rel, err := filepath.Rel(shareRoot, path)
 			if err != nil {
 				return nil
@@ -1259,9 +1260,10 @@ func sha256File(path string) ([32]byte, error) {
 	return out, nil
 }
 
-// walkFiles invokes fn for every regular file under root, skipping excluded dirs
-// (including Archive) and symlinks. Cancellation is checked between entries.
-func walkFiles(ctx context.Context, root string, fn func(path string, d fs.DirEntry) error) error {
+// walkFiles invokes fn for every regular file under root, skipping system dirs,
+// the share-level Archive tree, and symlinks. Nested project folders named
+// "Archive" are ordinary source folders and must remain eligible.
+func walkFiles(ctx context.Context, root, archiveRoot string, fn func(path string, d fs.DirEntry) error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if d != nil && d.IsDir() {
@@ -1273,7 +1275,10 @@ func walkFiles(ctx context.Context, root string, fn func(path string, d fs.DirEn
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if path != root && ExcludedDirNames[d.Name()] {
+			if archiveRoot != "" && pathWithin(path, archiveRoot) {
+				return filepath.SkipDir
+			}
+			if path != root && d.Name() != ArchiveDirName && ExcludedDirNames[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
