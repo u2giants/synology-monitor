@@ -129,6 +129,51 @@ func TestWriteAndUnsafeCommandsStillBlockedOrElevated(t *testing.T) {
 	}
 }
 
+func TestInotifyAndSeafileIgnoreClassification(t *testing.T) {
+	// set_inotify_watches: live sysctl + persist to /etc/sysctl.conf must stay
+	// tier 2 (service op) — it must NOT be elevated to tier 3 by the new
+	// redirect-into-volume filePattern, because /host/etc is not a data volume.
+	tier2 := []string{
+		"sysctl -w fs.inotify.max_user_watches=1048576 2>&1",
+		"sysctl -w fs.inotify.max_user_instances=1024 2>&1",
+		`echo "fs.inotify.max_user_watches=1048576" >> /host/etc/sysctl.conf`,
+		`sed -i '/fs\.inotify\.max_user_watches/d;/fs\.inotify\.max_user_instances/d' /host/etc/sysctl.conf 2>&1`,
+	}
+	for _, cmd := range tier2 {
+		if got := ClassifyTier(cmd); got != TierService {
+			t.Fatalf("ClassifyTier(%q) = %d, want TierService(2)", cmd, got)
+		}
+		if err := Validate(cmd, TierService); err != nil {
+			t.Fatalf("Validate(TierService) rejected %q: %v", cmd, err)
+		}
+		if err := Validate(cmd, TierRead); err == nil {
+			t.Fatalf("Validate(TierRead) unexpectedly allowed write %q", cmd)
+		}
+	}
+
+	// write_seafile_ignore: a content write into the /btrfs/volumeN writable mount
+	// (quoted path with a space) must classify as tier 3 and validate at tier 3.
+	tier3 := []string{
+		`printf '%s\n' '@eaDir' '#recycle' > '/btrfs/volume1/mac/Decor/Generic Decor/seafile-ignore.txt'`,
+		`printf '%s\n' '@eaDir' >> '/volume1/styleguides/seafile-ignore.txt'`,
+	}
+	for _, cmd := range tier3 {
+		if got := ClassifyTier(cmd); got != TierFile {
+			t.Fatalf("ClassifyTier(%q) = %d, want TierFile(3)", cmd, got)
+		}
+		if err := Validate(cmd, TierFile); err != nil {
+			t.Fatalf("Validate(TierFile) rejected %q: %v", cmd, err)
+		}
+		// A content write to a data volume must never be allowed at tier 1 or 2.
+		if err := Validate(cmd, TierRead); err == nil {
+			t.Fatalf("Validate(TierRead) unexpectedly allowed volume write %q", cmd)
+		}
+		if err := Validate(cmd, TierService); err == nil {
+			t.Fatalf("Validate(TierService) unexpectedly allowed volume write %q", cmd)
+		}
+	}
+}
+
 func TestBlockExplanationIsActionableAndStateless(t *testing.T) {
 	// Non-blocked commands get no explanation.
 	if got := BlockExplanation("grep -i error /host/log/synolog/synostorage.log"); got != "" {

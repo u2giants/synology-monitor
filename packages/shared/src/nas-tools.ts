@@ -3096,6 +3096,82 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    name: "set_inotify_watches",
+    description:
+      "WRITE — Raises the Linux inotify limits (fs.inotify.max_user_watches and fs.inotify.max_user_instances) live via sysctl AND persists them to /etc/sysctl.conf so they survive a reboot. The default max_user_watches=8192 is far too low for a containerized seaf-cli worktree with hundreds of thousands of directories: the shared root inotify pool is exhausted, the worktree monitor goes blind, and seaf-cli silently reports 'synchronized' while the worktree has diverged. Pass filter as 'WATCHES' or 'WATCHES INSTANCES' (e.g. '1048576' or '1048576 1024'). Defaults: watches=1048576, instances=1024. Each watch pins ~1 KiB of non-swappable kernel RAM (so 1048576 ≈ up to 1 GiB worst case, only allocated per watch actually held). After running this, restart the seaf-cli daemon so it re-registers watches, then confirm 0 'No space left on device' errors in its log.",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      const raw = (input.filter as string | undefined)?.trim() || "1048576 1024";
+      const parts = raw.split(/\s+/);
+      const watches = Number(parts[0]);
+      const instances = parts[1] !== undefined ? Number(parts[1]) : 1024;
+      if (!Number.isInteger(watches) || watches < 8192 || watches > 4194304) {
+        throw new Error(
+          "set_inotify_watches: watches must be an integer 8192–4194304. The 4M cap bounds pinned kernel memory (~1 KiB/watch).",
+        );
+      }
+      if (!Number.isInteger(instances) || instances < 128 || instances > 8192) {
+        throw new Error("set_inotify_watches: instances must be an integer 128–8192.");
+      }
+      return [
+        `echo '=== CURRENT (live kernel) ==='`,
+        `sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances 2>&1`,
+        `echo ''`,
+        `echo '=== SETTING live: watches=${watches} instances=${instances} ==='`,
+        `sysctl -w fs.inotify.max_user_watches=${watches} 2>&1`,
+        `sysctl -w fs.inotify.max_user_instances=${instances} 2>&1`,
+        `echo ''`,
+        `echo '=== PERSISTING to /etc/sysctl.conf ==='`,
+        `grep -n 'fs.inotify.max_user_watches\\|fs.inotify.max_user_instances' /host/etc/sysctl.conf 2>/dev/null || echo '(no prior inotify entries)'`,
+        `sed -i '/fs\\.inotify\\.max_user_watches/d;/fs\\.inotify\\.max_user_instances/d' /host/etc/sysctl.conf 2>&1`,
+        `echo "fs.inotify.max_user_watches=${watches}" >> /host/etc/sysctl.conf`,
+        `echo "fs.inotify.max_user_instances=${instances}" >> /host/etc/sysctl.conf`,
+        `echo '=== VERIFY (sysctl.conf) ==='`,
+        `grep 'fs.inotify' /host/etc/sysctl.conf`,
+        `echo '=== VERIFY (live kernel) ==='`,
+        `sysctl fs.inotify.max_user_watches fs.inotify.max_user_instances 2>&1`,
+        `echo 'NOTE: restart the seaf-cli daemon so it re-registers watches across the whole worktree.'`,
+      ].join("\n");
+    },
+  },
+
+  {
+    name: "write_seafile_ignore",
+    description:
+      "WRITE (tier 3) — Writes a standard seafile-ignore.txt (the exact filename seaf-cli reads; .seafile-ignore is NOT recognized) into a seaf-cli worktree/library root so the client stops syncing Synology junk: @eaDir thumbnails, #recycle, #snapshot, @tmp, .DS_Store, Thumbs.db, *.tmp. Pass the worktree root in filter, either as a /volume1/... path (auto-mapped to the nas-api /btrfs writable mount) or directly as /btrfs/volume1/.... Known edgesynology1 seaf-cli roots: '/volume1/mac/Art Library', '/volume1/mac/Decor/Character Licensed', '/volume1/mac/Decor/Generic Decor', '/volume1/styleguides'. NOTE: this only stops FUTURE upload of matching files — it does not delete copies already on the Seafile server, and it does not by itself fix inotify watch exhaustion (use set_inotify_watches for that).",
+    write: true,
+    params: { target, filter },
+    buildCommand: (input) => {
+      let p = (input.filter as string | undefined)?.trim();
+      if (!p) throw new Error("write_seafile_ignore: filter must be the absolute worktree root path.");
+      if (p.includes("..")) throw new Error("write_seafile_ignore: path must not contain '..'.");
+      // Map to the nas-api writable Btrfs mount; per-share /volumeN mounts are read-only.
+      if (p.startsWith("/btrfs/volume")) {
+        // already the writable mount
+      } else if (/^\/volume\d+\//.test(p)) {
+        p = "/btrfs" + p;
+      } else {
+        throw new Error("write_seafile_ignore: path must be under /volume1/ (or /btrfs/volume1/).");
+      }
+      const dir = p.replace(/\/+$/, "");
+      const q = quote(dir);
+      const file = quote(dir + "/seafile-ignore.txt");
+      const patterns = ["@eaDir", "#recycle", "#snapshot", "@tmp", ".DS_Store", "Thumbs.db", "*.tmp"];
+      const printfArgs = patterns.map((x) => quote(x)).join(" ");
+      return [
+        `echo '=== TARGET WORKTREE ROOT ==='`,
+        `[ -d ${q} ] || { echo "ERROR: not a directory: ${dir}"; exit 1; }`,
+        `ls -la ${file} 2>/dev/null && echo '(existing ignore file will be OVERWRITTEN)' || echo '(no existing ignore file)'`,
+        `echo '=== WRITING seafile-ignore.txt ==='`,
+        `printf '%s\\n' ${printfArgs} > ${file}`,
+        `echo '=== VERIFY ==='`,
+        `cat ${file}`,
+      ].join("\n");
+    },
+  },
+
+  {
     name: "clear_package_lockfiles",
     description: "WRITE — Removes stale lock files for a named DSM package that are preventing it from starting or updating. Pass the package name in filter (e.g. 'SynologyDrive'). Lists all lock files found before removing them.",
     write: true,
@@ -3783,6 +3859,8 @@ export const TOOL_GROUPS: Record<string, string> = {
   set_io_scheduler: "write_storage",
   set_vm_dirty_ratios: "write_storage",
   set_ionice: "write_storage",
+  set_inotify_watches: "write_storage",
+  write_seafile_ignore: "write_files",
 
   // write_files
   rename_file_to_old: "write_files",

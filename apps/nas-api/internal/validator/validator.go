@@ -182,6 +182,13 @@ var writePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bsysctl\s+-w\b`),
 	regexp.MustCompile(`(?i)\bionice\b.*-c`), // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
 	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),  // dd writing anywhere (device/proc covered by hard-block above)
+	// Output redirection into a data volume — raw `/volumeN` or the nas-api
+	// `/btrfs/volumeN` writable mount, with or without quotes around the path.
+	// stripQuotedStrings hides a quoted redirect target from hasRealOutputRedirect,
+	// so a content write like `printf ... > '/btrfs/volume1/<lib>/seafile-ignore.txt'`
+	// would otherwise read as non-write. This (matched against the raw command)
+	// guarantees it is seen as a write; the twin filePatterns entry makes it tier 3.
+	regexp.MustCompile(`(>>?)\s*['"]?/(btrfs/)?volume\d+/`),
 	regexp.MustCompile(`(?i)\b(systemctl|synopkg|synoservicectl)\s+(start|stop|restart|enable|disable)\b`),
 	regexp.MustCompile(`(?i)SYNO\.Docker\.Container.*method=(stop|start)`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)docker\s+(start|stop|restart|rm)\b`),
@@ -205,6 +212,10 @@ var filePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(>>?)\s*/volume`), // redirect into volume
 	regexp.MustCompile(`(>>?)\s*/home/\w`),
 	regexp.MustCompile(`(>>?)\s*/root/`),
+	// Redirect content into a data volume via the nas-api /btrfs/volumeN writable
+	// mount (the per-share /volumeN mounts are read-only), including quoted paths
+	// with spaces. The plain `/volume` entries above do not match `/btrfs/volume`.
+	regexp.MustCompile(`(>>?)\s*['"]?/(btrfs/)?volume\d+/`),
 	regexp.MustCompile(`(?i)\brename\b.*\.old\b`),
 }
 

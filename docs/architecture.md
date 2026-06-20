@@ -214,6 +214,12 @@ the logic is unit-tested on temp trees.
 `ClassifyTier(command)` returns the minimum required tier. `Validate(command, tier)`
 enforces that the requested tier is sufficient and that no hard-block patterns match.
 
+Note: a `(>>?)\s*['"]?/(btrfs/)?volume\d+/` pattern is present in **both**
+`writePatterns` and `filePatterns` so content redirects into the writable
+`/btrfs/volumeN` mount (including quoted, spaced paths) classify as tier 3. It was
+added for the `write_seafile_ignore` capability; `set_inotify_watches` (sysctl +
+`/host/etc/sysctl.conf`) stays tier 2. Background: `docs/seafile-sync-inotify.md`.
+
 ### DSM Container Manager lifecycle
 
 What changed:
