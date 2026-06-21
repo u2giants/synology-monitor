@@ -165,6 +165,14 @@ var upsertTables = map[string]bool{
 	"package_status": true,
 }
 
+// upsertConflictTargets maps a table to the unique-constraint columns that
+// merge-duplicates must target. PostgREST infers the primary key by default,
+// which never matches our natural-key conflict (the agent omits the serial id),
+// so without this the "upsert" raises a 409 on every existing row.
+var upsertConflictTargets = map[string]string{
+	"package_status": "nas_id,package_id",
+}
+
 // SaveCheckpoint persists a named cursor value (e.g. a log file byte offset)
 // so it survives agent restarts.
 func (s *Sender) SaveCheckpoint(name, value string) error {
@@ -347,8 +355,16 @@ func (s *Sender) postRows(table string, payloads []json.RawMessage) (int, string
 	if err != nil {
 		return 0, "", fmt.Errorf("normalizing batch for %s: %w", table, err)
 	}
+	// Postgres text/jsonb cannot store NUL. Strip any JSON NUL escapes so rows
+	// carrying NUL bytes (e.g. from /proc cmdlines or log content) aren't
+	// rejected wholesale with SQLSTATE 22P05. The byte slice is the 6 ASCII
+	// chars backslash-u-0-0-0-0 that json.Marshal emits for a NUL byte.
+	body = bytes.ReplaceAll(body, []byte{0x5c, 0x75, 0x30, 0x30, 0x30, 0x30}, nil)
 
 	url := fmt.Sprintf("%s/rest/v1/%s", s.supabaseURL, table)
+	if cols := upsertConflictTargets[table]; cols != "" {
+		url += "?on_conflict=" + cols
+	}
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return 0, "", err
