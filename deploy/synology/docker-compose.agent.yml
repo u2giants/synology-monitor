@@ -143,6 +143,9 @@ services:
 
   # Watchtower polls GHCR every 5 minutes and restarts updated containers
   # automatically when new images are available.
+  # Scope is by explicit container name (the command: line) — NOT label mode,
+  # so a container only auto-updates if its name is listed there. seaf-cli was
+  # missing from this list before 2026-06-21, so its image fixes never deployed.
   watchtower:
     image: containrrr/watchtower
     container_name: synology-monitor-watchtower
@@ -154,7 +157,7 @@ services:
       WATCHTOWER_POLL_INTERVAL: "300"
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_NO_STARTUP_MESSAGE: "true"
-    command: synology-monitor-agent synology-monitor-nas-api
+    command: synology-monitor-agent synology-monitor-nas-api seaf-cli
 
 volumes:
   agent-data:

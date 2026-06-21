@@ -65,7 +65,7 @@ The compose stack runs three containers:
 |---|---|---|
 | `synology-monitor-agent` | `ghcr.io/u2giants/synology-monitor-agent:latest` | Passive metrics collector, pushes to Supabase |
 | `synology-monitor-nas-api` | `ghcr.io/u2giants/synology-monitor-nas-api:latest` | Three-tier HTTP shell execution API for issue agent |
-| `synology-monitor-watchtower` | `containrrr/watchtower` | Auto-updates both containers from GHCR |
+| `synology-monitor-watchtower` | `containrrr/watchtower` | Auto-updates the named containers from GHCR (`agent`, `nas-api`, and `seaf-cli`). Scope is by explicit name in the `command:` — add a container's name there for it to auto-update. |
 
 The NAS API listens on port 7734 (configurable via `NAS_API_PORT` in `.env`).
 
