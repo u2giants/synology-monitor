@@ -3139,7 +3139,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   {
     name: "write_seafile_ignore",
     description:
-      "WRITE (tier 3) — Writes a standard seafile-ignore.txt (the exact filename seaf-cli reads; .seafile-ignore is NOT recognized) into a seaf-cli worktree/library root so the client stops syncing Synology junk: @eaDir thumbnails, #recycle, #snapshot, @tmp, .DS_Store, Thumbs.db, *.tmp. Pass the worktree root in filter, either as a /volume1/... path (auto-mapped to the nas-api /btrfs writable mount) or directly as /btrfs/volume1/.... Known edgesynology1 seaf-cli roots: '/volume1/mac/Art Library', '/volume1/mac/Decor/Character Licensed', '/volume1/mac/Decor/Generic Decor', '/volume1/styleguides'. NOTE: this only stops FUTURE upload of matching files — it does not delete copies already on the Seafile server, and it does not by itself fix inotify watch exhaustion (use set_inotify_watches for that).",
+      "WRITE (tier 3) — Writes a standard seafile-ignore.txt (the exact filename seaf-cli reads; .seafile-ignore is NOT recognized) into a seaf-cli worktree/library root so the client stops syncing Synology junk: @eaDir thumbnails, #recycle, #snapshot, @tmp, .DS_Store, Thumbs.db, *@SynoEAStream / *@SynoResource (Synology extended-attribute/resource-fork sidecars), *.tmp. Pass the worktree root in filter, either as a /volume1/... path (auto-mapped to the nas-api /btrfs writable mount) or directly as /btrfs/volume1/.... Known edgesynology1 seaf-cli roots: '/volume1/mac/Art Library', '/volume1/mac/Decor/Character Licensed', '/volume1/mac/Decor/Generic Decor', '/volume1/styleguides'. NOTE: this only stops FUTURE upload of matching files — it does not delete copies already on the Seafile server, and it does not by itself fix inotify watch exhaustion (use set_inotify_watches for that).",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
@@ -3157,7 +3157,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       const dir = p.replace(/\/+$/, "");
       const q = quote(dir);
       const file = quote(dir + "/seafile-ignore.txt");
-      const patterns = ["@eaDir", "#recycle", "#snapshot", "@tmp", ".DS_Store", "Thumbs.db", "*.tmp"];
+      const patterns = ["@eaDir", "#recycle", "#snapshot", "@tmp", ".DS_Store", "Thumbs.db", "*@SynoEAStream", "*@SynoResource", "*.tmp"];
       const printfArgs = patterns.map((x) => quote(x)).join(" ");
       return [
         `echo '=== TARGET WORKTREE ROOT ==='`,
