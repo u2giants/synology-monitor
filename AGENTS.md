@@ -222,6 +222,21 @@ and find its bind sources in `/proc/<pid>/mountinfo`. This is how the seaf-cli
 inotify incident was diagnosed (see `docs/seafile-sync-inotify.md`). Scope `find`
 per subtree — a whole-volume crawl times out the 25 s `run_command` budget.
 
+`run_command` validator false-blocks (diagnostic gotchas, hit repeatedly 2026-06-21):
+- The validator detects docker invocations by word boundary, so a literal path
+  containing `/volume1/docker/...` is misread as a docker command and the whole call
+  is rejected ("docker read command is not in the allowlist") **whenever a real
+  `docker` command is also in the same call**. Run filesystem commands (`ls`/`cat`)
+  and `docker` commands in **separate** `run_command` calls.
+- A multi-line `--format` template — or one containing the string `com.docker.compose`
+  — also trips it. Keep `docker inspect --format` single-line.
+- Allowed read docker verbs are only `ps | inspect | logs | stats --no-stream | port |
+  diff | top`. `docker image inspect`, `docker exec`, and `docker compose` are blocked.
+- Reading a credential-style file (path containing `.env`) is hard-blocked.
+- Unverified observation: `run_command`/nas-api did not see a newly-created subdir
+  under `/volume1/docker` that the operator's own shell saw — verify fresh filesystem
+  changes from the operator shell, not `run_command`.
+
 ## 12. Intentional quirks and non-obvious decisions
 
 ### seaf-cli reports "synchronized" while diverging (inotify watch exhaustion)

@@ -84,7 +84,18 @@ cause persists. Do not build remediation that relies on restarts.
 ### 5a. Raise the inotify ceiling (the guaranteed fix) — capability `set_inotify_watches`
 
 Raise `fs.inotify.max_user_watches` to **1,048,576** and `max_user_instances` to
-**1024**, live via `sysctl -w` and persisted to `/host/etc/sysctl.conf`.
+**1024**, live via `sysctl -w`.
+
+**Persistence on Synology requires a DSM Task Scheduler boot-up task (root)** running
+those two `sysctl -w` lines. Do NOT rely on `/etc/sysctl.conf` / `/etc/sysctl.d/` —
+DSM does not reliably apply them at boot and may reset them on updates (verify by
+rebooting and re-reading `/proc/sys/fs/inotify/max_user_watches`). The
+`set_inotify_watches` capability writes `/host/etc/sysctl.conf` and sets the live
+value, but its file-based persistence may not survive a Synology reboot — the DSM
+boot task is the durable mechanism. **Verified 2026-06-21:** on edgesynology1 the live
+value was 1,048,576 but absent from `/etc/sysctl.conf` and `/etc/sysctl.d/`, so a
+reboot would reset it to 8192 and silently reintroduce the false-"synchronized" bug
+until the boot task exists.
 
 Critical sizing facts:
 - **`max_user_watches` is a ceiling, not an allocation.** The kernel pins ~1 KiB
