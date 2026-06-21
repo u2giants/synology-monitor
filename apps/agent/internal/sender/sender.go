@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -99,7 +100,27 @@ func (s *Sender) QueueSecurityEvent(p SecurityEventPayload) {
 }
 
 func (s *Sender) QueueAlert(p AlertPayload) {
+	p.Severity = normalizeSeverity(p.Severity)
 	s.queue("alerts", p)
+}
+
+// normalizeSeverity coerces an alert severity to the values permitted by the
+// alerts CHECK constraint (info|warning|critical). Collectors emit "error" for
+// serious faults (btrfs/storage/hyperbackup), which maps to critical; anything
+// unrecognized falls back to warning so the alert is never rejected outright.
+func normalizeSeverity(sev string) string {
+	switch s := strings.ToLower(strings.TrimSpace(sev)); s {
+	case "info", "warning", "critical":
+		return s
+	case "error", "err", "fatal", "crit":
+		return "critical"
+	case "warn":
+		return "warning"
+	case "debug", "notice", "trace":
+		return "info"
+	default:
+		return "warning"
+	}
 }
 
 func (s *Sender) QueueDriveTeamFolder(p DriveTeamFolderPayload) {
