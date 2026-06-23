@@ -725,3 +725,15 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
   be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.
 - Do not commit real secrets, even to `*.env.example`.
 - Do not undo the §10 intentional quirks without reading the linked incident first.
+<!-- ansible-host-policy: managed rollout from u2giants/ansible -->
+## Host / server changes — do NOT make them here
+
+The `hetz` server's host/OS layer is managed by **Ansible** in **[`u2giants/ansible`](https://github.com/u2giants/ansible)**.
+To change the server (packages, users, firewall, DNS, Docker *engine* config, system cron,
+systemd units, Cloudflare Tunnel 1, the backup watchdog), **open a PR there** and let CI apply
+it — **never** SSH into the box and hand-edit it. Manual changes are drift and get reverted by
+the next apply. See [`u2giants/ansible/AGENTS.md`](https://github.com/u2giants/ansible/blob/main/AGENTS.md).
+
+This repo is **not** the host layer. Its own changes belong here and deploy through their normal
+pipeline (e.g. Coolify). Don't put host-level changes here, and don't manage this service's
+container with Ansible. Scope boundary: **Ansible owns the host; Coolify owns the apps.**
