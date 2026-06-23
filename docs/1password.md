@@ -5,9 +5,11 @@ Two ways to pull secrets from 1Password instead of hardcoding them:
 - **1Password MCP server** — lets AI coding agents (Claude, Codex, etc.) read and manage 1Password items through tools.
 - **`op` CLI** — lets humans, scripts, and CI read secrets and inject them into environment variables.
 
-Both authenticate with a **1Password Service Account token** and use **secret references** of the form `op://<vault>/<item>/<field>`.
+Both authenticate with a **1Password Service Account token** and use **secret references** of the form `op://vibe_coding/<item>/<field>`.
 
-> **Never commit secrets.** Store them in 1Password and reference them with `op://...`. Keep real `.env` files out of git.
+> **Use the `vibe_coding` vault — and only `vibe_coding`.** It is the single vault every project and service account here uses; the service account can't see any other vault. All secret references must start with `op://vibe_coding/...`. Don't create or reference other vaults.
+
+> **Never commit secrets.** Store them in the `vibe_coding` vault in 1Password and reference them with `op://vibe_coding/...`. Keep real `.env` files out of git.
 
 ## 1. 1Password MCP server (for AI clients)
 
@@ -40,10 +42,12 @@ env_vars = ["OP_SERVICE_ACCOUNT_TOKEN"]
 
 Once connected, the agent has tools including:
 
-- `vault_list`, `item_list`, `item_lookup`, `item_get`
-- `password_read` (read a secret by `op://` reference or vault/item id)
+- `vault_list`, `item_list`, `item_lookup`, `item_get` (the service account only sees the `vibe_coding` vault)
+- `password_read` (read a secret by `op://vibe_coding/...` reference or vault/item id)
 - `password_create`, `password_update`, `password_generate`, `password_generate_memorable`
 - `item_edit`, `item_delete`, `item_archive`, `note_create`
+
+Create and read everything in the `vibe_coding` vault.
 
 Source & full docs: https://github.com/u2giants/1Password-MCP (npm: `@u2giants/1password-mcp`).
 
@@ -62,29 +66,28 @@ $env:OP_SERVICE_ACCOUNT_TOKEN = "<your-service-account-token>"   # Windows Power
 
 (Interactive desktop users can instead run `op signin`.)
 
-Common commands:
+Common commands (always against the `vibe_coding` vault):
 
 ```bash
 # Read a single secret to stdout
-op read "op://<vault>/<item>/<field>"
+op read "op://vibe_coding/<item>/<field>"
 
-# List vaults / items
-op vault list
-op item list --vault "<vault>"
-op item get "<item>" --vault "<vault>"
+# List items in the vibe_coding vault
+op item list --vault vibe_coding
+op item get "<item>" --vault vibe_coding
 
 # Run a command with secrets injected as env vars (values never touch disk)
 op run -- <your-command>
 
-# Fill a template: .env.tpl contains FOO=op://vault/item/field
+# Fill a template: .env.tpl contains FOO=op://vibe_coding/item/field
 op inject -i .env.tpl -o .env
 ```
 
-Use `op://` references in committed templates (e.g. `.env.tpl`) and resolve them at runtime with `op run` / `op inject`, so real secret values never land in git.
+Use `op://vibe_coding/...` references in committed templates (e.g. `.env.tpl`) and resolve them at runtime with `op run` / `op inject`, so real secret values never land in git.
 
 ### Secret reference format
 
 ```
-op://<vault>/<item>/<field>
-op://<vault>/<item>/<section>/<field>
+op://vibe_coding/<item>/<field>
+op://vibe_coding/<item>/<section>/<field>
 ```
