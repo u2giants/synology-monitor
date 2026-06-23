@@ -13,6 +13,7 @@ Live at **[mon.designflow.app](https://mon.designflow.app)**.
 | [docs/development.md](docs/development.md) | Build, run, test, debug |
 | [docs/configuration.md](docs/configuration.md) | All environment variables |
 | [docs/deployment.md](docs/deployment.md) | CI/CD and release workflow |
+| [docs/1password.md](docs/1password.md) | Pull secrets from 1Password via the MCP server or `op` CLI |
 | [PLAN.md](PLAN.md) | Historical issue-agent rebuild plan; current behavior is documented in `docs/architecture.md` |
 
 ## Prerequisites
