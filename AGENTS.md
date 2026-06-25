@@ -73,8 +73,11 @@ including `restart_nas_api`; `apps/nas-mcp/src/index.ts` eagerly registers that
 tool alongside `check_disk_space`. **One branch: `main`.** Push to `main` → GitHub Actions builds
 per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api are
 picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
-`qnjimovrsaacneqkggsn`) is the shared data layer between agent (writes) and web
-(reads). NAS API does not touch Supabase.
+`aaxtrlfpnoutziwhshlt`, us-east-1 / Virginia) is the shared data layer between
+agent (writes) and web (reads). NAS API does not touch Supabase. **The backend
+was migrated Ohio→Virginia on 2026-06-21; the old project `aaxtrlfpnoutziwhshlt`
+is the rollback (still live) — do NOT point new work at it. Full details + cutover
+surface + gotchas in [docs/supabase-virginia-migration-2026-06.md](docs/supabase-virginia-migration-2026-06.md).**
 
 ## 4. Repository structure
 
@@ -148,7 +151,7 @@ Do not casually rename or regenerate these.
 
 | Entity / System | Identifier | Where defined | Notes |
 |---|---|---|---|
-| Supabase project | `qnjimovrsaacneqkggsn` | Supabase | Postgres; 53 tables total |
+| Supabase project | `aaxtrlfpnoutziwhshlt` | Supabase | Postgres; 53 tables total |
 | NAS 1 (`edgesynology1`) | id `4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001`, Tailscale `100.107.131.35` | `deploy/synology/nas-1.env.example` | `nas_units.id` must match agent `NAS_ID` |
 | NAS 2 (`edgesynology2`) | id `9dbd4646-5f4e-4fa0-8f44-1d0dbe6f1002`, Tailscale `100.107.131.36` | `deploy/synology/nas-2.env.example` | |
 | NAS API port | `7734` | NAS `.env` (`NAS_API_PORT`) | HTTP over Tailscale |
@@ -168,7 +171,7 @@ Do not casually rename or regenerate these.
 | `synology-monitor-agent` | Telemetry collector (per NAS) | Watchtower on NAS | — | `ghcr.io/u2giants/synology-monitor-agent:latest` |
 | `synology-monitor-nas-api` | Approved-command executor (per NAS, :7734) | Watchtower on NAS | — | `ghcr.io/u2giants/synology-monitor-nas-api:latest` |
 | `synology-monitor-watchtower` | Auto-updates agent + nas-api from GHCR (300s poll) | NAS compose | — | `containrrr/watchtower` |
-| Supabase `qnjimovrsaacneqkggsn` | Telemetry + issue tables | Supabase | — | managed Postgres |
+| Supabase `aaxtrlfpnoutziwhshlt` | Telemetry + issue tables | Supabase | — | managed Postgres |
 
 **Relay has no CI workflow** — there is no `.github/workflows/relay-*.yml`. The
 relay image is not produced by the standard pipeline; it is built/deployed manually
