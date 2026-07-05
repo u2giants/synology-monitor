@@ -9,6 +9,7 @@ These rules exist so AI tools can safely assist with this repo without creating 
 - GitHub is the source of truth for code, Docker Compose, Dockerfiles, and workflows.
 - Coolify is the source of truth for production runtime environment variables and deployment target settings.
 - The production server is only a runtime host, not a configuration source.
+- Host/OS configuration on `hetz` is owned by `/worksp/ansible` / `https://github.com/u2giants/ansible`, not this app repo.
 
 ## Branch policy
 
@@ -63,9 +64,12 @@ AI must not:
 - hand-edit files directly on the production server
 - assume the server contains the source of truth
 - create undocumented hotfixes on the live machine
+- make durable host changes here; packages, users, firewall, SSH/sudo, Docker daemon config, systemd units/timers, cron, `/etc`, `/usr/local/bin`, `/usr/local/sbin`, Cloudflare Tunnel 1, Coolify host glue, and backup/DNS watchdogs must go through the Ansible repo and its GitHub Actions apply path
 - introduce additional branches
 - create a second deployment system
 - recommend storing production runtime configuration only in ad hoc server files
+
+Break-glass direct host repair must be explicitly labeled as such and followed by an Ansible PR to capture or reconcile the drift.
 
 ## NAS maintenance safety
 

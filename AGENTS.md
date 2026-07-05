@@ -29,6 +29,17 @@ sync/replication failures, storage and I/O attribution, and silent task/backup
 failures. The owner is a non-developer; favor changes that keep `main` the single
 source of truth and are easy to audit.
 
+Host/OS changes on `hetz` are owned by the canonical Ansible repo at
+`/worksp/ansible` / [`u2giants/ansible`](https://github.com/u2giants/ansible),
+not this app repo. That includes packages, users, firewall, SSH/sudo, Docker
+engine or daemon config, systemd units/timers, cron, `/etc`, `/usr/local/bin`,
+`/usr/local/sbin`, Cloudflare Tunnel 1, Coolify host glue, and backup/DNS
+watchdogs. Do not SSH, sudo, or edit the host directly for durable infra changes;
+make an Ansible PR and let GitHub Actions apply it. App code/config still changes
+here and deploys through this repo's normal pipeline/Coolify. Break-glass direct
+host repair must be explicitly called out and followed by an Ansible PR that
+captures or reconciles the drift.
+
 ## 2. Documentation map: what to read for each task
 
 Always start with:

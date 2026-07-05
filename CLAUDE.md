@@ -12,6 +12,7 @@
 
 - Direct SSH to the VPS or NAS is **not** a normal deployment path. The VPS has public SSH disabled by design. Do not propose SSH-based deploys, manual `docker build` on the VPS, or runtime container manipulation.
 - Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands or SSH. See `AI_OPERATING_RULES.md`.
+- Durable host/OS changes on `hetz` belong in `/worksp/ansible` / `u2giants/ansible`, then GitHub Actions applies them. Do not use SSH/sudo/live host edits for packages, users, firewall, SSH/sudo, Docker daemon config, systemd units/timers, cron, `/etc`, `/usr/local/bin`, `/usr/local/sbin`, Cloudflare Tunnel 1, Coolify host glue, or backup/DNS watchdogs. Break-glass repair must be followed by an Ansible PR.
 - Do not create feature branches. This repo uses one branch: `main`.
 - Do not "fix" the items listed under [AGENTS.md § 10 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
 
