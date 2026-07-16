@@ -167,11 +167,14 @@ async function executePredefinedToolOnNas(
       return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
     }
 
-    if (preview.tier >= 2 && !input.confirmed) {
+    // Every write tool previews first, whatever tier nas-api assigns the command.
+    // Tier drives the approval-token requirement, not whether confirmation is
+    // needed: a tier-1 classification still means real side effects on the NAS.
+    if (!input.confirmed) {
       return [
         `[${config.name}] This action requires your approval before it runs.`,
         ``,
-        `Command that will execute:`,
+        `Command that will execute (tier ${preview.tier}):`,
         `\`\`\``,
         command,
         `\`\`\``,
