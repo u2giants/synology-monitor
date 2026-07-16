@@ -133,6 +133,27 @@ function quote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+// Maps a caller-supplied share path to the nas-api writable Btrfs mount. The
+// per-share /volumeN binds are :ro (docker-compose.agent.yml), so a write to
+// /volume1/... returns EROFS; only /btrfs/volumeN is rw (compose line 102; the
+// volume2 bind on line 103 is commented out but designed to be uncommented,
+// which is why this accepts /volumeN rather than hard-coding volume1 — an
+// unmounted volume then fails at the source-existence guard with a clear
+// message). Same mapping write_seafile_ignore established.
+//
+// Both branches are ANCHORED on purpose. A loose startsWith("/btrfs/volume")
+// accepts "/btrfs/volumeevil/x", which is not merely off-contract: it evades
+// tier 3. ClassifyTier's filePatterns look for /volume\d+/, so "volumeevil"
+// classifies tier 2 — the same downgrade this file works to prevent. Measured.
+function toWritableVolumePath(value: string, toolName: string): string {
+  // Component-aware, so a legitimate "my..file.txt" is allowed while a real
+  // ".." traversal segment is not.
+  if (value.split("/").includes("..")) throw new Error(`${toolName}: path must not contain a '..' segment.`);
+  if (/^\/btrfs\/volume\d+\//.test(value)) return value;
+  if (/^\/volume\d+\//.test(value)) return "/btrfs" + value;
+  throw new Error(`${toolName}: path must be under /volumeN/ (or /btrfs/volumeN/).`);
+}
+
 function readOnlySql(value: string): string {
   const sql = value.trim().replace(/;+\s*$/, "");
   if (!sql || sql.length > 2000) {
@@ -2747,25 +2768,71 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "rename_file_to_old",
-    description: "WRITE — Renames a specific file by adding .old to its name, hiding it from sync without deleting it. Requires an exact file path in the 'filter' parameter. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE (tier 3) — Renames a specific file by adding .old to its name, hiding it from sync without deleting it. Requires an exact file path in the 'filter' parameter, either as a /volumeN/... path (auto-mapped to the nas-api /btrfs writable mount, since the per-share /volumeN mounts are read-only) or directly as /btrfs/volumeN/.... Refuses if the .old name already exists (checked, not atomic). Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
-      const filePath = (input.filter as string | undefined)?.trim();
-      if (!filePath) throw new Error("rename_file_to_old requires an exact file path in the 'filter' parameter.");
-      return `mv "${filePath}" "${filePath}.old" && echo "Renamed successfully"`;
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("rename_file_to_old requires an exact file path in the 'filter' parameter.");
+      const filePath = toWritableVolumePath(raw, "rename_file_to_old");
+      // quote() single-quotes the path at every use site, so a `$(...)` in it is
+      // inert data. Messages interpolate "$src"/"$dest", never the raw string —
+      // a raw path in a double-quoted echo is still an injection (the `||` branch
+      // executes it precisely when the path is hostile).
+      //
+      // The mv repeats the path LITERALLY instead of using "$src" on purpose:
+      // nas-api's ClassifyTier matches filePatterns per line and needs a literal
+      // /volumeN path beside the mv to rate this a tier-3 user-data write. Passing
+      // "$src" there classifies tier 2, which drops the approval TOKEN
+      // (buildApprovalToken fires on tier >= 2; nas-mcp confirms every write tool
+      // regardless of tier — see apps/nas-mcp/src/index.ts:170). Delete this
+      // duplication only once nas-api enforces a declared minimum tier per tool,
+      // which would make tier independent of what the regex can see.
+      //
+      // `mv -n` supplies the no-clobber; the trailing source-survival check is what
+      // makes a lost race REPORT as a failure. It cannot be dropped: deployed
+      // nas-api is Debian 12 / GNU coreutils 9.1, and `mv -n` only began exiting
+      // non-zero on a skipped move in coreutils 9.2 — on 9.1 it exits 0 and moves
+      // nothing, i.e. a silent false success. The check proves the source is gone,
+      // not that this mv is what moved it; hence "checked, not atomic".
+      return [
+        `src=${quote(filePath)}`,
+        `dest=${quote(`${filePath}.old`)}`,
+        `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
+        `[ -e "$dest" ] && { echo "ERROR: destination already exists: $dest"; exit 1; }`,
+        `mv -n ${quote(filePath)} ${quote(`${filePath}.old`)} || { echo "FAILED to rename: $src"; exit 1; }`,
+        `[ -e "$src" ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
+        `echo "Renamed successfully"`,
+      ].join("\n");
     },
   },
 
   {
     name: "remove_invalid_chars",
-    description: "WRITE — Cleans a filename by replacing sync-breaking characters (: * ? \" < > |) with underscores. Requires an exact file path in the 'filter' parameter. Shows a preview and asks for your approval before doing anything.",
+    description: "WRITE (tier 3) — Cleans a filename by replacing sync-breaking characters (: * ? \" < > |) in the BASENAME with underscores; the parent directory is left alone. Requires an exact file path in the 'filter' parameter, either as a /volumeN/... path (auto-mapped to the nas-api /btrfs writable mount, since the per-share /volumeN mounts are read-only) or directly as /btrfs/volumeN/.... Refuses if the cleaned name already exists (checked, not atomic). Shows a preview and asks for your approval before doing anything.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
-      const filePath = (input.filter as string | undefined)?.trim();
-      if (!filePath) throw new Error("remove_invalid_chars requires an exact file path in the 'filter' parameter.");
-      return `dir=$(dirname "${filePath}"); file=$(basename "${filePath}"); newfile=$(echo "$file" | sed 's/[\\/:*?"<>|]/_/g'); [ "$file" != "$newfile" ] && mv "${filePath}" "$dir/$newfile" && echo "Renamed: $file -> $newfile" || echo "No invalid characters found"`;
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("remove_invalid_chars requires an exact file path in the 'filter' parameter.");
+      const filePath = toWritableVolumePath(raw, "remove_invalid_chars");
+      // Expanded once into "$src" via quote(); see rename_file_to_old.
+      return [
+        `src=${quote(filePath)}`,
+        `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
+        `dir=$(dirname "$src"); file=$(basename "$src")`,
+        `newfile=$(printf '%s' "$file" | sed 's/[\\/:*?"<>|]/_/g')`,
+        // Each outcome exits on its own line: the old `[ ] && mv && echo || echo`
+        // chain fired the `||` branch when mv FAILED, printing "No invalid
+        // characters found" and exiting 0 — a false success on a real failure.
+        `if [ "$file" = "$newfile" ]; then echo "No invalid characters found"; exit 0; fi`,
+        `[ -e "$dir/$newfile" ] && { echo "ERROR: destination already exists: $dir/$newfile"; exit 1; }`,
+        // Literal path on the mv line, plus `-n` and the source-survival check —
+        // see rename_file_to_old for why each is load-bearing.
+        `mv -n ${quote(filePath)} "$dir/$newfile" || { echo "FAILED to rename: $file"; exit 1; }`,
+        `[ -e "$src" ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
+        `echo "Renamed: $file -> $newfile"`,
+      ].join("\n");
     },
   },
 

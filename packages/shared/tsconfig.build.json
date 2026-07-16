@@ -1,0 +1,7 @@
+// Emit config: the published build must not compile tests or fixtures into dist/.
+// The base tsconfig deliberately still type-checks them (`pnpm type-check`), so a
+// broken test is caught rather than silently excluded.
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts", "src/__fixtures__/**"]
+}

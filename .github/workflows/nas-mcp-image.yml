@@ -26,6 +26,29 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Verification gate (CI/CD rules §8/§11), mirroring nas-api-image.yml: the
+      # image is only built and published if the tests pass, so a regression that
+      # compiles but fails tests never reaches the production NASes.
+      #
+      # This gate exists because nas-mcp ships the NAS tool catalog
+      # (packages/shared/src/nas-tools.ts, reached via the src/nas-tools.ts symlink),
+      # including tier-3 write tools that build shell commands from a caller-supplied
+      # path. nas-tools.write-safety.test.ts is what keeps a shell-injection or
+      # false-success regression out of that catalog — see the 2026-07-16 fix.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        run: npm install -g pnpm@9
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Test shared tool catalog
+        run: pnpm --filter @synology-monitor/shared run test
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

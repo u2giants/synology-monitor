@@ -1,0 +1,44 @@
+[
+  {
+    "tool": "rename_file_to_old",
+    "filter": "/volume1/mac/Art Library/a.txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/Art Library/a.txt'\ndest='/btrfs/volume1/mac/Art Library/a.txt.old'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/mac/Art Library/a.txt' '/btrfs/volume1/mac/Art Library/a.txt.old' || { echo \"FAILED to rename: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed successfully\""
+  },
+  {
+    "tool": "rename_file_to_old",
+    "filter": "/volume1/mac/weird name: v2?.txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/weird name: v2?.txt'\ndest='/btrfs/volume1/mac/weird name: v2?.txt.old'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/mac/weird name: v2?.txt' '/btrfs/volume1/mac/weird name: v2?.txt.old' || { echo \"FAILED to rename: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed successfully\""
+  },
+  {
+    "tool": "rename_file_to_old",
+    "filter": "/btrfs/volume1/files/report.docx",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/files/report.docx'\ndest='/btrfs/volume1/files/report.docx.old'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/files/report.docx' '/btrfs/volume1/files/report.docx.old' || { echo \"FAILED to rename: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed successfully\""
+  },
+  {
+    "tool": "rename_file_to_old",
+    "filter": "/volume1/mac/x$(touch /tmp/OWNED).txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt'\ndest='/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt.old'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt' '/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt.old' || { echo \"FAILED to rename: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed successfully\""
+  },
+  {
+    "tool": "remove_invalid_chars",
+    "filter": "/volume1/mac/bad:name?.txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/bad:name?.txt'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\ndir=$(dirname \"$src\"); file=$(basename \"$src\")\nnewfile=$(printf '%s' \"$file\" | sed 's/[\\/:*?\"<>|]/_/g')\nif [ \"$file\" = \"$newfile\" ]; then echo \"No invalid characters found\"; exit 0; fi\n[ -e \"$dir/$newfile\" ] && { echo \"ERROR: destination already exists: $dir/$newfile\"; exit 1; }\nmv -n '/btrfs/volume1/mac/bad:name?.txt' \"$dir/$newfile\" || { echo \"FAILED to rename: $file\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed: $file -> $newfile\""
+  },
+  {
+    "tool": "remove_invalid_chars",
+    "filter": "/btrfs/volume1/files/a|b.txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/files/a|b.txt'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\ndir=$(dirname \"$src\"); file=$(basename \"$src\")\nnewfile=$(printf '%s' \"$file\" | sed 's/[\\/:*?\"<>|]/_/g')\nif [ \"$file\" = \"$newfile\" ]; then echo \"No invalid characters found\"; exit 0; fi\n[ -e \"$dir/$newfile\" ] && { echo \"ERROR: destination already exists: $dir/$newfile\"; exit 1; }\nmv -n '/btrfs/volume1/files/a|b.txt' \"$dir/$newfile\" || { echo \"FAILED to rename: $file\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed: $file -> $newfile\""
+  },
+  {
+    "tool": "remove_invalid_chars",
+    "filter": "/volume1/mac/y`touch /tmp/OWNED`.txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/y`touch /tmp/OWNED`.txt'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\ndir=$(dirname \"$src\"); file=$(basename \"$src\")\nnewfile=$(printf '%s' \"$file\" | sed 's/[\\/:*?\"<>|]/_/g')\nif [ \"$file\" = \"$newfile\" ]; then echo \"No invalid characters found\"; exit 0; fi\n[ -e \"$dir/$newfile\" ] && { echo \"ERROR: destination already exists: $dir/$newfile\"; exit 1; }\nmv -n '/btrfs/volume1/mac/y`touch /tmp/OWNED`.txt' \"$dir/$newfile\" || { echo \"FAILED to rename: $file\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed: $file -> $newfile\""
+  }
+]

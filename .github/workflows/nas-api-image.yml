@@ -7,6 +7,11 @@ on:
     paths:
       - ".github/workflows/nas-api-image.yml"
       - "apps/nas-api/**"
+      # The validator's tier-3 contract test classifies the commands the shared NAS
+      # tool catalog generates, via this golden. Without this trigger the tier check
+      # would sleep through exactly the change it guards: a nas-tools.ts edit that
+      # regenerates the golden and silently reclassifies a user-data write.
+      - "packages/shared/src/__fixtures__/nas-write-commands.golden.json"
   workflow_dispatch:
 
 env:
