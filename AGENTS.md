@@ -86,9 +86,11 @@ per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api 
 picked up by Watchtower on each NAS within ~5 min. **Supabase** (project
 `aaxtrlfpnoutziwhshlt`, us-east-1 / Virginia) is the shared data layer between
 agent (writes) and web (reads). NAS API does not touch Supabase. **The backend
-was migrated Ohio→Virginia on 2026-06-21; the old project `qnjimovrsaacneqkggsn`
-is the rollback (still live) — do NOT point new work at it. Full details + cutover
-surface + gotchas in [docs/supabase-virginia-migration-2026-06.md](docs/supabase-virginia-migration-2026-06.md).**
+was migrated Ohio→Virginia on 2026-06-21. The old project `qnjimovrsaacneqkggsn`
+was the rollback and has since been deleted — it no longer exists (verified
+2026-07-16). Any doc, script, or env default still naming it is stale: `aaxtrlfpnoutziwhshlt`
+is the only Supabase project for this app. Full details + cutover surface + gotchas
+in [docs/supabase-virginia-migration-2026-06.md](docs/supabase-virginia-migration-2026-06.md).**
 
 ## 4. Repository structure
 

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const DEFAULT_SUPABASE_URL = "https://qnjimovrsaacneqkggsn.supabase.co";
+const DEFAULT_SUPABASE_URL = "https://aaxtrlfpnoutziwhshlt.supabase.co";
 // Service-role key must come from the environment or a local (gitignored) .env.
 // Never hardcode it here — this file is committed to a public repo.
 

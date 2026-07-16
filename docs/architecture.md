@@ -647,7 +647,7 @@ Stage 3: runStage3Explainer (single-shot)
 
 ## Database
 
-Supabase project `qnjimovrsaacneqkggsn`. 53 tables total (migrations 00001–00041).
+Supabase project `aaxtrlfpnoutziwhshlt`. 53 tables total (migrations 00001–00041).
 
 **Partitioned tables** (pg_partman, monthly, auto-retention): `metrics`,
 `nas_logs`, `storage_snapshots`, `container_status`, `drive_activities`.

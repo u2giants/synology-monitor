@@ -292,7 +292,7 @@ real move should follow `docs/archive-move-runbook.md`.
 
 ## Supabase migrations
 
-**How they are applied:** Manually, via the Supabase CLI or the Supabase dashboard SQL editor. There is no CI step that auto-applies migrations. After writing a new migration file, the operator runs it against the production project `qnjimovrsaacneqkggsn`.
+**How they are applied:** Manually, via the Supabase CLI or the Supabase dashboard SQL editor. There is no CI step that auto-applies migrations. After writing a new migration file, the operator runs it against the production project `aaxtrlfpnoutziwhshlt`.
 
 **Naming convention:** Sequential five-digit prefix, then a short snake_case description:
 

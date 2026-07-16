@@ -63,7 +63,7 @@ cd apps/agent
 export DSM_URL=https://192.168.1.x:5001
 export DSM_USERNAME=admin
 export DSM_PASSWORD=...
-export SUPABASE_URL=https://qnjimovrsaacneqkggsn.supabase.co
+export SUPABASE_URL=https://aaxtrlfpnoutziwhshlt.supabase.co
 export SUPABASE_SERVICE_KEY=...
 export NAS_ID=4f1d7e2a-7d5d-4d5f-8b55-0f8efb0d1001   # must match nas_units.id
 export NAS_NAME="Dev NAS"

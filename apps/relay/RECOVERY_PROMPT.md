@@ -70,7 +70,7 @@ Recover or verify the Synology Monitor control path:
 ## Supabase
 
 - project url:
-  - `https://qnjimovrsaacneqkggsn.supabase.co`
+  - `https://aaxtrlfpnoutziwhshlt.supabase.co`
 - service role key:
   - `__REDACTED__`
 
@@ -147,7 +147,7 @@ sshpass -p '__REDACTED__' ssh -o StrictHostKeyChecking=no popdam@100.107.131.35 
 
 ```bash
 cd /worksp/monitor/app
-SUPABASE_URL='https://qnjimovrsaacneqkggsn.supabase.co' \
+SUPABASE_URL='https://aaxtrlfpnoutziwhshlt.supabase.co' \
 SUPABASE_SERVICE_KEY='__REDACTED__' \
 node scripts/backfill-synobackup.mjs
 ```
