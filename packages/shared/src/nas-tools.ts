@@ -3274,18 +3274,27 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   // PATH, verified live on edgesynology1, so the tool could only ever print
   // "setfacl: command not found" while reporting a tier-3 approved write.
   //
-  // It was not re-pointed at DSM's synoacltool because that is a different
-  // capability, not a port: POSIX ACLs are not the ACL model these btrfs volumes
-  // enforce (shares carry support_acls; DSM applies NFSv4-style Synology ACLs),
-  // so the 'u:user:rwx' contract has no meaning here, and a synoacltool write
-  // syntax has never been exercised against these NASes. Reading ACLs already
-  // works and is unaffected — inspect_path_acl and inspect_effective_permissions
-  // call `synoacltool -get`. If an ACL *write* is wanted, add it deliberately:
-  // validate the verb syntax live on a scratch path, and route it through
-  // /btrfs/volume1/<share> (the per-share /volumeN mounts are read-only — see
-  // write_seafile_ignore for the mapping precedent). The validator keeps setfacl
-  // and synoacltool gated meanwhile, so hand-written run_command ACL writes still
-  // require approval.
+  // Installing the `acl` package would not have rescued it: /volume1 is mounted
+  // `synoacl`, not `acl` (verified on edgesynology1), so POSIX ACL calls are not
+  // what this filesystem enforces. DSM's synoacltool is the native surface.
+  //
+  // It was not re-pointed at synoacltool because that is a different capability,
+  // not a port — the POSIX 'u:user:rwx' spec this tool took has no meaning there.
+  // Reading ACLs already works and is unaffected: inspect_path_acl and
+  // inspect_effective_permissions call `synoacltool -get`.
+  //
+  // To add an ACL write later, the live contract (edgesynology1, DSM 7) is:
+  //   synoacltool -add PATH [ACL Entry]                 e.g. user:mac:allow:rwxpdDaARWc--:fd--
+  //   synoacltool -replace PATH [ACL Entry Index] [ACL Entry]
+  //   synoacltool -del PATH [ACL Entry Index]
+  // run it under LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib, and
+  // route the path through /btrfs/volume1/<share> — the per-share /volumeN mounts
+  // are ro (see write_seafile_ignore for the mapping precedent). Validate the
+  // entry format on a scratch path first: a wrong ACE can lock SMB users out, and
+  // a share may be in POSIX mode anyway (`-get` answers "It's Linux mode"), in
+  // which case ownership/mode — not an ACE — is what to fix. The validator keeps
+  // setfacl and synoacltool gated meanwhile, so hand-written run_command ACL
+  // writes still require approval.
 
   // ── Phase 3: Recovery / Restoration write tools ─────────────────────────
 
