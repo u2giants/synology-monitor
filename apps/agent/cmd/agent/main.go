@@ -54,6 +54,8 @@ func main() {
 		cfg.BatchSize,
 		cfg.FlushTimeout,
 		cfg.MaxWALSize,
+		sender.WithMaxFlushDuration(cfg.MaxFlushDuration),
+		sender.WithMaxBatchesPerFlush(cfg.MaxBatchesPerFlush),
 	)
 	if err != nil {
 		log.Fatalf("Failed to initialize sender: %v", err)

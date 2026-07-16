@@ -4,6 +4,17 @@ services:
     container_name: synology-monitor-agent
     network_mode: host
     restart: unless-stopped
+    # The agent buffers telemetry in a SQLite WAL and flushes it to Supabase on
+    # shutdown (sender.go Run() -> final bounded flush). Docker's default grace
+    # period is 10s, which SIGKILLed the agent mid-flush on every Watchtower
+    # redeploy — making the ambiguous-commit case (server committed, client
+    # killed before the response) routine rather than rare. No data is lost (the
+    # WAL is durable on the agent-data volume and rows are retried next start),
+    # but the final flush never completed. 90s comfortably exceeds the shutdown
+    # budget (MAX_FLUSH_DURATION * 3 = 72s at the 24s default).
+    # NOTE: Watchtower does NOT apply this — it recreates the container with the
+    # existing config. Needs a one-time `docker compose up -d` per NAS.
+    stop_grace_period: 90s
     env_file:
       - .env
     environment:

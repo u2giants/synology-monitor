@@ -47,6 +47,16 @@ type Config struct {
 	BatchSize    int
 	FlushTimeout time.Duration
 	MaxWALSize   int64 // bytes
+
+	// MaxFlushDuration is the absolute wall-clock budget for one flush cycle.
+	// It is the primary bound on the sender's drain loop. Defaults to 80% of
+	// FlushTimeout, leaving headroom before the next tick. Must be > 0 and
+	// < FlushTimeout — 0 does NOT mean unbounded.
+	MaxFlushDuration time.Duration
+
+	// MaxBatchesPerFlush caps how many batches a single table may send per
+	// flush cycle — the secondary ceiling behind MaxFlushDuration.
+	MaxBatchesPerFlush int
 }
 
 func Load() (*Config, error) {
@@ -83,6 +93,23 @@ func Load() (*Config, error) {
 		BatchSize:    getEnvInt("BATCH_SIZE", 100),
 		FlushTimeout: getEnvDuration("FLUSH_TIMEOUT", 30*time.Second),
 		MaxWALSize:   int64(getEnvInt("MAX_WAL_SIZE_MB", 100)) * 1024 * 1024,
+
+		// -1 sentinel: distinguishes "unset" (take the derived default) from an
+		// explicit "0", which is invalid rather than unbounded.
+		MaxFlushDuration:   getEnvDuration("MAX_FLUSH_DURATION", -1),
+		MaxBatchesPerFlush: getEnvInt("MAX_BATCHES_PER_FLUSH", 10),
+	}
+
+	if cfg.MaxFlushDuration == -1 {
+		// Default: 80% of the flush interval, so a cycle finishes before the
+		// next tick fires.
+		cfg.MaxFlushDuration = cfg.FlushTimeout * 4 / 5
+	}
+	if cfg.MaxFlushDuration <= 0 || cfg.MaxFlushDuration >= cfg.FlushTimeout {
+		return nil, fmt.Errorf("MAX_FLUSH_DURATION must be > 0 and < FLUSH_TIMEOUT (%s), got %s", cfg.FlushTimeout, cfg.MaxFlushDuration)
+	}
+	if cfg.MaxBatchesPerFlush <= 0 {
+		return nil, fmt.Errorf("MAX_BATCHES_PER_FLUSH must be > 0, got %d", cfg.MaxBatchesPerFlush)
 	}
 
 	if cfg.DsmUsername == "" || cfg.DsmPassword == "" {
