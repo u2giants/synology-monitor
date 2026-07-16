@@ -31,6 +31,21 @@ For other AI tools, paste `AGENTS.md` as your first message and follow the *§ 9
 ## Memory / context notes
 
 - Local workspace path: `/worksp/monitor/app`. Working copy of `github.com/u2giants/synology-monitor` on `main`.
+- **The NAS MCP is registered as `synology-monitor`** (URL `nas-mcp.designflow.app/mcp`), not
+  "nas-mcp". Searching your tool list for "nas" finds nothing and proves nothing. It is a
+  different server from `devops-mcp` (`mcp.designflow.app`), which is VPS/host-scoped and has
+  no Synology operations. **Never conclude a capability is unavailable from a negative tool
+  search — run `claude mcp list` first.** On 2026-07-16 a session searched for "synology NAS
+  run_command", got only devops-mcp hits, told the operator the NAS MCP was not connected, and
+  justified an engineering decision with "I cannot verify live." It was connected the whole
+  time. Root cause: a project `.mcp.json` duplicated the server name with a **rotated, dead**
+  token, shadowing the working global definition in `~/.claude.json` and requiring a trust
+  approval that was never given — so its tools never loaded, while `claude mcp list` still
+  reported "Connected" from the global entry. That `.mcp.json` was deleted 2026-07-16 and the
+  path is now in `.gitignore`; the live token lives in `~/.claude.json` and Coolify
+  (`MCP_BEARER_TOKEN`). If the tools are ever missing again, check for a re-created `.mcp.json`
+  before anything else. A connected HTTP MCP can also be driven directly with `curl` (it is
+  stateless — POST `tools/list` or `tools/call`, no handshake).
 - The NAS MCP server has 133 shared tools in `ALL_TOOL_DEFS` but exposes only 7 small tools per session (`list_capabilities`, `get_capability_details`, `tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). `check_disk_space` and `restart_nas_api` are registry tools registered eagerly by `apps/nas-mcp/src/index.ts`. When debugging tool availability, check catalog/search/detail results, `tools-config.json` enablement, and `EAGER_TOOLS`.
 - The 3-stage AI pipeline (`stage1-structurer.ts`, `stage2-reasoning.ts`, `stage3-explainer.ts`) is the only active issue-agent pipeline as of 2026-05-30. The legacy 7-stage pipeline and OpenRouter inference path have been removed.
 - `issue_evidence_items` and `issue_evidence` are different tables with different purposes — do not confuse them.
