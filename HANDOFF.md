@@ -67,9 +67,9 @@ Risks / watchouts:
 ## Supabase telemetry retention and database-size cleanup
 
 Status:
-not started on the live database. Code is committed (`46f9f65`, pushed, CI green);
-**nothing is installed anywhere**, and the migration is **not safe to apply as
-written**.
+not started on the live database. The migration has been reviewed, fixed and tested on
+PG17 (owner decisions applied 2026-07-16), but **nothing is installed anywhere**. Live
+work begins at step 2 of the install procedure in the doc.
 
 Full detail — design, the wrong-project incident, known defects, verified-safe list,
 and the step-by-step live install — is in **[docs/telemetry-retention.md](docs/telemetry-retention.md)**.
@@ -89,28 +89,35 @@ Done (2026-07-16):
 - Verified the old project `qnjimovrsaacneqkggsn` is **deleted** — absent from
   `supabase projects list`. Its purge/functions/cron went with it. **There is no
   rollback project anymore.**
-- Audited every reader of all 17 policy tables (see the doc). No FK or view risk; all
-  timestamp column names correct. Found the defects below.
+- Audited every reader of all policy tables (see the doc). No FK or view risk; all
+  timestamp column names correct. Found four defects — all now resolved in the file.
+- Applied the owner's decisions (2026-07-16) and fixed `00042`:
+  - `disk_io_stats` 14d → **35d**, so the metrics page's 30d range keeps working.
+  - Index creation is now `to_regclass`-guarded (it previously hard-failed a rebuild:
+    `ERROR: relation "process_snapshots" does not exist`).
+  - `metrics` / `nas_logs` / `storage_snapshots` / `container_status` removed from the
+    policies, and all `part_config` writes dropped — **pg_partman keeps ownership at its
+    existing settings**, so the deliberate 180d `container_status` decision stands.
+- Verified on a throwaway PG17 container: clean run on a bare DB (guard skips 8 absent
+  tables, inserts 13 policies); batch limit honoured exactly (400 of 1000); runner
+  drains the rest; fresh rows and 20d `disk_io_stats` rows survive.
 
-Next action — resolve these before installing:
-1. **`disk_io_stats` 14d vs. the metrics page's 30d range** — a real break
-   (`apps/web/src/app/(dashboard)/metrics/page.tsx:18,114`). Decide: raise retention to
-   ≥30d, or drop the 30d option from that panel. **Needs an owner decision.**
-2. **`CREATE INDEX` on tables no migration creates** (`00042:175-183` vs
-   `00031:27,40-42`) — guard them, or the migration breaks a rebuild from scratch.
-3. **pg_partman overlap** on `metrics` / `nas_logs` / `storage_snapshots` /
-   `container_status` — recommend letting partman own these and removing them from
-   `telemetry_retention_policies`. Note `00042:277` silently reverses
-   `container_status` from a deliberate 180d ("6 months for better pattern analysis",
-   `00003:60`) to 30d. **Needs an owner decision.**
-4. Then follow the install procedure in the doc: indexes via `CREATE INDEX
-   CONCURRENTLY` (one at a time, direct SQL console — **not** `exec_sql`), `EXPLAIN` to
-   confirm index use, then batches 1k → 10k → 50k, then let the hourly cron take over.
+Next action — live install (steps 2-8 of the doc's procedure):
+1. `CREATE INDEX CONCURRENTLY` on `disk_io_stats(captured_at)`, then
+   `process_snapshots(captured_at)` — one at a time, via a **direct SQL console**
+   (`CONCURRENTLY` cannot run in a transaction block, so **not** `exec_sql`).
+2. `EXPLAIN` the delete predicate; require `Index Scan` / `Bitmap Index Scan`. A
+   `Seq Scan` means stop.
+3. Delete in escalating batches 1k → 10k → 50k, watching for lock waits, API timeouts
+   and agent ingest errors.
+4. `ANALYZE` both big tables, then install the rest and let the hourly cron take over.
 
 Risks / watchouts:
 - **No rollback project exists.** Deletes on `aaxtrlfpnoutziwhshlt` are final.
-- Retention is **not** additive: it deletes rows hourly, forever, and flips pg_partman
-  to `retention_keep_table = false`, which drops whole partitions.
+- Retention is **not** additive: it deletes rows hourly, forever. (It no longer touches
+  `part_config` — that was removed deliberately; do not reintroduce it.)
+- Untested at scale: the PG17 verification used small tables. Cold-cache behavior on a
+  43M-row table is exactly what the staged batch escalation is there to find.
 - Plain `CREATE INDEX` on the big live tables blocks agent writes while it builds. Use
   `CONCURRENTLY`, which cannot run in a transaction block (so not via `exec_sql`, which
   is void-returning anyway — HTTP 204, no rows).

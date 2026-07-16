@@ -2,17 +2,20 @@
 
 ## Status
 
-**Designed and committed; installed nowhere.** `supabase/migrations/00042_telemetry_retention_cleanup.sql`
-has never been applied to any surviving database. The live project
-`aaxtrlfpnoutziwhshlt` has **no retention** — verified 2026-07-16:
+**Reviewed, fixed, tested — installed nowhere.** The known defects are resolved and the
+logic is verified on PG17 (see below), but
+`supabase/migrations/00042_telemetry_retention_cleanup.sql` has still never been applied
+to any surviving database. The live project `aaxtrlfpnoutziwhshlt` has **no retention** —
+verified 2026-07-16:
 
 - `telemetry_retention_policies` → `PGRST205` (table not found)
 - `telemetry_retention_estimates` → `PGRST202` (function not found)
 - `process_snapshots` still returns rows dated `2026-06-06` (~40 days old) against
   an intended 3-day policy
 
-Before installing, read "Known defects" below — the migration is **not** safe to
-apply as written.
+Nothing below this line has touched live data. The remaining work is steps 2-8 of the
+install procedure, which are all irreversible — and **there is no rollback project
+anymore**.
 
 ## Why this exists
 
@@ -58,45 +61,73 @@ the silent `DEFAULT_SUPABASE_URL` fallback is **gone**, the script refuses to ru
 without an explicit `SUPABASE_URL`, hard-refuses any URL naming `qnjimovrsaacneqkggsn`,
 and logs its target project before acting.
 
-## Known defects — fix before installing
+## Defects found by the reader audit — all resolved in the file
 
-Verified 2026-07-16 by auditing every reader of the 17 policy tables.
+Found 2026-07-16 by auditing every reader of the policy tables; fixed the same day
+(owner decisions recorded inline). Kept here because each one is a trap that would
+otherwise be reintroduced.
 
-**1. `disk_io_stats` 14d retention vs. a 30d UI range — a real break.**
+**1. `disk_io_stats` 14d vs. a 30d UI range — RESOLVED (now 35d).**
 The metrics page offers a `30d` option (`apps/web/src/app/(dashboard)/metrics/page.tsx:18`)
-and queries `disk_io_stats` with it (`:114`, `parseRange` at `:892`). Retention at 14d
-silently halves that chart with no empty state or warning. The same `ranges` array also
-feeds `metrics` (90d retention, fine) — which is exactly why the mismatch is easy to
-miss. **Either raise `disk_io_stats` to ≥30d or remove the 30d option from that panel.**
+and queries `disk_io_stats` with it (`:114`, `parseRange` at `:892`). At 14d that chart
+silently showed half its range with no empty state. Now **35 days** — 30d of range plus
+5d headroom. The same `ranges` array also feeds `metrics` (90d, fine), which is exactly
+why the mismatch was easy to miss. **Do not trim below 30d without removing the 30d
+option from that panel first.**
 
-**2. Four policy tables have no `CREATE TABLE` in any migration.**
+**2. `CREATE INDEX` on tables no migration creates — RESOLVED (guarded).**
 `process_snapshots`, `disk_io_stats`, `net_connections`, `sync_task_snapshots` are only
 ever *renamed* (`00031_rename_smon_tables.sql:27,40-42`); the `smon_*` originals were
-created out-of-band and exist only in the live DB. So `00042`'s `CREATE INDEX` on them
-(lines 175-183) is not guarded and **hard-fails any rebuild from migrations**. Their
-`captured_at` columns were verified from the writers instead
-(`apps/agent/internal/sender/types.go:112,130,145,181`), not from a schema of record.
+created out-of-band and exist only in the live DB. The unguarded `CREATE INDEX` therefore
+hard-failed any rebuild from migrations (reproduced: `ERROR: relation
+"process_snapshots" does not exist`). Index creation is now a `to_regclass`-guarded
+`DO` block that skips absent tables with a `NOTICE`. Their `captured_at` columns are
+verified from the writers (`apps/agent/internal/sender/types.go:112,130,145,181`), not
+from a schema of record.
 
-**3. Redundant row-level DELETEs layered over pg_partman.**
-`metrics`, `nas_logs`, `storage_snapshots`, `container_status` are `PARTITION BY RANGE`
-(`00002:18-70`) and already partman-managed (`00003`). Row-by-row `DELETE` on a
-partitioned parent is far more expensive than a partition drop, and:
-- `metrics` / `storage_snapshots`: partman already drops at **84d** (`00003:15,45`);
-  `00042` sets row retention to 90d, which therefore **can never fire**, and *loosens*
-  the partman setting 84d→90d.
-- `nas_logs`: partman drops whole partitions at 180d regardless of severity, so the
-  "keep warning/error/critical longer" intent at `00042:243` is silently capped at 180d.
-- `container_status`: `00042:277` overrides partman's **180d** — set deliberately, with
-  the comment *"6 months for better pattern analysis"* (`00003:60`) — down to **30d**.
-  Mechanically safe (only reader is `docker/page.tsx:45`, latest 50 rows) but it
-  silently reverses a documented decision.
+**3. Row-level DELETEs layered over pg_partman — RESOLVED (partman owns its four).**
+`metrics`, `nas_logs`, `storage_snapshots`, `container_status` are partman-managed
+(`00003`, four `create_parent` calls). They are now **removed from
+`telemetry_retention_policies`**, and `00042` no longer writes `part_config` at all.
+What that draft would have done:
+- *loosened* `metrics`/`storage_snapshots` from partman's 84d to 90d — while the 90d row
+  policy could never fire anyway, since partman drops at 84d first;
+- *reversed* `container_status` from a deliberate **180d** — *"6 months for better
+  pattern analysis"* (`00003_create_partitions.sql:60`) — down to 30d, purely as a side
+  effect of treating it as ordinary telemetry.
 
-**Recommendation:** let partman own these four and drop them from
-`telemetry_retention_policies`.
+  **Known gap accepted with this decision:** `nas_logs` routine `info` rows from noisy
+  polling sources now live partman's full 180d instead of being trimmed at 30d, because
+  severity-selective trimming is precisely what a partition drop cannot express. If
+  `nas_logs` turns out to be a real space driver, that single policy is the thing to
+  reconsider — it is the one place this trade costs something.
 
-**4. Over-retention worth revisiting.** `dsm_errors` (180d) has one reader at 48h.
-`drive_activities` (180d), `service_health` (14d) and `drive_team_folders` (30d) have
-**zero readers**.
+**4. Over-retention — still open, informational.** `dsm_errors` (180d) has one reader at
+48h. `drive_activities` (180d), `service_health` (14d) and `drive_team_folders` (30d)
+have **zero readers**. Left as-is deliberately: they are small relative to the real
+drivers, and forensic value outlives current readers.
+
+**Note:** `drive_activities` is **not** partitioned despite older claims in
+`architecture.md` — it is a plain table (`00008_create_drive_tables.sql:26`). The only
+partitioned Drive object is `drive_team_folders_partitioned` (schema only, no writes).
+It therefore needs its row-level policy; do not remove it assuming partman covers it.
+
+## Verified on Postgres 17 (2026-07-16)
+
+The migration had never run against any surviving database, so it was exercised on a
+throwaway PG17 container before going near live:
+
+- Runs clean on a **bare** DB with `ON_ERROR_STOP=1` — the guard skips all 8 absent
+  tables and inserts 13 policies. The previously committed version fails at line 176.
+- `cleanup_table_by_age` **honours the batch limit exactly** (asked 400 of 1000 expired
+  → deleted 400).
+- `cleanup_high_volume_telemetry` drains the remainder (600) and stops.
+- **Rows inside retention survive**: 100 fresh `process_snapshots` untouched, and
+  `disk_io_stats` rows at 20d survived the 35d policy — the exact rows the old 14d
+  policy would have taken from the metrics page's 30d range.
+
+Still unproven at scale: behavior on 43M-row tables with a cold cache. That is what the
+staged batch escalation below is for.
 
 ## Verified safe
 
@@ -129,9 +160,13 @@ partitioned parent is far more expensive than a partition drop, and:
 Indexes first: the 2026-06-22 purge bogged down precisely because the retention columns
 were unindexed.
 
-1. Resolve the defects above (at minimum defect 1 — the `disk_io_stats` window).
-2. **Do not** apply the migration's plain `CREATE INDEX` (lines 175-197) to the big live
-   tables; it blocks writes while it builds. Use:
+Step 1 (fix the file) is **done** — the policies and guards described above are
+committed. Live work starts at step 2.
+
+1. ~~Resolve the defects above.~~ Done 2026-07-16; verified on PG17.
+2. **Do not** let the migration's `DO` block build the indexes on the two big live
+   tables — a plain `CREATE INDEX` blocks agent inserts for the whole build. Build these
+   two **by hand first**; the block then no-ops via `IF NOT EXISTS`. Use:
    ```sql
    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_disk_io_stats_retention
      ON public.disk_io_stats (captured_at);

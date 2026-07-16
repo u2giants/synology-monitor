@@ -172,29 +172,51 @@ $$;
 
 GRANT EXECUTE ON FUNCTION telemetry_retention_estimates() TO service_role;
 
-CREATE INDEX IF NOT EXISTS idx_process_snapshots_retention
-  ON process_snapshots (captured_at);
+-- Retention indexes.
+--
+-- Guarded by to_regclass because process_snapshots, disk_io_stats,
+-- net_connections and sync_task_snapshots have NO `CREATE TABLE` in any
+-- migration — they were created out-of-band and are only ever renamed by
+-- 00031. An unguarded CREATE INDEX here hard-fails a rebuild from scratch.
+--
+-- NOTE: on the big live tables (process_snapshots, disk_io_stats) do NOT let
+-- this block build the index. A plain CREATE INDEX takes a lock that blocks
+-- agent inserts for the whole build. Build those two by hand FIRST with
+-- CREATE INDEX CONCURRENTLY (which cannot run inside a transaction block, so
+-- not via the exec_sql RPC) — then this becomes a no-op via IF NOT EXISTS.
+-- Full procedure: docs/telemetry-retention.md.
+DO $idx$
+DECLARE
+  target record;
+BEGIN
+  FOR target IN
+    SELECT *
+    FROM (VALUES
+      ('process_snapshots',  'captured_at'),
+      ('disk_io_stats',      'captured_at'),
+      ('net_connections',    'captured_at'),
+      ('service_health',     'captured_at'),
+      ('container_io',       'captured_at'),
+      ('scheduled_tasks',    'captured_at'),
+      ('backup_tasks',       'captured_at'),
+      ('custom_metric_data', 'captured_at')
+    ) AS t(table_name, timestamp_column)
+  LOOP
+    IF to_regclass('public.' || target.table_name) IS NULL THEN
+      RAISE NOTICE 'Skipping retention index: table %.% not present',
+        'public', target.table_name;
+      CONTINUE;
+    END IF;
 
-CREATE INDEX IF NOT EXISTS idx_disk_io_stats_retention
-  ON disk_io_stats (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_net_connections_retention
-  ON net_connections (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_service_health_retention
-  ON service_health (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_container_io_retention
-  ON container_io (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_retention
-  ON scheduled_tasks (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_backup_tasks_retention
-  ON backup_tasks (captured_at);
-
-CREATE INDEX IF NOT EXISTS idx_custom_metric_data_retention
-  ON custom_metric_data (captured_at);
+    EXECUTE format(
+      'CREATE INDEX IF NOT EXISTS %I ON public.%I (%I)',
+      'idx_' || target.table_name || '_retention',
+      target.table_name,
+      target.timestamp_column
+    );
+  END LOOP;
+END;
+$idx$;
 
 INSERT INTO telemetry_retention_policies
   (table_name, timestamp_column, retain_for, extra_where, notes)
@@ -203,8 +225,12 @@ VALUES
    'Top-N process attribution emitted every 15s; UI/agents use latest to 6h windows.'),
   ('net_connections', 'captured_at', interval '14 days', NULL,
    'Point-in-time active connection summaries; Copilot uses last 15m.'),
-  ('disk_io_stats', 'captured_at', interval '14 days', NULL,
-   'High-frequency device I/O; UI and agents use recent windows.'),
+  ('disk_io_stats', 'captured_at', interval '35 days', NULL,
+   'High-frequency device I/O. 35d, NOT 14d: the metrics page offers a 30d range '
+   'over this table (apps/web/src/app/(dashboard)/metrics/page.tsx:18,114). '
+   'Anything under 30d silently truncates that chart with no empty state. '
+   'The 5d margin is deliberate headroom — do not trim it without removing the '
+   '30d option from that panel first.'),
   ('container_io', 'captured_at', interval '7 days', NULL,
    'Container I/O is a live diagnostic stream.'),
   ('service_health', 'captured_at', interval '14 days', NULL,
@@ -219,29 +245,12 @@ VALUES
    'Drive/ShareSync live backlog snapshots.'),
   ('custom_metric_data', 'captured_at', interval '14 days', NULL,
    'Ad hoc metric output; promoted metrics should move into normal metrics/facts.'),
-  ('container_status', 'recorded_at', interval '30 days', NULL,
-   'Container status polling; docker page uses latest rows.'),
-  ('metrics', 'recorded_at', interval '90 days', NULL,
-   'Raw metrics beyond 90d should be rolled up before keeping long-term.'),
-  ('storage_snapshots', 'recorded_at', interval '90 days', NULL,
-   'Storage history is useful, but raw per-minute rows beyond 90d are low value.'),
   ('drive_team_folders', 'recorded_at', interval '30 days', NULL,
    'Team-folder state snapshots; latest state dominates.'),
   ('drive_activities', 'recorded_at', interval '180 days', NULL,
    'User file-operation history is higher-value forensic data.'),
   ('dsm_errors', 'logged_at', interval '180 days', NULL,
-   'DSM warning/error stream; keep longer than routine telemetry.'),
-  ('nas_logs', 'ingested_at', interval '30 days',
-   $$severity = 'info' AND source IN (
-       'share_config',
-       'package_health',
-       'drive_admin_stats',
-       'dsm_system_log',
-       'backup',
-       'service',
-       'system_info'
-     )$$,
-   'Aggressively trim routine info logs from noisy polling sources; keep warning/error/critical longer.')
+   'DSM warning/error stream; keep longer than routine telemetry.')
 ON CONFLICT (table_name) DO UPDATE
 SET timestamp_column = EXCLUDED.timestamp_column,
     retain_for = EXCLUDED.retain_for,
@@ -249,32 +258,36 @@ SET timestamp_column = EXCLUDED.timestamp_column,
     notes = EXCLUDED.notes,
     updated_at = now();
 
--- Keep pg_partman retention aligned for the partitioned parents that already
--- have partition management. Some child partitions still have smon_* names
--- after the parent rename, so update both possible parent names defensively.
-UPDATE part_config
-SET retention = '90 days',
-    retention_keep_table = false,
-    retention_keep_index = false
-WHERE parent_table IN ('public.metrics', 'public.smon_metrics');
-
-UPDATE part_config
-SET retention = '180 days',
-    retention_keep_table = false,
-    retention_keep_index = false
-WHERE parent_table IN ('public.nas_logs', 'public.smon_logs');
-
-UPDATE part_config
-SET retention = '90 days',
-    retention_keep_table = false,
-    retention_keep_index = false
-WHERE parent_table IN ('public.storage_snapshots', 'public.smon_storage_snapshots');
-
-UPDATE part_config
-SET retention = '30 days',
-    retention_keep_table = false,
-    retention_keep_index = false
-WHERE parent_table IN ('public.container_status', 'public.smon_container_status');
+-- pg_partman owns the four partitioned parents, and only these four: metrics,
+-- nas_logs, storage_snapshots, container_status (00003_create_partitions.sql —
+-- exactly four create_parent calls). This migration deliberately does NOT touch
+-- part_config and does NOT add row-level policies for them.
+--
+-- drive_activities is NOT partman-managed despite what older docs claimed — it is
+-- a plain table (00008_create_drive_tables.sql:26, no PARTITION BY). The only
+-- partitioned Drive object is drive_team_folders_partitioned, which has no child
+-- partitions and no writes. So drive_activities DOES need a row-level policy and
+-- has one below; do not "clean it up" on the assumption partman covers it.
+--
+-- Why (decided 2026-07-16, owner):
+--   * Dropping a whole partition is far cheaper than deleting its rows one by one.
+--   * The row policies here were partly dead anyway: partman already drops
+--     metrics/storage_snapshots at 84d, so a 90d row policy could never fire.
+--   * An earlier draft rewrote part_config for all four parents. That would have
+--     LOOSENED metrics/storage_snapshots from partman's 84d to 90d, and reversed
+--     container_status from a deliberate 180 days — "6 months for better pattern
+--     analysis" (00003_create_partitions.sql:60) — down to 30 days, purely as a
+--     side effect of treating it as ordinary telemetry. Do not reintroduce that.
+--
+-- To change retention on any of these five, edit part_config directly; do not add
+-- them to telemetry_retention_policies.
+--
+-- Known gap: nas_logs routine `info` rows from noisy polling sources
+-- (share_config, package_health, drive_admin_stats, dsm_system_log, backup,
+-- service, system_info) now live the full partman 180d rather than being trimmed
+-- at 30d, because severity-selective trimming is exactly what a partition drop
+-- cannot express. If nas_logs proves to be a real space driver, that one policy is
+-- the thing to reconsider — see docs/telemetry-retention.md.
 
 DO $do$
 DECLARE

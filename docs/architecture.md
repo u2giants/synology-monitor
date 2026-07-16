@@ -685,8 +685,16 @@ Stage 3: runStage3Explainer (single-shot)
 Supabase project `aaxtrlfpnoutziwhshlt`. 53 tables total (migrations 00001–00042;
 `00042` is committed but **not applied to any live database** — see below).
 
-**Partitioned tables** (pg_partman, monthly, auto-retention): `metrics`,
-`nas_logs`, `storage_snapshots`, `container_status`, `drive_activities`.
+**Partitioned tables** (pg_partman, monthly, auto-retention) — exactly four:
+`metrics`, `nas_logs`, `storage_snapshots`, `container_status`
+(`00003_create_partitions.sql` has four `create_parent` calls; partman retention is
+84d / 180d / 84d / 180d respectively).
+
+`drive_activities` is **not** partitioned or partman-managed — it is a plain table
+(`00008_create_drive_tables.sql:26`). This doc previously listed it as partitioned,
+probably confusing it with `drive_team_folders_partitioned` (schema only, no child
+partitions, no writes — see AGENTS.md §12). It therefore needs row-level retention;
+`00042` gives it a policy.
 
 **Everything else has no retention and grows without bound.** The DB reached ~32 GB,
 driven by the high-frequency collector streams (`process_snapshots` alone was ~43.6M
