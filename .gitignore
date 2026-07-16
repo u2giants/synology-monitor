@@ -40,3 +40,10 @@ apps/agent/data/
 !.claude/settings.json
 package-lock.json
 pnpm-lock.yaml
+
+# MCP client config — holds the nas-mcp bearer token in plaintext. It was only
+# ever covered by .git/info/exclude, which is local to one clone and does not
+# travel; a fresh clone would have happily committed the token. That already
+# happened once: 006c059 committed a live token in ROO_MCP_GUIDE.md and 11f5d5e
+# removed the file, but the value stayed in history and had to be rotated.
+.mcp.json

@@ -213,6 +213,13 @@ Done:
   classifier found the same gap for `smartctl -t`/`-X` and `setfacl`, affecting
   `create_prechange_snapshot`, `start_btrfs_scrub`, `start`/`cancel_smart_test`, and
   `repair_path_acl` (`8e0971b`).
+- Follow-up 2026-07-16: that audit gated `setfacl`, but `setfacl` is not installed on
+  these NASes at all — `/volume1` is mounted `synoacl` and DSM's `synoacltool` is the
+  real ACL binary, which matched no pattern and so still ran at tier 1. Gated by verb
+  (`910fa6b`), and `repair_path_acl` — which could only ever print "command not found"
+  — was removed (`107741d`). **Not yet deployed:** `edgesynology1` still reports
+  `f4c8c7a`, so the synoacltool hole is live on both NASes until these commits reach
+  `main` and Watchtower recreates the containers.
 - Verified live on `edgesynology1` after Watchtower picked up `f4c8c7a` (16:56 UTC
   2026-07-16): `create_prechange_snapshot` with `confirmed: false` returns a preview and
   creates nothing (`btrfs subvolume list` unchanged); the command now classifies tier 2;
@@ -234,10 +241,13 @@ Next action:
 
 Risks / watchouts:
 - Until `edgesynology2` is updated, its `run_command` still executes `btrfs`,
-  `smartctl -t`/`-X`, and `setfacl` commands unattended as tier 1. The `nas-mcp` fix is
+  `smartctl -t`/`-X`, and `setfacl` commands unattended as tier 1. `synoacltool` writes
+  are unattended on **both** NASes until `910fa6b` deploys (`edgesynology1` was still on
+  `f4c8c7a` at 2026-07-16 close). `setfacl` is moot in practice — it is not installed —
+  but `synoacltool -add/-del/-replace/-set-owner` is the real exposure. The `nas-mcp` fix is
   already live and covers the **named** write tools on both NASes (it does not depend on
   nas-api's tier), but it cannot cover free-form `run_command`, which takes no
   `confirmed` argument and gates only on the classifier.
 - Do not "simplify" the two layers back into one. They are independent on purpose: the
   MCP gate cannot protect `run_command`, and the classifier cannot be trusted to have no
-  gaps. Background: AGENTS.md §10 and `docs/architecture.md`.
+  gaps. Background: AGENTS.md §12 and `docs/architecture.md`.
