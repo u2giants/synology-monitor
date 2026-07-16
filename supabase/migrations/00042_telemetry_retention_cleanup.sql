@@ -119,6 +119,24 @@ BEGIN
 END;
 $$;
 
+-- SECURITY: a GRANT alone does NOT restrict anything here.
+--
+-- Postgres makes new functions EXECUTE-able by PUBLIC by default, and this
+-- Supabase project additionally has ALTER DEFAULT PRIVILEGES granting EXECUTE on
+-- new public functions to `anon` and `authenticated`. Since PostgREST exposes
+-- public functions as RPC, and the anon key is public (it is baked into the
+-- browser bundle), omitting the REVOKE publishes these to the internet.
+--
+-- These are SECURITY DEFINER and delete rows using a caller-supplied predicate.
+-- Without the REVOKE below, anyone with the anon key could call
+--   POST /rest/v1/rpc/cleanup_table_by_age
+-- and delete arbitrary rows from arbitrary tables. Verified live on 2026-07-16:
+-- it returned HTTP 200 to an anon caller before this was fixed. See 00043.
+--
+-- REVOKE FIRST, then GRANT. Never reorder.
+REVOKE ALL ON FUNCTION cleanup_table_by_age(text, text, interval, text, integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION cleanup_high_volume_telemetry(integer, integer) FROM PUBLIC, anon, authenticated;
+
 GRANT EXECUTE ON FUNCTION cleanup_table_by_age(text, text, interval, text, integer) TO service_role;
 GRANT EXECUTE ON FUNCTION cleanup_high_volume_telemetry(integer, integer) TO service_role;
 
@@ -170,6 +188,7 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION telemetry_retention_estimates() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION telemetry_retention_estimates() TO service_role;
 
 -- Retention indexes.

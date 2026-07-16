@@ -586,6 +586,44 @@ corrected partman, reclaimed 3.34 GB.
 Rule added to prevent recurrence:
 No source whitelists; sender must isolate bad rows; empty tables are bugs.
 
+### 2026-07-16 — `anon` could run arbitrary SQL and steal the AI key (SECURITY DEFINER + default grants)
+
+What happened:
+Seven `SECURITY DEFINER` functions in `public` were EXECUTE-able by `anon`. Verified
+exploitable against production with nothing but the **public anon key** (it is baked into
+the browser bundle at mon.designflow.app — anyone with devtools has it):
+- `POST /rest/v1/rpc/exec_sql {"sql":"SELECT 1"}` → **HTTP 204, arbitrary SQL executed**
+- `POST /rest/v1/rpc/smon_get_openai_key {}` → **HTTP 200, returned the live `sk-or-v1-…` key**
+
+`exec_sql` is `SECURITY DEFINER` owned by `postgres`: that is arbitrary SQL as a
+superuser-equivalent — `DROP TABLE`, read `auth.users`, exfiltrate anything — against a
+database with **no rollback project**.
+
+Root cause — **a `GRANT` does not restrict anything here**:
+1. Postgres makes new functions EXECUTE-able by `PUBLIC` by default.
+2. This project *also* has `ALTER DEFAULT PRIVILEGES` granting EXECUTE on new `public`
+   functions to `anon` and `authenticated`.
+3. PostgREST publishes every `public` function as an RPC endpoint.
+
+So `00010`'s `grant execute on function exec_sql(text) to service_role` looked like a
+restriction and was not — it added a role while `anon` kept the default grant. Only an
+explicit `REVOKE` restricts. Migration `00042` reproduced the same mistake on day one.
+
+**Rule — every `CREATE FUNCTION` in this repo must be followed by:**
+```sql
+REVOKE ALL ON FUNCTION <signature> FROM PUBLIC, anon, authenticated;
+-- and only then GRANT to the roles that genuinely need it
+```
+`00043_revoke_anon_execute_on_security_definer.sql` closes the existing set and ends with
+a guard that raises if any `SECURITY DEFINER` function in `public` is still anon-callable.
+Keep that guard passing. Audit with:
+```sql
+SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon',p.oid,'EXECUTE');
+```
+**The leaked `sk-or-v1-…` AI key must be rotated by the owner** — it was retrievable by
+anyone with the anon key for as long as the function has existed.
+
 ### 2026-07-16 — pg_partman silently dead for 48 days (`select` on a procedure)
 
 What happened:
@@ -803,9 +841,12 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | open | `analyzeRecentLogs` caller: decide whether to keep AI log clustering as a background job | Owner decision — readers already migrated to `issues` (2026-05-31) |
 | open | `second_opinion_model`: wire a second AI model cross-check into Stage 2 | Future session — see `getSecondOpinionModel()` in `ai-settings.ts` |
 | open | `drive_team_folders` reader: web app never queries team folder data | Future session |
-| open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → **migration 00043** (00042 is now telemetry retention) |
+| **open** | **ROTATE the AI provider key** (`sk-or-v1-…` in vault secret `smon_openai_api_key`) — it was returnable to anyone holding the public anon key via `smon_get_openai_key` until 2026-07-16. Access is closed (`00043`), but the key itself is compromised | **Owner** — rotate at OpenRouter, update the vault secret |
+| open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → **migration 00044** (00042 = telemetry retention, 00043 = anon REVOKE security fix) |
 | **open** | **pg_partman dead since 2026-05-29** — cron `select`s a procedure (25/25 failures); ~8.4 GB stranded in DEFAULT partitions that retention can never drop, and growing. This is the **largest** DB-size driver | Owner/next session — one-word fix (`CALL`), but run `run_maintenance_proc()` **manually and watched** first (48d backlog, ~27M default rows to relocate). **Do NOT set `ignore_default_data=true`** — it makes partition creation fail, not skip. See `docs/telemetry-retention.md` |
-| **open** | **Telemetry retention: installed, deletes paused.** `00042` + both indexes are live on `aaxtrlfpnoutziwhshlt`; 61k rows deleted to prove the path; **56.4M expired `process_snapshots` rows remain** (97% of a 16 GB table). Hourly cron deliberately **unscheduled** | Owner — approve the drain (measured 50k/532ms, zero blocking; ~10 min total), then re-enable the cron (SQL in `docs/telemetry-retention.md`). **No rollback project exists — deletes are final** |
+| **open** | **Telemetry retention: installed, deletes paused.** `00042` + both indexes are live on `aaxtrlfpnoutziwhshlt`; 61k rows deleted to prove the path; **56.4M expired `process_snapshots` rows remain** (97% of a 16 GB table). Hourly cron deliberately **unscheduled** | Owner — approve the drain, but **check autovacuum/WAL first** and treat "~10 min" as a floor (see `docs/telemetry-retention.md`). **No rollback project exists — deletes are final** |
+| **open** | **`cleanup_high_volume_telemetry` cannot commit between batches** — it is a *function*, so its batch loop is one transaction: up to **3.25M rows (13 policies × 10 × 25k) in a single txn** per hourly run. Do **not** schedule the cron as written | Future session — convert to a procedure that `COMMIT`s per batch (cron then uses `CALL`), or schedule one bounded batch more often. Capacity is ample (~22k rows/hr produced vs 250k/hr) |
+| open | **Metrics page 30d disk I/O chart is broken independently of retention** — `useDiskIO` orders `ascending` with `.limit(2000)`, so it renders the *oldest* 2,000 rows (a few hours from 30 days ago), not 30 days. `disk_io_stats` is held at 35d purely for compatibility | Future session — downsample to hourly buckets via aggregate/RPC for long ranges; then `disk_io_stats` can drop to ~14d and reclaim more |
 | **open** | `metrics` / `nas_logs` / `storage_snapshots` / `container_status` currently have **no retention from either mechanism** — they were left to partman, and partman is broken (row above) | Resolves itself once partman is fixed; until then, treat as unbounded growth |
 | done | `00042` reader audit + fixes: `disk_io_stats` → 35d (protects the metrics page's 30d range); `CREATE INDEX` now `to_regclass`-guarded (previously hard-failed a rebuild); `metrics`/`nas_logs`/`storage_snapshots`/`container_status` left to pg_partman and all `part_config` writes removed, so the deliberate 180d `container_status` decision stands | 2026-07-16 — verified on throwaway PG17; rationale in `docs/telemetry-retention.md` |
 | open | Relay has no CI build workflow | Decide: add workflow or document manual path as canonical |

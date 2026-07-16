@@ -25,11 +25,76 @@ Measured delete performance (why the cron is safe to enable when you want it):
 | 50,000 | 532 ms | 0 |
 
 ~10.6 µs/row, scaling linearly. Draining the remaining 56.4M rows ≈ 1,130 batches of
-50k ≈ **10 minutes** of delete time.
+50k ≈ **10 minutes** of *delete execution*.
 
-**Deletes are irreversible and there is no rollback project.** Re-enable the cron with:
+**Treat that 10 minutes as a floor, not an estimate.** It measures `DELETE` under warm
+cache and excludes what actually dominates on a 1 GB Micro: WAL generation, index entry
+cleanup, checkpoints/writeback, autovacuum heap+index passes, and planner-statistics
+correction. Likewise "0 blocked sessions" proves only that one 532 ms sample took no lock —
+not that sustained deletion is safe. Deletes do not lock out the agents' inserts directly,
+but can stall them indirectly via I/O saturation, WAL pressure, checkpoint frequency,
+buffer-cache eviction, and autovacuum competing for the same 1 GB.
+
+Before draining, check the things that will actually bite (none of this was done yet):
 
 ```sql
+SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, autovacuum_count
+FROM pg_stat_user_tables WHERE relname='process_snapshots';
+
+SELECT * FROM pg_stat_progress_vacuum WHERE relid='public.process_snapshots'::regclass;
+
+SELECT name, setting FROM pg_settings WHERE name IN
+ ('autovacuum_vacuum_scale_factor','autovacuum_vacuum_threshold','autovacuum_vacuum_cost_limit',
+  'autovacuum_vacuum_cost_delay','maintenance_work_mem','max_wal_size','checkpoint_timeout');
+```
+
+Prefer **per-table** autovacuum settings on `process_snapshots` (a scale factor tuned for a
+58M-row table; the default waits far too long) over making autovacuum globally aggressive.
+Do not disable autovacuum, and do not run concurrent manual vacuums on this instance.
+Throttle on production health — pause between batches and stop on rising ingest latency,
+failed agent writes, disk latency, or vacuum backlog — rather than running at max speed.
+
+**XID burn is *not* a concern here** — Postgres consumes one XID per transaction, not per
+row; ~1,130 committed batches is nothing. The real costs are WAL volume, dead tuples,
+index cleanup and storage saturation.
+
+**Space will not come back on its own.** Plain `VACUUM` makes the freed heap reusable
+*inside* `process_snapshots`; it does not return 15 GB to the filesystem or shrink the
+reported DB size. Only `VACUUM FULL` / `CLUSTER` / a repack does, each needing an
+`ACCESS EXCLUSIVE` lock and roughly as much spare space as the table+indexes — on a disk
+that already filled once and crashed this DB read-only, and which AWS gp3 lets you resize
+only once per 4h. Given the collector writes continuously and will reuse freed pages,
+leaving the table physically large is probably the right answer; if space must be returned,
+plan a maintenance window or an online repack (`pg_repack`), not an improvised `VACUUM FULL`.
+
+**Deletes are irreversible and there is no rollback project.**
+
+### ⚠️ Do not enable the hourly cron as written — the batching does not commit
+
+`cleanup_high_volume_telemetry` is a **function** (`pg_proc.prokind = 'f'`), and a function
+cannot `COMMIT`. Its inner "batch" loop therefore runs entirely inside **one transaction**:
+
+> 13 enabled policies × 10 batches × 25,000 = **up to 3,250,000 rows deleted in a single
+> transaction** per hourly run.
+
+That defeats the point of batching — one WAL burst, one long-lived snapshot holding back
+vacuum on the very table generating the dead tuples, and everything rolls back together on
+any error. The per-batch `statement_timeout` bounds each `DELETE`, not the transaction.
+(The staged drain measured above did *not* hit this: each `SELECT cleanup_table_by_age(...)`
+was its own autocommitted statement.)
+
+Fix one of these before scheduling it:
+- Convert `cleanup_high_volume_telemetry` to a **procedure** that `COMMIT`s between
+  batches (then cron calls `CALL …`, not `SELECT * FROM …`), or
+- Schedule **one bounded batch per invocation**, run more often — e.g. 25k every 5-10 min.
+  Capacity is not the constraint: `process_snapshots` accrues ~22k rows/hour
+  (≈1.6M surviving rows / 72h), so 250k/hour is ~11× production. Bounded work per call
+  is ample.
+
+Only after that, schedule it:
+
+```sql
+-- ONLY once the commit-per-batch issue above is fixed; adjust to match the chosen form.
 SELECT cron.schedule('telemetry-retention-cleanup','17 * * * *',
   $$SELECT * FROM public.cleanup_high_volume_telemetry(10, 25000);$$);
 ```
@@ -82,19 +147,37 @@ fixed, those four tables have **no retention from either mechanism**.
 **Do not simply set `ignore_default_data = true` to avoid the backfill.** That looks like
 the safe option and is not: partman creates a child table and `ATTACH`es it, and Postgres
 must verify that no row in the DEFAULT partition belongs to the new partition — it
-**errors** if any do. Since the default holds data up to today, `ignore_default_data = true`
-would make partition creation *fail* for exactly the weeks that need it, rather than skip
-work. Leave it `false` and let partman move each week's rows as it creates that week's
-partition (which chunks the work naturally, ~2.5M rows per weekly partition for `metrics`).
+**errors** if any do. So `ignore_default_data = true` makes partition creation *fail* for
+exactly the weeks that need it, rather than skip work.
+
+**And do not expect `run_maintenance_proc()` to fix this either.** (Corrected 2026-07-16
+after review — an earlier draft of this doc claimed partman would move each week's rows as
+it created that week's partition. **It will not.**) `run_maintenance[_proc]` creates and
+drops partitions; **it is not the DEFAULT-data mover.** The documented movers are
+`partition_data_proc()` / `partition_data_time()`. This matches what actually happened
+during the 2026-05-29 repair, where `partition_data_proc` did the draining.
+
+**Consequence: fixing the cron alone will not fix this.** With ~27M rows sitting in DEFAULT
+across the ranges partman needs to create, a corrected `CALL` will just fail differently —
+or skip ranges — until the DEFAULT is drained. **Drain first, fix cron last.**
 
 Sequence, when someone picks this up:
-1. Run `CALL public.run_maintenance_proc()` **manually, watched**, not via the 07:00 cron —
-   the first run has ~48 days of backlog to create and ~27M default rows to relocate on a
-   1 GB Micro instance. Expect it to be slow; `partition_data_proc` is the batched
-   alternative if it needs to be broken up further.
-2. Verify `part_config.maintenance_last_run` advances and new bounded partitions appear.
-3. Only then re-point the cron at `CALL`, so the recurring job inherits a drained default.
-4. Expect ~1.36 GB reclaimed from expired partitions on the first successful retention pass.
+1. Leave the broken job disabled/unfixed while recovering — you do not want the 07:00 cron
+   firing mid-drain.
+2. Record exact bounds and row counts per DEFAULT partition first, so conservation can be
+   verified afterwards.
+3. Drain the **completed** historical weeks with `partition_data_proc()` in batches.
+4. Handle the **actively-written current week separately** — `partition_data_proc` races
+   live writes and never converges (proven on 2026-05-29). That needed a manual atomic
+   `detach → create current+future partitions → backfill`.
+5. Verify row conservation per table and interval.
+6. Ensure current + `premake` future partitions exist.
+7. Run `CALL public.run_maintenance_proc()` manually and confirm it completes and that
+   `part_config.maintenance_last_run` advances.
+8. **Only then** repoint the cron at `CALL`, so the recurring job inherits a drained default.
+9. Expect ~1.36 GB reclaimed from expired partitions on the first successful retention pass.
+
+**Do not run a blind `CALL run_maintenance_proc()` against 27M DEFAULT rows as step 1.**
 
 ### Hard-won details from the last time this happened (2026-05-29)
 
@@ -166,13 +249,23 @@ Found 2026-07-16 by auditing every reader of the policy tables; fixed the same d
 (owner decisions recorded inline). Kept here because each one is a trap that would
 otherwise be reintroduced.
 
-**1. `disk_io_stats` 14d vs. a 30d UI range — RESOLVED (now 35d).**
+**1. `disk_io_stats` 14d vs. a 30d UI range — RESOLVED (now 35d), but see the caveat.**
 The metrics page offers a `30d` option (`apps/web/src/app/(dashboard)/metrics/page.tsx:18`)
 and queries `disk_io_stats` with it (`:114`, `parseRange` at `:892`). At 14d that chart
 silently showed half its range with no empty state. Now **35 days** — 30d of range plus
 5d headroom. The same `ranges` array also feeds `metrics` (90d, fine), which is exactly
 why the mismatch was easy to miss. **Do not trim below 30d without removing the 30d
-option from that panel first.**
+option from that panel first.** 35d still expires 12.27M of 16.8M rows, so this costs
+little.
+
+> **Caveat (review, 2026-07-16): the 30d option is already broken independently of
+> retention.** `useDiskIO` does `.order("captured_at", {ascending: true}).limit(2000)`
+> (`:118-123`), so it returns the **oldest 2,000 rows** in the window — at a 15s cadence
+> across several devices that is a few hours of data from 30 days ago, not a 30-day chart.
+> Retention was never what broke it. **35d is a compatibility window, not an endorsement of
+> retaining 35 days of raw per-15s I/O.** The real fix is to downsample: hourly buckets via
+> an aggregate/RPC for long ranges, keep raw I/O brief. Once that ships, `disk_io_stats`
+> can drop back to ~14d and reclaim more. Tracked in AGENTS.md § 16.
 
 **2. `CREATE INDEX` on tables no migration creates — RESOLVED (guarded).**
 `process_snapshots`, `disk_io_stats`, `net_connections`, `sync_task_snapshots` are only
