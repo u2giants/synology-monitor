@@ -134,6 +134,20 @@ Connecting for either: the DB password is in 1Password →
 so it never enters a transcript. Direct host is **IPv6-only**; the pooler rejects the
 tenant. `postgres` role has a ~2min `statement_timeout` — override with `PGOPTIONS`.
 
+⚠️ **Two live issues found while doing this — neither is caused by the retention work, both are unfixed:**
+1. **`anon` could run arbitrary SQL + read the AI key** — CLOSED on live and in `00043`, but
+   **the `sk-or-v1-…` key must still be rotated by the owner.** See AGENTS.md § 15.
+2. **Agent ingestion cannot keep up**: `process_snapshots` is ~80 min stale on edge1 and
+   drifting ~8% further behind. Sender flushes one 100-row batch per 30s (200/min) vs a
+   collector emitting up to 240/min. Structural; backlogs never drain. See AGENTS.md § 16.
+   (edge2 is ~282 min stale for a separate reason — it was unreachable all session.)
+
+⚠️ **Gotcha for whoever re-runs `00042`:** its final `DO` block **re-schedules the hourly
+cron**. Re-running the migration silently re-armed the job that was deliberately
+unscheduled (caught 2026-07-16 before it fired). After any `00042` re-run, verify:
+`SELECT count(*) FROM cron.job WHERE jobname='telemetry-retention-cleanup';` and unschedule
+until the commit-per-batch issue is fixed.
+
 Scheduled review — **2026-08-17**: is `nas_logs` a real space driver?
 
 Why this date exists: to let partman own the partitioned tables, `nas_logs` was dropped
