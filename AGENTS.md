@@ -509,6 +509,32 @@ Individual mounts let you comment out non-existent bays.
 Do not change because: mounting the full `/dev` tree read-only would still expose
 `/dev/mem`, `/dev/kmem`, and other sensitive kernel interfaces.
 
+### The rename tools repeat the literal path on the `mv` line on purpose
+Looks like: `rename_file_to_old` and `remove_invalid_chars` in
+`packages/shared/src/nas-tools.ts` assign `src=<quoted path>` and then pointlessly
+re-inline the same quoted literal on the `mv` line instead of using `mv "$src"`.
+Obvious cleanup.
+Actually: that duplication is the only reason these classify as tier 3. nas-api's
+`ClassifyTier` (`apps/nas-api/internal/validator/validator.go`, `filePatterns`
+~line 262) matches per line, and Go regexes do not cross newlines — it needs a
+literal `/volumeN` path on the **same line** as the write verb. Measured:
+`mv '/btrfs/volume1/mac/a.txt' …` → tier 3; `mv "$src" "$dest"` → **tier 2**.
+Tier 2 still previews and still requires `confirmed:true` (`apps/nas-mcp/src/index.ts:170`),
+but loses the approval token (`buildApprovalToken` fires on tier >= 2) — so the
+"cleanup" silently weakens the approval on a root/`CAP_SYS_ADMIN` write with no
+error and no failing build.
+Do not assume because: the guard is not the comment. `apps/nas-api/internal/validator/nas_write_tools_contract_test.go`
+feeds the real builder's output (via the golden `packages/shared/src/__fixtures__/nas-write-commands.golden.json`,
+kept current by `nas-tools.golden.test.ts`) to the real classifier and fails on the
+downgrade. Delete the duplication only once nas-api enforces a declared minimum tier
+per tool, which removes the dependency on what the regex can see.
+See the 2026-07-16 injection fix (`nas-tools: stop the rename tools executing injected
+shell from filter paths`) — the same commit fixed a proven root RCE where a filter of
+`/volume1/x$(touch /tmp/INJECTED).txt` executed the payload at word expansion, invisible
+to `ClassifyTier`, under an approval that read "rename a file". Paths there go through
+`quote()`; a raw path in a *double-quoted error message* is still an injection, because
+the `||` branch runs precisely when the path is hostile.
+
 ### Watchtower updates images but NOT compose configuration
 Looks like: after pushing `docker-compose.agent.yml` changes to `main`, the NAS
 containers will pick them up like code changes.
