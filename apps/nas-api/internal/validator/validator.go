@@ -175,13 +175,29 @@ func stripQuotedStrings(command string) string {
 // writePatterns identifies commands that modify state (tier 2+).
 // Used to prevent Tier 1 execution of write operations.
 var writePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b`),
+	// setfacl rewrites permissions like chmod/chown; getfacl reads and must not match.
+	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr|setfacl)\b`),
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)tee\s+(-a\s+)?/(tmp|var|volume\d+|home|root|etc|usr|lib|opt|run|mnt|btrfs)/\S+`),
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b`), // in-place edit
 	regexp.MustCompile(`(?im)(^|[;&|]\s*)sync(\s|$)`),
 	regexp.MustCompile(`(?i)\bsysctl\s+-w\b`),
 	regexp.MustCompile(`(?i)\bionice\b.*-c`), // ionice -c sets I/O class; plain ionice -p (read) stays tier 1
 	regexp.MustCompile(`(?i)\bdd\b.*\bof=`),  // dd writing anywhere (device/proc covered by hard-block above)
+	// Mutating btrfs subcommands. Matched by verb so read-only diagnostics
+	// (subvolume list, scrub/balance/quota status, filesystem show/usage,
+	// device stats, qgroup show) stay tier 1. Without these, a snapshot or
+	// even `subvolume delete` classified as read-only and auto-executed.
+	regexp.MustCompile(`(?i)\bbtrfs\s+subvolume\s+(create|snapshot|delete)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+(scrub|balance|replace)\s+(start|cancel|resume)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+device\s+(add|remove|delete|replace)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+quota\s+(enable|disable|rescan)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+qgroup\s+(create|destroy|assign|remove|limit)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+filesystem\s+(resize|defragment|defrag|label)\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+property\s+set\b`),
+	// smartctl -t starts a drive self-test and -X aborts one: both command the
+	// device and belong at tier 2. The read flags in use (-A -H -a -i -l, incl.
+	// `-l selftest`) do not match, so SMART diagnostics stay tier 1.
+	regexp.MustCompile(`(?i)\bsmartctl\b[^;&|]*\s-(t|X)\b`),
 	// Output redirection into a data volume — raw `/volumeN` or the nas-api
 	// `/btrfs/volumeN` writable mount, with or without quotes around the path.
 	// stripQuotedStrings hides a quoted redirect target from hasRealOutputRedirect,
@@ -206,7 +222,7 @@ var writePatterns = []*regexp.Regexp{
 // filePatterns identifies file-system write operations that touch user data.
 // These require Tier 3 (approval + preview required).
 var filePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr)\b.*(/volume\d+/|/home/\w|/root/)`),
+	regexp.MustCompile(`(?i)\b(rm|mv|cp|ln|mkdir|rmdir|touch|chmod|chown|chattr|setfacl)\b.*(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(?i)\b(sed|awk)\s+(-i|--in-place)\b.*(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(?i)\b(echo|printf|tee|cat)\b.*(>>?|\\|\\s*tee\\s+)(/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(>>?)\s*/volume`), // redirect into volume
@@ -217,6 +233,11 @@ var filePatterns = []*regexp.Regexp{
 	// with spaces. The plain `/volume` entries above do not match `/btrfs/volume`.
 	regexp.MustCompile(`(>>?)\s*['"]?/(btrfs/)?volume\d+/`),
 	regexp.MustCompile(`(?i)\brename\b.*\.old\b`),
+	// Destroying a subvolume takes user data or a recovery point with it.
+	// Creating one (snapshot/create) stays tier 2 — it is additive, and is the
+	// designated pre-change recovery step.
+	regexp.MustCompile(`(?i)\bbtrfs\s+subvolume\s+delete\b`),
+	regexp.MustCompile(`(?i)\bbtrfs\s+device\s+(remove|delete)\b`),
 }
 
 var (

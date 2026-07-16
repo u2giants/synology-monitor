@@ -129,6 +129,96 @@ func TestWriteAndUnsafeCommandsStillBlockedOrElevated(t *testing.T) {
 	}
 }
 
+// These three families were absent from writePatterns entirely, so the tools
+// built on them (create_prechange_snapshot, start_btrfs_scrub, start/cancel_smart_test,
+// repair_path_acl) classified tier 1 and auto-executed with no approval —
+// `btrfs subvolume delete` among them. Mutating verbs must elevate; the
+// read-only diagnostics sharing each binary must stay tier 1.
+func TestMutatingSubcommandsElevate(t *testing.T) {
+	writes := []struct {
+		name     string
+		command  string
+		wantTier int
+	}{
+		{
+			name:     "prechange snapshot elevates to service tier",
+			command:  `btrfs subvolume snapshot -r '/btrfs/volume1' "$snap" 2>&1 && echo "Snapshot created: $snap"`,
+			wantTier: TierService,
+		},
+		{
+			name:     "subvolume delete destroys a recovery point, tier three",
+			command:  "btrfs subvolume delete /btrfs/volume1/@prechange_20260716",
+			wantTier: TierFile,
+		},
+		{
+			name:     "scrub start elevates",
+			command:  "btrfs scrub start /btrfs/volume1",
+			wantTier: TierService,
+		},
+		{
+			name:     "scrub cancel elevates",
+			command:  "btrfs scrub cancel /btrfs/volume1",
+			wantTier: TierService,
+		},
+		{
+			name:     "device delete is tier three",
+			command:  "btrfs device delete /dev/sda /volume1",
+			wantTier: TierFile,
+		},
+		{
+			name:     "smartctl -t starts a self-test",
+			command:  "smartctl -t 'short' '/dev/sda' 2>&1",
+			wantTier: TierService,
+		},
+		{
+			name:     "smartctl -X aborts a self-test",
+			command:  "smartctl -X /dev/'sda' 2>&1",
+			wantTier: TierService,
+		},
+		{
+			name:     "setfacl on a volume path is tier three like chmod",
+			command:  "setfacl -m 'u:mac:rwx' '/volume1/mac/Decor' 2>&1",
+			wantTier: TierFile,
+		},
+	}
+
+	for _, tt := range writes {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyTier(tt.command); got != tt.wantTier {
+				t.Fatalf("ClassifyTier() = %d, want %d", got, tt.wantTier)
+			}
+			if err := Validate(tt.command, TierRead); err == nil {
+				t.Fatalf("Validate(TierRead) unexpectedly allowed %q", tt.command)
+			}
+		})
+	}
+
+	reads := []string{
+		"btrfs subvolume list /btrfs/volume1",
+		"btrfs scrub status /volume1",
+		"btrfs filesystem usage /volume1",
+		"btrfs filesystem show",
+		"btrfs device stats /volume1",
+		"btrfs balance status /volume1",
+		"btrfs quota status /volume1",
+		"btrfs qgroup show /volume1",
+		"smartctl -a /dev/sda",
+		"smartctl -A \"$d\"",
+		"smartctl -H \"$d\"",
+		"smartctl -i \"$d\"",
+		"smartctl -l selftest /dev/sda",
+		"smartctl -l error /dev/sda",
+		"getfacl '/volume1/mac/Decor'",
+	}
+	for _, command := range reads {
+		t.Run("read stays tier one: "+command, func(t *testing.T) {
+			if got := ClassifyTier(command); got != TierRead {
+				t.Fatalf("ClassifyTier() = %d, want %d (read-only diagnostic)", got, TierRead)
+			}
+		})
+	}
+}
+
 func TestInotifyAndSeafileIgnoreClassification(t *testing.T) {
 	// set_inotify_watches: live sysctl + persist to /etc/sysctl.conf must stay
 	// tier 2 (service op) — it must NOT be elevated to tier 3 by the new
