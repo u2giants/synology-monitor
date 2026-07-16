@@ -199,10 +199,11 @@ Risks / watchouts:
   read-only once; AWS gp3 allows a resize only once per 4h.
 - Deleting rows will **not** immediately shrink the size Supabase reports.
 
-## NAS write-preview fix — `edgesynology2` still on the old nas-api build
+## NAS write-preview fix — `edgesynology2`'s nas-api container is DOWN
 
 Status:
-partial (code complete, pushed, verified live on `edgesynology1`; `edgesynology2` unreachable)
+partial (code complete, pushed, verified live on `edgesynology1`; **`edgesynology2`'s nas-api
+container is not running** — the NAS itself is healthy and its agent is reporting normally)
 
 Done:
 - Fixed the reported bug: `create_prechange_snapshot` with `confirmed: false` executed a
@@ -219,9 +220,9 @@ Done:
 - Follow-up 2026-07-16: that audit gated `setfacl`, but `setfacl` is not installed on
   these NASes at all — `/volume1` is mounted `synoacl` and DSM's `synoacltool` is the
   real ACL binary, which matched no pattern and so still ran at tier 1. Gated by verb
-  by verb, and `repair_path_acl` — which could only ever print "command not found" —
-  was removed. Shipped as `ff05281`; the ACL inspect tools also dropped their dead
-  `getfacl` section in `d48c6f9`.
+  against the live `synoacltool` usage text, and `repair_path_acl` — which could only ever
+  print "command not found" — was removed. Shipped as `ff05281`; the ACL inspect tools also
+  dropped their dead `getfacl` section in `d48c6f9`.
 - Verified live on `edgesynology1` after Watchtower picked up `ff05281` (2026-07-16
   16:06 UTC, health reports `ff05281`): `run_command` now **refuses**
   `synoacltool -add /volume1/mac/Decor ...`, which it executed unattended before, while
@@ -235,24 +236,44 @@ Done:
   `-l selftest`) still run at tier 1.
 
 Next action:
-- Confirm `GET http://100.107.131.36:7734/health` on `edgesynology2` reports
-  `build_sha` `f4c8c7a` or newer once the host is reachable again. It was unreachable
-  during this session (10s curl timeout from this workstation, and a 45s MCP
-  `run_command` timeout from the VPS over Tailscale, so it is the host — not the network
-  path). `edgesynology1` reported `f4c8c7a` at 16:56 UTC. No action should be needed:
-  Watchtower polls GHCR every 5 minutes and will recreate the container on its own.
+- **Start the nas-api container on `edgesynology2` via DSM → Container Manager.** This is an
+  operator action; it cannot be done from here, because the tool that would do it (`nas-api`)
+  is the thing that is down, and SSH is not a sanctioned path in this repo.
+- **The earlier diagnosis in this section was wrong and cost days — do not repeat it.** It
+  read: *"10s curl timeout from this workstation, and a 45s MCP `run_command` timeout from
+  the VPS over Tailscale, so it is the host — not the network path"*. Every probe used had
+  gone over Tailscale, and es2's Tailscale client was offline (last seen 2026-07-08), so all
+  of them failed for one reason and the conclusion "it is the host" did not follow.
+  Re-measured 2026-07-16 ~21:00 UTC, after the operator restored Tailscale:
+  - `192.168.3.101:5000` (DSM, probed from es1 over the LAN) → **HTTP 200**. The NAS is up.
+  - `192.168.3.101:7734` and `100.107.131.36:7734` → **ECONNREFUSED** (`curl exit=7`) on both
+    paths. Refused, not timed out: packets arrive and nothing is listening. That is a stopped
+    container, not an unreachable host.
+  - `nas_units` in Supabase: `edgesynology2` = **online**, `last_seen` current, agent build
+    `8355599` built 2026-07-16 20:58 — identical to `edgesynology1`. So the box, its Docker
+    stack, and Watchtower are all working, and **telemetry was never interrupted**. Only
+    nas-api is missing.
+  Diagnostic rule this yields: **timeout ≠ refused**. A timeout means the packets never
+  arrived (network/host); a refusal means they did and no process is listening (service).
+  Check DSM `:5000` from `edgesynology1` over the LAN before ever calling a NAS "down" —
+  every other route depends on Tailscale and will lie to you in unison.
+- Once nas-api is running on es2, confirm `GET http://100.107.131.36:7734/health` reports
+  `ff05281` or newer. Watchtower will update the *image* within ~5 min of the container
+  running, but it cannot start a container that is not running — that is why this needs a
+  hand. `edgesynology1` reported `ff05281` at 16:06 UTC.
 - Decide whether to delete the two stray snapshots the bug created on `edgesynology1`
   before it was fixed: `@prechange_20260716_154207` and `mac/@prechange_20260716_154247`
   (both 2026-07-16 15:42 UTC). They are read-only btrfs snapshots — harmless, but they
   pin CoW space that grows as the live subvolume diverges. Deleting them is now tier 3.
 
 Risks / watchouts:
-- Until `edgesynology2` is updated, its `run_command` still executes `btrfs`,
-  `smartctl -t`/`-X`, and `setfacl` commands unattended as tier 1. `synoacltool` writes
-  are unattended there too: `edgesynology1` is fixed and verified on `ff05281`, but
-  `edgesynology2` is still unreachable, so it keeps whatever build it last pulled.
-  `setfacl` is moot in practice — it is not installed — but
-  `synoacltool -add/-del/-replace/-set-owner` is the real exposure. The `nas-mcp` fix is
+- `edgesynology1` is fixed and verified on `ff05281`. `edgesynology2` will come up on
+  whatever image it last pulled, so **until Watchtower updates it after someone starts the
+  container**, its `run_command` executes `btrfs`, `smartctl -t`/`-X` and
+  `synoacltool -add/-del/-replace/-set-owner` unattended as tier 1. It is not exploitable
+  while the container is down (nothing is listening), so the exposure window opens the
+  moment it starts and closes ~5 min later — worth watching, not panicking over. `setfacl`
+  is moot in practice: it is not installed on either NAS. The `nas-mcp` fix is
   already live and covers the **named** write tools on both NASes (it does not depend on
   nas-api's tier), but it cannot cover free-form `run_command`, which takes no
   `confirmed` argument and gates only on the classifier.

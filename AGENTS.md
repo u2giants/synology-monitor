@@ -288,6 +288,29 @@ a content write like `printf ... > '/btrfs/volume1/x/seafile-ignore.txt'` would
 classify below tier 3.
 Do not remove: it only ever elevates classification (added for `write_seafile_ignore`).
 
+### "The NAS is unreachable" is almost always a service, not the box
+Looks like: a NAS is down — every probe fails, from the workstation and from the VPS.
+Actually: **every** route this project has to a NAS goes over Tailscale — your workstation,
+the VPS, and therefore `nas-mcp`/`run_command`. When a NAS's Tailscale client drops, all of
+them fail at once, which reads as overwhelming evidence for "the host is down" while actually
+being one fault counted several times. On 2026-07-08 `edgesynology2`'s Tailscale went offline;
+a session concluded *"10s curl timeout from this workstation, and a 45s MCP timeout from the
+VPS, so it is the host — not the network path"*, wrote it into `HANDOFF.md`, and the wrong
+diagnosis stuck for over a week. The box was healthy the whole time.
+Do this instead, before calling a NAS down:
+- **Read the failure mode.** `timeout` = packets never arrived (network or host). `ECONNREFUSED`
+  (`curl exit=7`) = they arrived and nothing is listening — that is a **stopped service**, and
+  it proves the host is up.
+- **Probe DSM from the other NAS over the LAN**, which does not involve Tailscale:
+  `run_command target=edgesynology1 → curl -s -o /dev/null -m 6 -w '%{http_code}' http://192.168.3.101:5000/`
+  (`edgesynology1` = 192.168.3.100, `edgesynology2` = 192.168.3.101, both behind 74.80.230.82).
+  A 200 from DSM means the NAS is fine and you are chasing a service.
+- **Ask Supabase.** `select name, status, last_seen, agent_version from nas_units` is an
+  independent path that does not touch Tailscale at all: the agent pushes out to Supabase. If
+  `last_seen` is current, the box, its Docker stack and Watchtower are all working.
+- Watchtower cannot start a container that is not running. "Watchtower will pick it up" is only
+  true once something is running to be updated.
+
 ### There is no ACL-write tool, and `repair_path_ownership` can't write `/volume1`
 Looks like: an oversight — `repair_path_acl` was removed and its neighbour survived.
 Actually: a write tool can be approved, previewed, and audited and still be incapable
