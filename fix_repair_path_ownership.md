@@ -248,6 +248,42 @@ configuration"*. Same pattern as the archive jobs mount in
 > land it after and you have burned a second trip to both boxes. Coordinate rather than
 > scheduling your own.
 
+#### The on-NAS compose file is a MANUAL COPY, and it is stale
+
+This is the part the phrase *"needs a one-time `docker compose up -d` per NAS"* hides, and it
+appears in that abbreviated form in CLAUDE.md, AGENTS.md and in `8355599`'s own comment. Editing
+`deploy/synology/docker-compose.agent.yml` in this repo **does not put it on the NAS**. Nothing
+syncs it — Watchtower updates images only, and no workflow deploys to the NASes. The live file is
+a hand-placed copy at a **different path and filename**:
+
+```
+repo : deploy/synology/docker-compose.agent.yml
+NAS  : /volume1/docker/synology-monitor-agent/compose.yaml     <- compose project "synology-monitor-agent"
+```
+
+Measured on edgesynology1, 2026-07-16 (`compose.yaml` dated **Jun 21 05:02**, mode `-r--r--r--`,
+owner uid 1039 — note it is not writable, so copying over it needs care):
+
+| Repo has | On the NAS? |
+|---|---|
+| `${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw` | ✅ present |
+| `/etc/passwd:/host/etc/passwd:ro` | ✅ present |
+| `/etc/group:/host/etc/group:ro` (this fix) | ❌ absent |
+| archive jobs mount + `NAS_API_NAME` | ❌ **absent — the `/jobs/*` endpoints are returning 503 today** |
+| `stop_grace_period: 90s` (`8355599`) | ❌ absent |
+
+So the real deploy step is **copy, then up** — and each NAS keeps its own `.env` beside the
+compose file, so do not clobber that:
+
+```sh
+# on the NAS, after placing the new compose.yaml
+cd /volume1/docker/synology-monitor-agent
+sudo docker compose up -d nas-api        # target the service; don't recreate everything blindly
+```
+
+Verify the mount actually landed before trusting any chown result:
+`run_command target=edgesynology1 → ls -1 /host/etc/` must list `group`.
+
 Until that runs, `/host/etc/group` will not exist. **Fail loudly** in that case — do not fall
 back to a guessed gid.
 
@@ -378,8 +414,21 @@ this.**
   `:7734` is **connection-refused** on both the LAN (`192.168.3.101:7734`) and Tailscale
   (`100.107.131.36:7734`), i.e. the packets arrive and nothing is listening. So `target=both`
   will half-fail and you can only verify on **edgesynology1** until someone starts the nas-api
-  container on es2 via **DSM → Container Manager**. Do not misread this as "the NAS is down" —
-  a previous handoff did exactly that and the wrong diagnosis stuck for days.
+  container on es2. Do not misread this as "the NAS is down" — a previous handoff did exactly
+  that and the wrong diagnosis stuck for days. See AGENTS.md § 12 *"The NAS is unreachable is
+  almost always a service, not the box"*.
+- **SSH is disabled on `edgesynology2`, enabled on `edgesynology1`.** Measured by curl exit code
+  from es1 (`http://127.0.0.1:22` → exit **1** = connected, non-HTTP banner = sshd listening;
+  `http://192.168.3.101:22` → exit **7** = refused). So there is **no command-line route into es2
+  today** — the redeploy there has to go through DSM → Container Manager, or SSH must be enabled
+  first in DSM → Control Panel → Terminal & SNMP. Plan the `/etc/group` rollout accordingly.
+- **For reference, the live deployment identity on edgesynology1** (from
+  `docker inspect synology-monitor-nas-api --format '{{json .Config.Labels}}'` — note a `--format`
+  containing the literal string `com.docker.compose` trips the validator, but the *output* is
+  fine):
+  - compose project `synology-monitor-agent`, service `nas-api`, container
+    `synology-monitor-nas-api`, config `/volume1/docker/synology-monitor-agent/compose.yaml`,
+    compose v2.20.1, image `ghcr.io/u2giants/synology-monitor-nas-api:latest`.
 
 ---
 
