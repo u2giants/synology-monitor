@@ -96,6 +96,26 @@ Sequence, when someone picks this up:
 3. Only then re-point the cron at `CALL`, so the recurring job inherits a drained default.
 4. Expect ~1.36 GB reclaimed from expired partitions on the first successful retention pass.
 
+### Hard-won details from the last time this happened (2026-05-29)
+
+This exact class of failure — partman stops, defaults fill — was repaired once before on
+the old project (then: `00031`'s table rename left `part_config.parent_table` pointing at
+stale `smon_*` names; `metrics_default` reached 12.85M rows / 3.3 GB). Reuse that
+experience rather than rediscovering it:
+
+- **`partition_data_proc`'s lock-wait branch is broken** in 5.3.1 — a `format()` call with
+  too few arguments. **Do not pass `p_lock_wait`**, or it errors out on the very path you
+  need under live writes.
+- **The actively-written current week cannot be drained by `partition_data_proc`** — it
+  races the incoming writes and never converges. Last time this needed a manual atomic
+  `detach → create current+future partitions → backfill`. Expect the same for `metrics`.
+- **`ignore_default_data = false` is the correct setting** (it was set deliberately during
+  that repair — consistent with the `ATTACH` trap above).
+- **A 120s `statement_timeout` kills big batches** — use `PGOPTIONS='-c statement_timeout=0'`.
+- pg_partman 5.3.1 lives in the **`public`** schema here, not `partman` (verified again
+  2026-07-16), so it is `public.run_maintenance_proc()`.
+- Verify conservation before dropping any `*_olddefault` backup table, as was done then.
+
 ## Why this exists
 
 The database reached ~32 GB. The row-count drivers are high-frequency collector
