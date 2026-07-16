@@ -289,11 +289,17 @@ mounts rather than against the validator:
 - **Binary missing.** `repair_path_acl` shelled out to `setfacl`/`getfacl`, which the
   nas-api image never installed (no `acl` package in `apps/nas-api/Dockerfile`) and
   DSM does not ship. It could only ever print `command not found` under a tier-3
-  approval. Removed rather than re-pointed at `synoacltool`: POSIX ACLs are not the
-  model DSM enforces on these volumes (shares carry `support_acls`), so it is a new
-  capability, not a port — see the note in `nas-tools.ts` before adding one back.
-  Reading ACLs was never broken: `inspect_path_acl` / `inspect_effective_permissions`
-  use `synoacltool -get`, and the image is Debian precisely so DSM's glibc binaries run.
+  approval. Installing `acl` would not have fixed it either: `/volume1` is mounted
+  `synoacl`, *not* `acl` (verified on edgesynology1 2026-07-16 —
+  `rw,ssd,synoacl,space_cache=v2,...`), so POSIX ACL calls are not what this
+  filesystem enforces and `setfacl` would have failed on the mount even if present.
+  DSM's own `synoacltool` is the native surface. Reading ACLs was never broken:
+  `inspect_path_acl` / `inspect_effective_permissions` use `synoacltool -get`, and
+  the image is Debian precisely so DSM's glibc binaries run. Note a share can still
+  be in POSIX ("Linux") mode on a synoacl volume — `synoacltool -get /volume1/mac`
+  answers `It's Linux mode` — so per-path ACL state is worth checking before
+  assuming either model. A replacement write tool is a new capability, not a port:
+  see the note in `nas-tools.ts` before adding one back.
 - **Path read-only.** `repair_path_ownership` still ships and `chown` exists, but the
   per-share `/volumeN` mounts are `:ro`, so the `/volume1/...` paths its description
   asks for return `Read-only file system`. Only `/btrfs/volume1/<share>` is writable
