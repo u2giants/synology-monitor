@@ -408,20 +408,34 @@ this.**
   proves nothing — run `claude mcp list`. See CLAUDE.md.
 - **Git worktrees** under `.claude/worktrees/` do not get `.mcp.json` or `pnpm-lock.yaml`
   (untracked). Run `pnpm install --no-frozen-lockfile` in the worktree before `pnpm type-check`.
-- **`edgesynology2`'s nas-api container is DOWN** as of 2026-07-16 21:00 UTC. Its Tailscale is
-  back up and the box is healthy — DSM answers on `192.168.3.101:5000`, and its **agent** is
-  online and reporting to Supabase (`nas_units.last_seen` current, agent build `8355599`). But
-  `:7734` is **connection-refused** on both the LAN (`192.168.3.101:7734`) and Tailscale
-  (`100.107.131.36:7734`), i.e. the packets arrive and nothing is listening. So `target=both`
-  will half-fail and you can only verify on **edgesynology1** until someone starts the nas-api
-  container on es2. Do not misread this as "the NAS is down" — a previous handoff did exactly
-  that and the wrong diagnosis stuck for days. See AGENTS.md § 12 *"The NAS is unreachable is
-  almost always a service, not the box"*.
-- **SSH is disabled on `edgesynology2`, enabled on `edgesynology1`.** Measured by curl exit code
-  from es1 (`http://127.0.0.1:22` → exit **1** = connected, non-HTTP banner = sshd listening;
-  `http://192.168.3.101:22` → exit **7** = refused). So there is **no command-line route into es2
-  today** — the redeploy there has to go through DSM → Container Manager, or SSH must be enabled
-  first in DSM → Control Panel → Terminal & SNMP. Plan the `/etc/group` rollout accordingly.
+- **`edgesynology2`'s nas-api was down 2026-07-08 → 2026-07-16 and is now RESTORED.** Both NASes
+  now run the same current build and both refuse `synoacltool` writes. Root cause is worth
+  knowing before you plan any redeploy: the container exited **143 (SIGTERM)** three minutes
+  before the 07-08 reboot — a clean stop, `RestartCount=0`, no crash. `restart: unless-stopped`
+  then did **exactly what it says**: unlike `always`, it deliberately does *not* restart a
+  container that was explicitly stopped, even across a daemon restart. So a NAS reboot can leave
+  one container down indefinitely while every other container returns. It needed one
+  `docker start`. Why nas-api alone was stopped, when agent/watchtower/popdam-bridge all came
+  back, is **unknown** — DSM does not retain the attribution. **If a container is missing after
+  a reboot, check `docker ps -a` for `Exited (143)` before assuming a crash.**
+- **SSH works to both NASes** — use the `~/.ssh/config` aliases, do not hand-build the
+  connection:
+  - `ssh edgesynology1` → ahazan@100.107.131.35 **port 22**
+  - `ssh edgesynology2` → ahazan@100.107.131.36 **port 1904** ← non-standard; probing port 22
+    gives connection-refused, which is *not* evidence SSH is disabled. A session concluded
+    exactly that on 2026-07-16 and was wrong.
+  Both are Tailscale IPs. The `192.168.3.x` LAN addresses are only reachable *from* the other
+  NAS, not from a workstation.
+- **`sudo docker` fails on the NAS — you must use the absolute path.** `ahazan` has NOPASSWD for
+  the literal path only, and `docker` is not on the non-interactive PATH:
+  ```sh
+  sudo /var/packages/ContainerManager/target/usr/bin/docker ps -a     # works
+  sudo docker ps -a                                                    # "a password is required"
+  ```
+  (`/usr/local/bin/docker` is a symlink to it, but the sudoers rule matches the literal path.)
+  This reads as "I am blocked, sudo needs a password" and will stop you dead if you do not know
+  it. Beware also that `sudo docker ... | grep x || echo "absent"` will report **absent** when
+  the real failure was sudo — check exit codes rather than trusting an `||` fallback.
 - **For reference, the live deployment identity on edgesynology1** (from
   `docker inspect synology-monitor-nas-api --format '{{json .Config.Labels}}'` — note a `--format`
   containing the literal string `com.docker.compose` trips the validator, but the *output* is
@@ -431,6 +445,37 @@ this.**
     compose v2.20.1, image `ghcr.io/u2giants/synology-monitor-nas-api:latest`.
 
 ---
+
+## 11b. The two NASes do not agree on the ACL model — verify on BOTH
+
+Discovered 2026-07-16 once es2's nas-api came back, running the identical command on each:
+
+```
+run_command target=both → synoacltool -get /volume1/mac
+
+[edgesynology1]  (synoacltool.c, 596)It's Linux mode
+[edgesynology2]  ACL version: 1
+                 Archive: has_ACL,is_support_ACL
+```
+
+**The same share carries a Synology ACL on `edgesynology2` and none on `edgesynology1`**, despite
+the two being Drive/ShareSync peers. That is not a cosmetic difference for this work:
+
+- On a **Linux-mode** path, POSIX ownership/mode is what governs access, so `chown` is the whole
+  remediation — `repair_path_ownership` is exactly the right tool.
+- On a **Synology-ACL** path, an ACE can grant or deny access regardless of what `chown` sets, so
+  a chown may appear to succeed and change nothing an SMB user can observe. Worse, `synoacltool`
+  has `-set-owner`, which is a *second*, ACL-aware way to change ownership; which one DSM honours
+  on an ACL-enabled path is **unverified**.
+
+Consequences for this fix:
+1. **Validate on both NASes, not just es1.** A no-op chown proven on es1 (Linux mode) proves
+   nothing about es2 (ACL mode). Most of this session's verification ran on es1 only, because es2
+   was down — do not inherit that blind spot.
+2. Consider having the tool **report the path's mode** (`synoacltool -get` → "It's Linux mode" or
+   not) in its preview, so the operator can see whether chown is even the right lever.
+3. Do not assume the two boxes are configured alike anywhere else either. This one had gone
+   unnoticed.
 
 ## 12. Wider audit (do this while you are in here)
 

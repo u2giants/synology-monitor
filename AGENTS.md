@@ -309,7 +309,47 @@ Do this instead, before calling a NAS down:
   independent path that does not touch Tailscale at all: the agent pushes out to Supabase. If
   `last_seen` is current, the box, its Docker stack and Watchtower are all working.
 - Watchtower cannot start a container that is not running. "Watchtower will pick it up" is only
-  true once something is running to be updated.
+  true once something is running to be updated. (Once it *is* running, Watchtower is quick: es2's
+  nas-api went from a 2026-06-20 image to current within minutes of being started.)
+- **SSH to a NAS is on a per-host port.** `ssh edgesynology1` = ahazan@100.107.131.35 **port 22**;
+  `ssh edgesynology2` = ahazan@100.107.131.36 **port 1904**. Use the `~/.ssh/config` aliases.
+  Probing port 22 on es2 gives connection-refused, which is **not** evidence SSH is disabled — a
+  session concluded exactly that on 2026-07-16 and was wrong. The `192.168.3.x` LAN addresses are
+  reachable only *from the other NAS*, never from a workstation. (SSH remains exceptional per
+  § 11 — operator-requested diagnostics/maintenance only, never a deployment path.)
+- **`sudo docker` on a NAS needs the absolute path.** `ahazan` has NOPASSWD for the literal path
+  only, and `docker` is not on the non-interactive PATH:
+  `sudo /var/packages/ContainerManager/target/usr/bin/docker ps -a`. Plain `sudo docker ps -a`
+  answers *"a password is required"*, which reads as a hard wall and is not one. `/usr/local/bin/docker`
+  is a symlink to the same binary but does not match the sudoers rule. Related trap: piping a
+  failing sudo call into `grep x || echo "absent"` prints **absent** when the real failure was
+  sudo — a session reported a container missing that was running fine. Check exit codes; do not
+  trust an `||` fallback to distinguish "not found" from "did not run".
+
+### `restart: unless-stopped` will not bring a container back after a reboot
+Looks like: a reboot broke the container, or it crashed.
+Actually: `edgesynology2`'s nas-api sat down from 2026-07-08 to 2026-07-16 and the cause was
+mundane. It exited **143 (SIGTERM)** ~3 minutes before the reboot — clean stop, `RestartCount=0`,
+no crash, two lines in its whole log. `unless-stopped` then did exactly what its name says:
+unlike `always`, it deliberately does **not** restart a container that was explicitly stopped,
+and that flag survives the daemon restart. So one container can stay down indefinitely while
+every other container on the box returns, and nothing looks broken. Fixed with a single
+`docker start` — no compose, no rebuild.
+Do this: after any NAS reboot, `docker ps -a` and look for `Exited (143)` before theorising about
+crashes, images, or networking. Why nas-api alone was stopped when agent/watchtower/popdam-bridge
+all came back is **unknown** — DSM does not retain the attribution.
+
+### The two NASes do not agree on the ACL model
+Looks like: `edgesynology1` and `edgesynology2` are interchangeable Drive/ShareSync peers.
+Actually: the same share can carry a Synology ACL on one and not the other. Verified 2026-07-16,
+identical command on each — `synoacltool -get /volume1/mac` answers `It's Linux mode` on
+**edgesynology1** but `ACL version: 1 / Archive: has_ACL,is_support_ACL` on **edgesynology2**.
+That changes which lever actually governs access: POSIX ownership/mode on a Linux-mode path, an
+ACE on an ACL path (where a `chown` may appear to succeed and change nothing observable).
+Do this: check the path's mode before proposing a permissions remediation, and **verify
+permission work on both NASes** — a result proven on es1 does not carry to es2. Most of the
+2026-07-16 ACL/ownership verification ran on es1 only because es2's nas-api was down; do not
+inherit that blind spot.
 
 ### There is no ACL-write tool, and `repair_path_ownership` can't write `/volume1`
 Looks like: an oversight — `repair_path_acl` was removed and its neighbour survived.

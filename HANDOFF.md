@@ -199,11 +199,14 @@ Risks / watchouts:
   read-only once; AWS gp3 allows a resize only once per 4h.
 - Deleting rows will **not** immediately shrink the size Supabase reports.
 
-## NAS write-preview fix — `edgesynology2`'s nas-api container is DOWN
+## NAS write-preview fix — COMPLETE, verified on both NASes
 
 Status:
-partial (code complete, pushed, verified live on `edgesynology1`; **`edgesynology2`'s nas-api
-container is not running** — the NAS itself is healthy and its agent is reporting normally)
+**done.** Code complete, pushed, and verified live on **both** NASes. `edgesynology2`'s nas-api
+container — down since 2026-07-08 — was restored 2026-07-16 22:2x UTC and Watchtower immediately
+carried it from a 2026-06-20 image to current (`da9bcf9`, matching `edgesynology1`).
+`run_command` now refuses `synoacltool -add /volume1/...` on **both** boxes while `-get`/`-stat`
+still run at tier 1. There is no remaining exposure from this work.
 
 Done:
 - Fixed the reported bug: `create_prechange_snapshot` with `confirmed: false` executed a
@@ -236,9 +239,20 @@ Done:
   `-l selftest`) still run at tier 1.
 
 Next action:
-- **Start the nas-api container on `edgesynology2` via DSM → Container Manager.** This is an
-  operator action; it cannot be done from here, because the tool that would do it (`nas-api`)
-  is the thing that is down, and SSH is not a sanctioned path in this repo.
+- **None for this work — it is finished.** Kept only for the diagnostic lessons below, which are
+  generalised in AGENTS.md § 12 and are the reason this section is worth reading at all.
+- **Resolved 2026-07-16:** the container was `Exited (143)` — SIGTERM'd ~3 minutes before the
+  07-08 reboot. A clean stop, `RestartCount=0`, no crash. `restart: unless-stopped` then behaved
+  as designed: unlike `always`, it does **not** restart a container that was explicitly stopped,
+  and that flag survives the reboot. So it stayed down for 8 days while every other container on
+  the box came back. Fixed with a single
+  `sudo /var/packages/ContainerManager/target/usr/bin/docker start synology-monitor-nas-api`
+  over `ssh edgesynology2`. Why nas-api alone was stopped is **unknown** — DSM does not retain
+  the attribution. After any NAS reboot, check `docker ps -a` for `Exited (143)` first.
+- **A second wrong call, same session, same shape:** port 22 on es2 is connection-refused, from
+  which a session concluded "SSH is disabled on edgesynology2". It is not — **es2's SSH is on
+  port 1904** (`ssh edgesynology2`, ahazan@100.107.131.36). One closed port is not a disabled
+  service.
 - **The earlier diagnosis in this section was wrong and cost days — do not repeat it.** It
   read: *"10s curl timeout from this workstation, and a 45s MCP `run_command` timeout from
   the VPS over Tailscale, so it is the host — not the network path"*. Every probe used had
