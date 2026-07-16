@@ -67,9 +67,19 @@ Risks / watchouts:
 ## Supabase telemetry retention and database-size cleanup
 
 Status:
-not started on the live database. The migration has been reviewed, fixed and tested on
-PG17 (owner decisions applied 2026-07-16), but **nothing is installed anywhere**. Live
-work begins at step 2 of the install procedure in the doc.
+**partial — installed on live, deletes paused mid-way, hourly cron deliberately NOT
+enabled.** `00042` and both retention indexes are on `aaxtrlfpnoutziwhshlt`; 61,000
+`process_snapshots` rows were deleted in staged batches to prove the path, leaving
+**56.4M expired rows** (97% of the table) still there. Full live state, measured delete
+timings, and the re-enable SQL are in
+**[docs/telemetry-retention.md](docs/telemetry-retention.md)**.
+
+**A bigger problem was found while doing this: pg_partman has been dead since
+2026-05-29** (cron uses `select` on a procedure; 25/25 failures), stranding ~8.4 GB in
+DEFAULT partitions that partman retention can never drop. That doc's first section
+covers it. It is the larger cause of growth and it is **not fixed** — and it means
+`metrics` / `nas_logs` / `storage_snapshots` / `container_status` currently have **no
+retention from either mechanism**.
 
 Full detail — design, the wrong-project incident, known defects, verified-safe list,
 and the step-by-step live install — is in **[docs/telemetry-retention.md](docs/telemetry-retention.md)**.
@@ -83,9 +93,10 @@ Done (2026-07-16):
   `scripts/run-telemetry-retention-cleanup.mjs`; it now refuses to run without an
   explicit `SUPABASE_URL`, hard-refuses the retired ref by name, and logs its target.
   All three guards were exercised and verified.
-- Verified live `aaxtrlfpnoutziwhshlt`: **no retention exists**
-  (`telemetry_retention_policies` → PGRST205, `telemetry_retention_estimates` → PGRST202),
-  and `process_snapshots` still holds rows from `2026-06-06`.
+- Confirmed at session start that live `aaxtrlfpnoutziwhshlt` had **no retention**
+  (`telemetry_retention_policies` → PGRST205, `telemetry_retention_estimates` → PGRST202)
+  — i.e. the 2026-06-22 work never reached it. *(Superseded: retention has since been
+  installed this session — see Status above.)*
 - Verified the old project `qnjimovrsaacneqkggsn` is **deleted** — absent from
   `supabase projects list`. Its purge/functions/cron went with it. **There is no
   rollback project anymore.**
@@ -102,15 +113,61 @@ Done (2026-07-16):
   tables, inserts 13 policies); batch limit honoured exactly (400 of 1000); runner
   drains the rest; fresh rows and 20d `disk_io_stats` rows survive.
 
-Next action — live install (steps 2-8 of the doc's procedure):
-1. `CREATE INDEX CONCURRENTLY` on `disk_io_stats(captured_at)`, then
-   `process_snapshots(captured_at)` — one at a time, via a **direct SQL console**
-   (`CONCURRENTLY` cannot run in a transaction block, so **not** `exec_sql`).
-2. `EXPLAIN` the delete predicate; require `Index Scan` / `Bitmap Index Scan`. A
-   `Seq Scan` means stop.
-3. Delete in escalating batches 1k → 10k → 50k, watching for lock waits, API timeouts
-   and agent ingest errors.
-4. `ANALYZE` both big tables, then install the rest and let the hourly cron take over.
+Next action — two independent decisions, both awaiting the owner:
+
+**A. Finish the `process_snapshots` drain (~10 min of work, big win).**
+56.4M expired rows remain; measured 50k per 532 ms with zero blocked sessions. Either
+re-enable the hourly cron (SQL in the doc) and let it grind down over ~2 days, or drain
+it in one controlled pass and then enable the cron. Then `ANALYZE`. Expect most of
+`process_snapshots`' 16 GB back — though **the reported DB size will not drop until
+vacuum reuses/returns the space**; that is expected, not a failure.
+
+**B. Fix pg_partman (the ~8.4 GB problem).**
+One-word fix (`select` → `CALL`) but the first successful run has 48 days of backlog and
+~27M default rows to relocate on a 1 GB Micro. **Do not** set `ignore_default_data = true`
+to dodge it — that makes partition creation *fail* rather than skip work (Postgres must
+validate the DEFAULT partition on `ATTACH`). Run `CALL public.run_maintenance_proc()`
+manually and watched **before** repointing the cron. Procedure in the doc.
+
+Connecting for either: the DB password is in 1Password →
+`Supabase DB Password - synology-monitor (aaxtrlfpnoutziwhshlt, Virginia)`; use `op_run`
+so it never enters a transcript. Direct host is **IPv6-only**; the pooler rejects the
+tenant. `postgres` role has a ~2min `statement_timeout` — override with `PGOPTIONS`.
+
+Scheduled review — **2026-08-17**: is `nas_logs` a real space driver?
+
+Why this date exists: to let partman own the partitioned tables, `nas_logs` was dropped
+from `telemetry_retention_policies`, so its routine `info` rows (sources `share_config`,
+`package_health`, `drive_admin_stats`, `dsm_system_log`, `backup`, `service`,
+`system_info`) now live partman's full **180d** instead of being trimmed at 30d. A
+partition drop cannot express "delete only low-severity rows", so this was the accepted
+cost of the simpler design. It is the one policy decision in `00042` that was a trade
+rather than a fix, and nothing will surface it on its own — hence a date.
+
+Check on **2026-08-17** (or 4 weeks after retention actually goes live, whichever is
+later — the comparison is meaningless until the other tables have been trimmed):
+
+```sql
+-- nas_logs total size and share of the database
+SELECT pg_size_pretty(pg_total_relation_size('public.nas_logs')) AS nas_logs_size,
+       pg_size_pretty(pg_database_size(current_database()))      AS db_size,
+       round(100.0 * pg_total_relation_size('public.nas_logs')
+             / nullif(pg_database_size(current_database()),0), 1) AS pct_of_db;
+
+-- how much of it is the trimmable routine-info noise
+SELECT severity, source, count(*)
+FROM public.nas_logs
+WHERE ingested_at < now() - interval '30 days'
+GROUP BY 1,2 ORDER BY 3 DESC LIMIT 15;
+```
+
+Decide with it:
+- **< ~5% of the DB** → leave it alone; the simpler partman-only design wins.
+- **> ~10%, mostly `severity='info'` from those sources** → reinstate the single
+  `nas_logs` row-level policy that `e1eea2f` removed (recover it from that commit:
+  `git show e1eea2f^:supabase/migrations/00042_telemetry_retention_cleanup.sql`). Accept
+  that row-level DELETEs on a partitioned parent are slower than partition drops, and
+  give it a `(ingested_at)` index built `CONCURRENTLY` first.
 
 Risks / watchouts:
 - **No rollback project exists.** Deletes on `aaxtrlfpnoutziwhshlt` are final.

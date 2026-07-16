@@ -586,6 +586,35 @@ corrected partman, reclaimed 3.34 GB.
 Rule added to prevent recurrence:
 No source whitelists; sender must isolate bad rows; empty tables are bugs.
 
+### 2026-07-16 — pg_partman silently dead for 48 days (`select` on a procedure)
+
+What happened:
+The pg_cron job `smon-partition-maintenance` runs `select public.run_maintenance_proc()`.
+In pg_partman 5.x that is a **procedure**, not a function, so Postgres rejects it every
+time: *"To call a procedure, use CALL."* **25 of 25 runs failed** — daily, since the cron
+jobs were hand-recreated after the 2026-06-21 migration. `cron.job.active` was `true`, so
+the dashboard looked healthy while nothing ran.
+
+Impact:
+No bounded partition has been created since `metrics_p20260606` (ends 2026-06-13). Every
+`metrics` / `nas_logs` / `container_status` / `storage_snapshots` row since then lands in
+the **DEFAULT** partition — and **partman retention never drops a DEFAULT partition**.
+~8.4 GB / ~27M rows are immortal and growing, plus ~1.36 GB of expired bounded partitions
+never dropped. The DB is 42 GB.
+
+Root cause:
+pg_partman v4 exposed `run_maintenance()` as a function; v5 added the
+`run_maintenance_proc()` **procedure**. The job was recreated from memory with `select`.
+A failing cron job is invisible unless you read `cron.job_run_details` — `active = true`
+means "scheduled", not "working".
+
+Rule added to prevent recurrence:
+**A scheduled job is not a working job.** After recreating any pg_cron job, verify with
+`SELECT status, return_message FROM cron.job_run_details WHERE jobid = <id> ORDER BY
+start_time DESC LIMIT 3` — and for partman specifically, check that
+`part_config.maintenance_last_run` actually advances. Both are cheap; neither was done.
+Fix + backfill procedure: [docs/telemetry-retention.md](docs/telemetry-retention.md).
+
 ### 2026-06-22 — A day of DB work installed on the wrong Supabase project
 
 What happened:
@@ -775,7 +804,9 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | open | `second_opinion_model`: wire a second AI model cross-check into Stage 2 | Future session — see `getSecondOpinionModel()` in `ai-settings.ts` |
 | open | `drive_team_folders` reader: web app never queries team folder data | Future session |
 | open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → **migration 00043** (00042 is now telemetry retention) |
-| **open** | **Telemetry retention is installed nowhere.** `00042` is reviewed, fixed and PG17-tested, but has never been applied to a surviving DB; the live project has no retention and still holds ~40-day-old `process_snapshots`. The DB-size problem (~32 GB) is unsolved | Future session — **read `docs/telemetry-retention.md` first**, then run its install procedure from step 2 (indexes `CONCURRENTLY` via a direct SQL console, then escalating batches). **No rollback project exists — deletes are final** |
+| **open** | **pg_partman dead since 2026-05-29** — cron `select`s a procedure (25/25 failures); ~8.4 GB stranded in DEFAULT partitions that retention can never drop, and growing. This is the **largest** DB-size driver | Owner/next session — one-word fix (`CALL`), but run `run_maintenance_proc()` **manually and watched** first (48d backlog, ~27M default rows to relocate). **Do NOT set `ignore_default_data=true`** — it makes partition creation fail, not skip. See `docs/telemetry-retention.md` |
+| **open** | **Telemetry retention: installed, deletes paused.** `00042` + both indexes are live on `aaxtrlfpnoutziwhshlt`; 61k rows deleted to prove the path; **56.4M expired `process_snapshots` rows remain** (97% of a 16 GB table). Hourly cron deliberately **unscheduled** | Owner — approve the drain (measured 50k/532ms, zero blocking; ~10 min total), then re-enable the cron (SQL in `docs/telemetry-retention.md`). **No rollback project exists — deletes are final** |
+| **open** | `metrics` / `nas_logs` / `storage_snapshots` / `container_status` currently have **no retention from either mechanism** — they were left to partman, and partman is broken (row above) | Resolves itself once partman is fixed; until then, treat as unbounded growth |
 | done | `00042` reader audit + fixes: `disk_io_stats` → 35d (protects the metrics page's 30d range); `CREATE INDEX` now `to_regclass`-guarded (previously hard-failed a rebuild); `metrics`/`nas_logs`/`storage_snapshots`/`container_status` left to pg_partman and all `part_config` writes removed, so the deliberate 180d `container_status` decision stands | 2026-07-16 — verified on throwaway PG17; rationale in `docs/telemetry-retention.md` |
 | open | Relay has no CI build workflow | Decide: add workflow or document manual path as canonical |
 | low | 2 DB functions still `smon_`-prefixed (`smon_create_alert`, `smon_get_openai_key`) | Low value; rename with caller updates |

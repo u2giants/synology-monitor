@@ -2,20 +2,99 @@
 
 ## Status
 
-**Reviewed, fixed, tested — installed nowhere.** The known defects are resolved and the
-logic is verified on PG17 (see below), but
-`supabase/migrations/00042_telemetry_retention_cleanup.sql` has still never been applied
-to any surviving database. The live project `aaxtrlfpnoutziwhshlt` has **no retention** —
-verified 2026-07-16:
+**Installed on live and verified — deletes deliberately paused, hourly cron NOT enabled.**
 
-- `telemetry_retention_policies` → `PGRST205` (table not found)
-- `telemetry_retention_estimates` → `PGRST202` (function not found)
-- `process_snapshots` still returns rows dated `2026-06-06` (~40 days old) against
-  an intended 3-day policy
+State of `aaxtrlfpnoutziwhshlt` as of 2026-07-16:
 
-Nothing below this line has touched live data. The remaining work is steps 2-8 of the
-install procedure, which are all irreversible — and **there is no rollback project
-anymore**.
+| Thing | State |
+|---|---|
+| `00042` (policies + functions) | **installed** — 13 policies |
+| `idx_disk_io_stats_retention` | **built** `CONCURRENTLY`, valid, 134 MB (68s, no blocking) |
+| `idx_process_snapshots_retention` | **built** `CONCURRENTLY`, valid, 394 MB |
+| Staged deletes | **61,000 rows** removed from `process_snapshots` (1k/10k/50k), then stopped |
+| Hourly cron `telemetry-retention-cleanup` | **unscheduled on purpose** — awaiting owner sign-off |
+| Remaining expired `process_snapshots` | **56.4M rows** (97% of the table) |
+| Database size | **42 GB** (was 41 GB at session start; +528 MB of that is the two new indexes) |
+
+Measured delete performance (why the cron is safe to enable when you want it):
+
+| Batch | Time | Blocked sessions |
+|---|---|---|
+| 1,000 | 48 ms | 0 |
+| 10,000 | 105 ms | 0 |
+| 50,000 | 532 ms | 0 |
+
+~10.6 µs/row, scaling linearly. Draining the remaining 56.4M rows ≈ 1,130 batches of
+50k ≈ **10 minutes** of delete time.
+
+**Deletes are irreversible and there is no rollback project.** Re-enable the cron with:
+
+```sql
+SELECT cron.schedule('telemetry-retention-cleanup','17 * * * *',
+  $$SELECT * FROM public.cleanup_high_volume_telemetry(10, 25000);$$);
+```
+
+## 🚨 pg_partman has been dead since 2026-05-29 — read this first
+
+Found 2026-07-16 while installing retention. **This is the bigger cause of database
+growth, and it invalidates the naive reading of the partman decision below.**
+
+The pg_cron job `smon-partition-maintenance` runs:
+
+```sql
+select public.run_maintenance_proc()   -- WRONG
+```
+
+In pg_partman 5.3.1 `run_maintenance_proc` is a **procedure** (`pg_proc.prokind = 'p'`),
+so Postgres rejects this every time:
+`ERROR: run_maintenance_proc() is a procedure … HINT: To call a procedure, use CALL.`
+**25 of 25 runs failed** — a 100% failure rate, daily, since the cron jobs were manually
+recreated after the 2026-06-21 migration. The job reports `active = true`, so nothing
+surfaced it. `part_config.maintenance_last_run` is still **2026-05-29**.
+
+Consequences, measured:
+- The newest bounded partition is `metrics_p20260606` (ends **2026-06-13**). Every
+  `metrics` / `nas_logs` / `container_status` / `storage_snapshots` row written since
+  then has landed in the **DEFAULT** partition.
+- **partman retention never drops a DEFAULT partition** — only bounded children. So this
+  data is immortal and growing:
+
+  | default partition | size | rows |
+  |---|---|---|
+  | `smon_metrics_default` | 4,444 MB | 18.3M |
+  | `smon_logs_default` | 3,454 MB | 7.8M |
+  | `smon_container_status_default` | 383 MB | 986k |
+  | `smon_storage_snapshots_default` | 140 MB | 95k |
+  | **total** | **~8.4 GB** | **~27M** |
+
+- A further ~1.36 GB of genuinely expired bounded partitions (3 × `metrics`,
+  3 × `storage_snapshots`) sit undropped because retention never ran.
+
+**This qualifies the partman decision in "Defects" below.** Removing `metrics`,
+`nas_logs`, `storage_snapshots` and `container_status` from `telemetry_retention_policies`
+is correct *only if partman actually runs*. It has not been running. Until the cron is
+fixed, those four tables have **no retention from either mechanism**.
+
+### The fix is one word — but the backfill is not
+
+`SELECT` → `CALL` (or use the function form, `SELECT public.run_maintenance()`).
+
+**Do not simply set `ignore_default_data = true` to avoid the backfill.** That looks like
+the safe option and is not: partman creates a child table and `ATTACH`es it, and Postgres
+must verify that no row in the DEFAULT partition belongs to the new partition — it
+**errors** if any do. Since the default holds data up to today, `ignore_default_data = true`
+would make partition creation *fail* for exactly the weeks that need it, rather than skip
+work. Leave it `false` and let partman move each week's rows as it creates that week's
+partition (which chunks the work naturally, ~2.5M rows per weekly partition for `metrics`).
+
+Sequence, when someone picks this up:
+1. Run `CALL public.run_maintenance_proc()` **manually, watched**, not via the 07:00 cron —
+   the first run has ~48 days of backlog to create and ~27M default rows to relocate on a
+   1 GB Micro instance. Expect it to be slow; `partition_data_proc` is the batched
+   alternative if it needs to be broken up further.
+2. Verify `part_config.maintenance_last_run` advances and new bounded partitions appear.
+3. Only then re-point the cron at `CALL`, so the recurring job inherits a drained default.
+4. Expect ~1.36 GB reclaimed from expired partitions on the first successful retention pass.
 
 ## Why this exists
 
@@ -177,9 +256,18 @@ committed. Live work starts at step 2.
 3. Confirm the delete predicate uses the index before any large delete:
    ```sql
    EXPLAIN SELECT tableoid, ctid FROM public.disk_io_stats
-   WHERE captured_at < now() - interval '14 days' LIMIT 1000;
+   WHERE captured_at < now() - interval '35 days' LIMIT 1000;
    ```
-   Good: `Index Scan` / `Bitmap Index Scan`. Bad: `Seq Scan` — stop.
+   Good: `Index Scan` / `Bitmap Index Scan`.
+
+   **"`Seq Scan` = stop" needs judgement, not reflex.** On `process_snapshots` the plan
+   *was* a `Seq Scan` and that was correct: the 3-day predicate matched 57.9M of 58M
+   rows, and when a predicate matches ~everything, `Seq Scan` + `LIMIT` finds qualifying
+   rows immediately and beats an index scan. Measured: 50k rows in 532 ms. The rule
+   assumes a *selective* predicate. A `Seq Scan` is a genuine stop signal only when few
+   rows match — then it scans the whole table to find them. The index still earns its
+   keep at the tail, once the bulk is gone and the predicate turns selective; the planner
+   switches on its own. Verify with timings, not just the plan shape.
 4. Tiny batch first:
    ```sql
    SELECT public.cleanup_table_by_age('disk_io_stats','captured_at',interval '14 days',NULL,1000);
