@@ -134,13 +134,16 @@ Connecting for either: the DB password is in 1Password →
 so it never enters a transcript. Direct host is **IPv6-only**; the pooler rejects the
 tenant. `postgres` role has a ~2min `statement_timeout` — override with `PGOPTIONS`.
 
-⚠️ **Two live issues found while doing this — neither is caused by the retention work, both are unfixed:**
-1. **`anon` could run arbitrary SQL + read the AI key** — CLOSED on live and in `00043`, but
-   **the `sk-or-v1-…` key must still be rotated by the owner.** See AGENTS.md § 15.
-2. **Agent ingestion cannot keep up**: `process_snapshots` is ~80 min stale on edge1 and
-   drifting ~8% further behind. Sender flushes one 100-row batch per 30s (200/min) vs a
-   collector emitting up to 240/min. Structural; backlogs never drain. See AGENTS.md § 16.
-   (edge2 is ~282 min stale for a separate reason — it was unreachable all session.)
+⚠️ **Two live issues found while doing this — neither caused by the retention work:**
+1. **`anon` could run arbitrary SQL + read the AI key** — CLOSED on live and in `00043`.
+   Key rotation is tracked in AGENTS.md § 16 (owner action, deferred by request).
+2. **Agent ingestion could not keep up** — **FIXED and verified** (`8355599`). `process_snapshots`
+   was ~80 min stale and drifting; lag drained 4950s → **17s** after rollout. One follow-up:
+   **`stop_grace_period: 90s` needs a one-time `docker compose up -d` per NAS** (Watchtower
+   does not apply compose changes). Until then Docker still SIGKILLs the agent at 10s on
+   redeploy — not data loss (the WAL is durable), but the final flush is truncated.
+   (edge2 is ~282 min stale for a separate reason — it was unreachable all session; re-check
+   it now that edge1 is healthy, since its backlog will drain the same way once it returns.)
 
 ⚠️ **Gotcha for whoever re-runs `00042`:** its final `DO` block **re-schedules the hourly
 cron**. Re-running the migration silently re-armed the job that was deliberately

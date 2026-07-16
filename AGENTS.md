@@ -687,6 +687,37 @@ WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege('anon',p.oid
 **The leaked `sk-or-v1-…` AI key must be rotated by the owner** — it was retrievable by
 anyone with the anon key for as long as the function has existed.
 
+### 2026-07-16 — the monitoring agent silently fell 80 minutes behind
+
+What happened:
+`process_snapshots` on edge1 was **~80 minutes stale and drifting ~8% further behind** —
+measured by sampling `max(captured_at)` 180s apart. Every other table was current, and the
+agent logged a steady `[sender] flushed 100 entries` with no errors, so it looked healthy.
+
+Root cause — arithmetic, not a failure:
+`flush()` called `flushTable()` **once** per table per 30s tick, and `flushTable` selected a
+single `LIMIT batchSize` (100). That is **200 rows/min**. The process collector emits up to
+`3×topN` = 60 rows / 15s = **240/min**. The deficit was structural, so *any* backlog was
+permanent. `enforceWALLimit` deletes the oldest unsent entries past 200k rows — ~1 week out.
+
+The trap for anyone fixing something like this:
+`queue()` — which every collector calls — shares `s.mu` with `flush()`, and `flush()` held it
+across every HTTP POST. So simply draining harder would have **stalled collection to fix
+sending**. The lock must cover only short SQLite work, never network I/O.
+
+Also found while fixing it: `enforceWALLimit` evicted oldest-first **before** deleting
+exhausted (`attempts>=5`) rows, so exhausted rows inflated the count and healthy telemetry was
+destroyed to make room for rows about to be deleted anyway.
+
+Fixed in `8355599` (bounded round-robin drain, lock off the network path, eviction ordering,
+backlog reporting). Verified: lag drained 4950s → 17s after rollout.
+
+Rule added to prevent recurrence:
+**A monitoring system that cannot see itself is the thing most likely to fail silently.** The
+sender now reports pending/exhausted/evicted counts and **oldest-pending age per table** —
+age, not just row count, because 20k rows was 80 minutes. Same lesson as the partman cron
+below: steady, cheerful log lines are not evidence of health.
+
 ### 2026-07-16 — pg_partman silently dead for 48 days (`select` on a procedure)
 
 What happened:
@@ -906,7 +937,7 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | open | `drive_team_folders` reader: web app never queries team folder data | Future session |
 | **open** | **ROTATE the AI provider key** (`sk-or-v1-…` in vault secret `smon_openai_api_key`) — it was returnable to anyone holding the public anon key via `smon_get_openai_key` until 2026-07-16. Access is closed (`00043`), but the key itself is compromised | **Owner** — rotate at OpenRouter, update the vault secret |
 | open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → **migration 00044** (00042 = telemetry retention, 00043 = anon REVOKE security fix) |
-| **open** | **Agent ingestion cannot keep up with the process collector — `process_snapshots` is ~80 min stale on edge1 and falling further behind ~8%/interval (measured 2026-07-16).** `flushTable` takes **one** batch of `BATCH_SIZE` (default **100**) per `FLUSH_TIMEOUT` (**30s**) per table and does *not* drain the WAL (`apps/agent/internal/sender/sender.go:294-299`, `config.go:83-84`) → **200 rows/min capacity**. The process collector emits up to 3×`topN` = **60 rows / 15s = 240/min** (`collector/process.go:26,201,376`). The deficit is structural, so any backlog is permanent and grows. Nothing alerts on it; the UI's "latest process snapshot" and the issue agent's 6h window are silently ~80 min stale | Future session — raise `BATCH_SIZE` (env on each NAS `.env`, then `docker compose up -d`) and/or loop `flushTable` until the WAL drains. **Check `maxWALSize` first — if the WAL cap is hit, entries may be dropped (data loss).** Not caused by the retention work: drift predates it and the flush cadence is unchanged |
+| done | **Agent ingestion deficit fixed** (`8355599`, deployed + verified 2026-07-16). `flushTable` took one `BATCH_SIZE` (100) batch per `FLUSH_TIMEOUT` (30s) per table and never drained → 200 rows/min vs the process collector's ~240/min, so `process_snapshots` was **~80 min stale and drifting**. Now a bounded round-robin drain (`MAX_FLUSH_DURATION`, `MAX_BATCHES_PER_FLUSH`) with `s.mu` off the network path, fixed `enforceWALLimit` ordering, and backlog reporting | Verified live: lag drained 4950s → **17s** monotonically after Watchtower rollout. **`stop_grace_period: 90s` still needs a one-time `docker compose up -d` per NAS** — Watchtower does not apply compose changes |
 | **open** | **pg_partman dead since 2026-05-29** — cron `select`s a procedure (25/25 failures); ~8.4 GB stranded in DEFAULT partitions that retention can never drop, and growing. This is the **largest** DB-size driver | Owner/next session — one-word fix (`CALL`), but run `run_maintenance_proc()` **manually and watched** first (48d backlog, ~27M default rows to relocate). **Do NOT set `ignore_default_data=true`** — it makes partition creation fail, not skip. See `docs/telemetry-retention.md` |
 | **open** | **Telemetry retention: installed, deletes paused.** `00042` + both indexes are live on `aaxtrlfpnoutziwhshlt`; 61k rows deleted to prove the path; **56.4M expired `process_snapshots` rows remain** (97% of a 16 GB table). Hourly cron deliberately **unscheduled** | Owner — approve the drain, but **check autovacuum/WAL first** and treat "~10 min" as a floor (see `docs/telemetry-retention.md`). **No rollback project exists — deletes are final** |
 | **open** | **`cleanup_high_volume_telemetry` cannot commit between batches** — it is a *function*, so its batch loop is one transaction: up to **3.25M rows (13 policies × 10 × 25k) in a single txn** per hourly run. Do **not** schedule the cron as written | Future session — convert to a procedure that `COMMIT`s per batch (cron then uses `CALL`), or schedule one bounded batch more often. Capacity is ample (~22k rows/hr produced vs 250k/hr) |
