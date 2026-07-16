@@ -149,6 +149,7 @@ images. If you ever patch a vendored file, record it here.
 | Add an agent collector | `apps/agent/internal/collector/<name>.go`, wire in `apps/agent/cmd/agent/main.go` with the `wg.Add(1)` pattern | existing collectors |
 | Send a new agent field to Supabase | `apps/agent/internal/sender/types.go` + a `Queue*` method, **and** a matching column via a new `supabase/migrations/*.sql` | applied migration files |
 | Allow a new NAS command tier | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`; Go/RE2 regex only, no lookaround/backrefs) | `executor.go` |
+| Add a write capability that shells out to a **new binary** | `writePatterns` in `apps/nas-api/internal/validator/validator.go` — without an entry the command is tier 1 and auto-executes via `run_command`, whatever `write: true` says in `nas-tools.ts` (see §10 quirks) | assuming `write: true` alone gates execution |
 | Change an AI pipeline stage | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts` | `issue-detector.ts` fingerprinting |
 | Change AI model per stage | Settings UI (live dropdowns) → `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
 | Add a selectable model / fix its capabilities | nothing — dropdowns are live from connected providers (`provider-models.ts` → `/api/ai-models`). To **tune** a model's effort/tool-use precisely, add a row to `MODEL_CATALOG` in `packages/shared/src/ai-capabilities.ts` (overrides the heuristic) | the live-fetch list logic unless adding a provider |
@@ -278,6 +279,38 @@ redirect targets from `hasRealOutputRedirect`. Without the
 a content write like `printf ... > '/btrfs/volume1/x/seafile-ignore.txt'` would
 classify below tier 3.
 Do not remove: it only ever elevates classification (added for `write_seafile_ignore`).
+
+### A new write capability needs a validator pattern, or it auto-executes
+Looks like: `write: true` in `nas-tools.ts` is what makes a tool require approval.
+Actually: `write: true` only makes `apps/nas-mcp` preview it. Whether the command is
+allowed to run unattended is decided separately by `ClassifyTier` pattern-matching the
+command *string* in `apps/nas-api/internal/validator/validator.go`. A command no
+`writePatterns` entry describes is tier 1 — read-only, auto-execute. Nothing warns you.
+This is also the only thing standing behind `run_command`, which takes no `confirmed`
+argument and runs anything scoring tier 1.
+Do not repeat this mistake: in July 2026 an audit of all 40 shell write tools against
+the real classifier found btrfs missing **entirely** (so `create_prechange_snapshot`,
+`start_btrfs_scrub`, and even a hand-written `btrfs subvolume delete` were tier 1),
+plus `smartctl -t`/`-X` and `setfacl`. Fixed in `8e0971b`. When adding a capability
+that shells out to a binary not already in `writePatterns`, add a pattern for its
+mutating verbs and a `validator_test.go` case both ways (mutating elevates, read-only
+stays tier 1 — these binaries serve both). Match verbs, not the binary name: `btrfs
+subvolume list`, `smartctl -a`, and `getfacl` are diagnostics and must stay tier 1.
+
+### `confirmed: false` previews on the tool's write flag, not on tier
+Looks like: `executePredefinedToolOnNas` should skip the preview for tier-1 commands
+since nas-api considers them read-only.
+Actually: the gate reads `!input.confirmed` for every `write: true` tool, deliberately
+ignoring `preview.tier`. Tier only selects whether an HMAC approval token is built.
+Why: the gate used to read `preview.tier >= 2 && !input.confirmed`, which handed the
+safety decision to a classifier that had gaps (above). `create_prechange_snapshot` with
+`confirmed: false` therefore executed a real snapshot instead of previewing, which made
+"preview" untrustworthy across the whole write surface. Reported and fixed 2026-07-16
+(`f4c8c7a`); detail in `docs/architecture.md`.
+Do not "optimize" the preview away for tier-1 writes: `write: true` is a fact about the
+tool, while the tier is an inference about a string. Both layers are kept because
+neither covers the other — this gate cannot reach `run_command`, and the classifier can
+have gaps.
 
 ### NAS MCP is fully stateless (FastMCP HTTP Stream)
 Looks like: a bug — the server refuses to rely on persistent MCP session state.

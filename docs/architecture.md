@@ -31,7 +31,7 @@ failures.
             ▼                               ▼
 ┌───────────────────┐    ┌───────────────────────────────────┐
 │ Supabase          │◄───│ web app (Next.js)                  │
-│ qnjimovrsaacneqk  │    │ mon.designflow.app                 │
+│ aaxtrlfpnoutziwh  │    │ mon.designflow.app                 │
 │ 53 tables         │    │  - issue detector                  │
 │ partitioned +     │    │  - 3-stage issue-agent pipeline    │
 │ time-series       │    │  - operator approval UI            │
@@ -207,18 +207,53 @@ the logic is unit-tested on temp trees.
 |---|---|---|---|
 | 1 | read-only | No — auto-executes | `cat /proc/mdstat`, `df -h`, `smartctl -a`, `tail -n 100 /var/log/kern.log` |
 | 2 | service ops | HMAC approval token | `synopkg restart SynologyDrive`, DSM WebAPI `SYNO.Docker.Container` start/stop for the monitor agent |
-| 3 | file ops | HMAC approval token | `mv /volume1/file.old /volume1/file`, `btrfs scrub start /volume1` |
+| 3 | file ops | HMAC approval token | `mv /volume1/file.old /volume1/file`, `btrfs subvolume delete`, `setfacl -m u:x:rwx /volume1/…` |
+
+Tier drives the **approval-token** requirement, not whether a write tool previews.
+`apps/nas-mcp` previews every tool declaring `write: true` regardless of tier — see
+"Write preview is gated on the tool, not the tier" below.
+
+> This table previously listed `btrfs scrub start /volume1` as tier 3. It never was:
+> the classifier had no btrfs patterns at all, so it scored tier 1. It is tier 2 as of
+> `8e0971b`. Treat the tiers here as claims to check against `validator_test.go`.
 
 ### Validator (`internal/validator/validator.go`)
 
 `ClassifyTier(command)` returns the minimum required tier. `Validate(command, tier)`
 enforces that the requested tier is sufficient and that no hard-block patterns match.
 
+**A command with no matching `writePatterns` entry is tier 1 and auto-executes.**
+Classification is pattern-matched against the command string, so a write the patterns
+do not describe is silently treated as read-only. This is what `run_command` relies on
+to refuse writes (it has no `confirmed` argument and only checks `tier >= 2`), so a
+missing pattern is directly reachable from free-form shell. When adding a capability
+that shells out to a binary not already covered, add a `writePatterns` entry for its
+mutating verbs and a `validator_test.go` case in both directions — the mutating form
+elevates, the read-only form does not. Gaps found this way in `8e0971b`: btrfs
+(entirely absent), `smartctl -t`/`-X`, and `setfacl`.
+
 Note: a `(>>?)\s*['"]?/(btrfs/)?volume\d+/` pattern is present in **both**
 `writePatterns` and `filePatterns` so content redirects into the writable
 `/btrfs/volumeN` mount (including quoted, spaced paths) classify as tier 3. It was
 added for the `write_seafile_ignore` capability; `set_inotify_watches` (sysctl +
 `/host/etc/sysctl.conf`) stays tier 2. Background: `docs/seafile-sync-inotify.md`.
+
+### Write preview is gated on the tool, not the tier
+
+`executePredefinedToolOnNas` (`apps/nas-mcp/src/index.ts`) returns a preview for any
+tool with `write: true` unless `confirmed: true` is passed. It does **not** consult
+`preview.tier` for that decision; tier only decides whether an HMAC approval token is
+built. `nasPreview` is still called first, for the hard-block check and to show the
+tier in the preview text.
+
+Until `f4c8c7a` the gate read `preview.tier >= 2 && !input.confirmed`, which delegated
+the safety decision to the classifier. Combined with the btrfs gap above,
+`create_prechange_snapshot` executed a real snapshot when called with
+`confirmed: false` — so "preview" was not a dry run on any tool the classifier
+under-scored. Keep the gate keyed on the tool's own declaration: the classifier
+describes command strings and can have gaps, whereas `write: true` is a fact about the
+tool. The two layers are independent on purpose — this gate cannot protect
+`run_command`, and the classifier is what does.
 
 ### DSM Container Manager lifecycle
 

@@ -117,3 +117,49 @@ Risks / watchouts:
 - The Virginia project sits on a 36 GB disk that already filled and crashed the DB
   read-only once; AWS gp3 allows a resize only once per 4h.
 - Deleting rows will **not** immediately shrink the size Supabase reports.
+
+## NAS write-preview fix — `edgesynology2` still on the old nas-api build
+
+Status:
+partial (code complete, pushed, verified live on `edgesynology1`; `edgesynology2` unreachable)
+
+Done:
+- Fixed the reported bug: `create_prechange_snapshot` with `confirmed: false` executed a
+  real snapshot instead of previewing. `apps/nas-mcp` gated confirmation on nas-api's
+  tier classification (`preview.tier >= 2 && !input.confirmed`) rather than the tool's
+  own `write: true` flag, so any write tool the classifier under-scored auto-executed.
+  Now every `write: true` tool previews regardless of tier (`f4c8c7a`).
+- Fixed the root cause underneath it: `ClassifyTier` had **no btrfs patterns at all**, so
+  every btrfs subcommand — including `btrfs subvolume delete` — scored tier 1
+  (read-only, auto-execute). An audit of all 40 shell write tools against the real
+  classifier found the same gap for `smartctl -t`/`-X` and `setfacl`, affecting
+  `create_prechange_snapshot`, `start_btrfs_scrub`, `start`/`cancel_smart_test`, and
+  `repair_path_acl` (`8e0971b`).
+- Verified live on `edgesynology1` after Watchtower picked up `f4c8c7a` (16:56 UTC
+  2026-07-16): `create_prechange_snapshot` with `confirmed: false` returns a preview and
+  creates nothing (`btrfs subvolume list` unchanged); the command now classifies tier 2;
+  `run_command` now refuses `btrfs subvolume delete`, which it previously executed; and
+  read-only diagnostics (`subvolume list`, `scrub status`, `smartctl -a`,
+  `-l selftest`) still run at tier 1.
+
+Next action:
+- Confirm `GET http://100.107.131.36:7734/health` on `edgesynology2` reports
+  `build_sha` `f4c8c7a` or newer once the host is reachable again. It was unreachable
+  during this session (10s curl timeout from this workstation, and a 45s MCP
+  `run_command` timeout from the VPS over Tailscale, so it is the host — not the network
+  path). `edgesynology1` reported `f4c8c7a` at 16:56 UTC. No action should be needed:
+  Watchtower polls GHCR every 5 minutes and will recreate the container on its own.
+- Decide whether to delete the two stray snapshots the bug created on `edgesynology1`
+  before it was fixed: `@prechange_20260716_154207` and `mac/@prechange_20260716_154247`
+  (both 2026-07-16 15:42 UTC). They are read-only btrfs snapshots — harmless, but they
+  pin CoW space that grows as the live subvolume diverges. Deleting them is now tier 3.
+
+Risks / watchouts:
+- Until `edgesynology2` is updated, its `run_command` still executes `btrfs`,
+  `smartctl -t`/`-X`, and `setfacl` commands unattended as tier 1. The `nas-mcp` fix is
+  already live and covers the **named** write tools on both NASes (it does not depend on
+  nas-api's tier), but it cannot cover free-form `run_command`, which takes no
+  `confirmed` argument and gates only on the classifier.
+- Do not "simplify" the two layers back into one. They are independent on purpose: the
+  MCP gate cannot protect `run_command`, and the classifier cannot be trusted to have no
+  gaps. Background: AGENTS.md §10 and `docs/architecture.md`.
