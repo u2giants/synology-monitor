@@ -308,13 +308,30 @@ mounts rather than against the validator:
   answers `It's Linux mode` — so per-path ACL state is worth checking before
   assuming either model. A replacement write tool is a new capability, not a port:
   see the note in `nas-tools.ts` before adding one back.
-- **Path read-only.** `repair_path_ownership` still ships and `chown` exists, but the
-  per-share `/volumeN` mounts are `:ro`, so the `/volume1/...` paths its description
-  asks for return `Read-only file system`. Only `/btrfs/volume1/<share>` is writable
-  (mapping precedent: `write_seafile_ignore`). Left unfixed deliberately — chown
-  interacts with the Synology ACL layer, so it needs live validation on a scratch path.
-Before trusting any write tool, check its binary is in the image and its path is on a
-`:rw` mount. "Approved" is not "worked" — neither gate looks at either.
+- **Path read-only.** `repair_path_ownership` and `repair_drive_db_permissions` both
+  target `/volumeN`, but the per-share `/volumeN` mounts are `:ro`, so they return
+  `Read-only file system`. Only `/btrfs/volume1/<share>` is writable (mapping
+  precedent: `write_seafile_ignore`).
+- **Name unresolvable.** The same two also chown *named* accounts (`mac:users`,
+  `SynologyDrive:SynologyDrive`). The container's `/etc/passwd` is Debian's own (18
+  lines); the NAS's (55) is at `/host/etc/passwd`, and `/etc/group` is not mounted from
+  the host at all. So NAS names do not resolve and `chown` fails `invalid user` —
+  `stat` on `/volume1/mac` prints `UNKNOWN:users` for uid 1024. Only numeric `uid:gid`
+  works today. Fixing this needs `/etc/group` added to the compose mounts plus a
+  one-time `docker compose up -d` per NAS.
+
+Both were **disabled in `tools-config.json` on 2026-07-16** rather than left
+advertising a capability they do not have. They fail safely (no data change), but a
+tier-3 preview that says a write is about to happen, from a tool that cannot write,
+teaches the operator to click through approvals that mean nothing — that is the real
+damage, and it is why "it only ever errors" is not a reason to leave one enabled.
+
+**Checklist before trusting or adding any write tool** — the tier gates check none of
+these, and `write: true` checks none of them either:
+1. Is the binary actually in `apps/nas-api/Dockerfile`? (`setfacl` was not.)
+2. Is the target path on a `:rw` mount? (`/volumeN` is `:ro`; `/btrfs/volumeN` is not.)
+3. Do the identifiers resolve *inside the container*? (NAS users/groups do not.)
+4. Has it been run once, for real, on a scratch path? If not, it is unproven.
 
 ### A new write capability needs a validator pattern, or it auto-executes
 Looks like: `write: true` in `nas-tools.ts` is what makes a tool require approval.

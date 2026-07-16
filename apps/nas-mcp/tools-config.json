@@ -126,9 +126,7 @@
     "set_inotify_watches",
     "write_seafile_ignore",
     "clear_package_lockfiles",
-    "repair_drive_db_permissions",
     "quarantine_path",
-    "repair_path_ownership",
     "restore_path_from_snapshot",
     "restore_from_recycle_bin",
     "trigger_backup_task",
@@ -138,7 +136,10 @@
     "kill_process",
     "run_privileged_command"
   ],
-  "_write_tools_available_disabled": [],
+  "_write_tools_available_disabled": [
+    "repair_path_ownership",
+    "repair_drive_db_permissions"
+  ],
   "_write_tools_available": [
     "restart_monitor_agent",
     "stop_monitor_agent",
@@ -284,9 +285,9 @@
     "set_inotify_watches": "WRITE: Raises fs.inotify.max_user_watches/instances live and persists to sysctl.conf — fixes seaf-cli silently going blind when the 8192 default is exhausted — always asks your approval first",
     "write_seafile_ignore": "WRITE: Writes a standard seafile-ignore.txt (@eaDir, #recycle, etc.) into a seaf-cli worktree root so junk stops syncing — always asks your approval first",
     "clear_package_lockfiles": "WRITE: Removes stale lock files for a named package — always asks your approval first",
-    "repair_drive_db_permissions": "WRITE: Fixes ownership and permissions on @synologydrive directories — always asks your approval first",
+    "repair_drive_db_permissions": "DISABLED 2026-07-16 — same two faults as repair_path_ownership: it chowns SynologyDrive:SynologyDrive (unresolvable in the container) on /volume[0-9]*/@synologydrive (a read-only mount). Verified on edgesynology1.",
     "quarantine_path": "WRITE: Renames an exact path to .quarantine.{timestamp} — always asks your approval first",
-    "repair_path_ownership": "WRITE: chown on an exact path with optional recursion — always asks your approval first",
+    "repair_path_ownership": "DISABLED 2026-07-16 — cannot work as written: the per-share /volumeN mounts are read-only inside nas-api (only /btrfs/volumeN is writable), and the container's /etc/passwd is Debian's own, so NAS account names do not resolve and chown fails with 'invalid user'. Re-enable only after both are fixed and a scratch-path write is verified live.",
     "restore_path_from_snapshot": "WRITE: Restores a file/dir from a Btrfs snapshot to a new destination — always asks your approval first",
     "restore_from_recycle_bin": "WRITE: Restores a file from a share recycle bin to a new destination — always asks your approval first",
     "trigger_backup_task": "WRITE: Triggers an immediate HyperBackup task run via DSM WebAPI — pass task ID from check_backup_status — always asks your approval first",

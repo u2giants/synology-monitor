@@ -3193,8 +3193,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
+    // DISABLED in tools-config.json 2026-07-16 — same two faults as
+    // repair_path_ownership, verified live: it chowns SynologyDrive:SynologyDrive,
+    // which does not resolve in the container (NAS accounts live in
+    // /host/etc/passwd, not /etc/passwd), against /volume[0-9]*/@synologydrive,
+    // which is a :ro mount. Both must be fixed together; see the note above
+    // repair_path_ownership.
     name: "repair_drive_db_permissions",
-    description: "WRITE — Fixes ownership and permissions on @synologydrive database directories across all volumes. Useful when Synology Drive fails to start due to permission errors on its database files.",
+    description: "WRITE — Fixes ownership and permissions on @synologydrive database directories across all volumes. Useful when Synology Drive fails to start due to permission errors on its database files. DISABLED 2026-07-16 — BROKEN: chowns an account the container cannot resolve, on a read-only mount. Do not re-enable until fixed and verified live.",
     write: true,
     params: { target },
     buildCommand: (_input) => {
@@ -3233,18 +3239,27 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
-  // KNOWN DEFECT (found 2026-07-16 alongside the repair_path_acl removal, not yet
-  // fixed): unlike repair_path_acl this tool's binary exists — the nas-api image
-  // installs coreutils — but every per-share /volumeN path is bind-mounted :ro
-  // (docker-compose.agent.yml), so a chown against the /volume1/... paths this
-  // description tells callers to pass returns "Read-only file system". Only
-  // /btrfs/volume1/<share> is writable. The mapping precedent is write_seafile_ignore.
-  // Not applied blind here: unlike a content write, chown interacts with the
-  // Synology ACL layer DSM enforces on these volumes, so the fix needs validating
-  // on a scratch path on a live NAS before it is trusted on user data.
+  // DISABLED in tools-config.json 2026-07-16 — two independent faults, both verified
+  // live on edgesynology1. Unlike repair_path_acl the binary exists (coreutils is in
+  // the image), but:
+  //   1. Every per-share /volumeN path is bind-mounted :ro (docker-compose.agent.yml),
+  //      so chown on the /volume1/... paths this description asks for returns
+  //      "Read-only file system". Only /btrfs/volume1/<share> is rw. Mapping
+  //      precedent: write_seafile_ignore.
+  //   2. The container cannot resolve NAS account names. Its /etc/passwd is Debian's
+  //      own (18 lines); the NAS's (55 lines) is mounted at /host/etc/passwd, and
+  //      /etc/group is not mounted from the host at all. `chown mac:users` therefore
+  //      dies with "invalid user", and `stat` on a share prints UNKNOWN:users for
+  //      uid 1024. Only numeric uid:gid works today.
+  // A correct fix must map the path to /btrfs, resolve owner→uid from
+  // /host/etc/passwd, and resolve group→gid — which needs /etc/group added to the
+  // compose mounts plus a one-time `docker compose up -d` per NAS. It must then be
+  // proven with a no-op chown on a scratch path before it is trusted on user data:
+  // chown also interacts with the Synology ACL layer. repair_drive_db_permissions
+  // has BOTH faults as well (SynologyDrive:SynologyDrive on /volume[0-9]*).
   {
     name: "repair_path_ownership",
-    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute. KNOWN DEFECT: the per-share /volumeN mounts are read-only inside nas-api, so a /volume1/... path fails with 'Read-only file system'; only /btrfs/volume1/<share> is writable. Verify the result rather than trusting an OK.",
+    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute. DISABLED 2026-07-16 — BROKEN: /volumeN paths are read-only inside nas-api (only /btrfs/volumeN is writable) and NAS account names do not resolve in the container, so chown fails with 'invalid user'. Do not re-enable until both are fixed and verified live.",
     write: true,
     params: { target, filter, exactPath },
     buildCommand: (input) => {
