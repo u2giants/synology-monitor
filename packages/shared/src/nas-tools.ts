@@ -1408,20 +1408,22 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "inspect_path_acl",
-    description: "Shows the POSIX and Synology ACL entries for an exact filesystem path. Reveals which users and groups have explicit ACL permissions beyond standard POSIX mode. Requires exact_path.",
+    description: "Shows the POSIX mode and Synology ACL entries for an exact filesystem path. Reveals which users and groups have explicit ACL permissions beyond the standard POSIX mode. Requires exact_path. A path answering 'It's Linux mode' has no Synology ACL — POSIX mode/ownership is what applies there.",
     write: false,
     params: { target, exact_path: exactPath },
     buildCommand: (input) => {
       const p = (input.exact_path as string).trim();
+      // No getfacl section: it is not installed (verified on edgesynology1) and
+      // /volume1 is mounted `synoacl`, not `acl`, so POSIX ACLs are not what this
+      // filesystem enforces. It only ever printed "getfacl: command not found"
+      // followed by a fallback saying "not available or path not found" — which
+      // reads as a possible missing path and invited chasing a non-bug.
       return [
         "echo '=== POSIX MODE ==='",
         `stat -c 'mode=%A owner=%U:%G size=%s inode=%i' ${quote(p)} 2>&1`,
         "echo ''",
-        "echo '=== POSIX ACL (getfacl) ==='",
-        `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available or path not found'`,
-        "echo ''",
         "echo '=== SYNOLOGY ACL (synoacltool) ==='",
-        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>&1 || true`,
       ].join("\n");
     },
   },
@@ -1434,15 +1436,14 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     buildCommand: (input) => {
       const p = (input.exact_path as string).trim();
       const username = (input.filter as string | undefined)?.trim() || "";
+      // getfacl section dropped for the same reason as inspect_path_acl: not
+      // installed, and POSIX ACLs are not what a `synoacl` mount enforces.
       const lines = [
         "echo '=== PATH PERMISSIONS ==='",
         `stat -c 'mode=%A owner=%U:%G inode=%i' ${quote(p)} 2>&1`,
         "echo ''",
-        "echo '=== ACL ==='",
-        `getfacl ${quote(p)} 2>&1 || echo 'getfacl not available'`,
-        "echo ''",
         "echo '=== SYNOLOGY ACL (synoacltool) ==='",
-        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>/dev/null || echo 'synoacltool not available'`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get ${quote(p)} 2>&1 || true`,
       ];
       if (username) {
         lines.push(

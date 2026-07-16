@@ -251,6 +251,14 @@ per subtree — a whole-volume crawl times out the 25 s `run_command` budget.
 - Allowed read docker verbs are only `ps | inspect | logs | stats --no-stream | port |
   diff | top`. `docker image inspect`, `docker exec`, and `docker compose` are blocked.
 - Reading a credential-style file (path containing `.env`) is hard-blocked.
+- Mentioning the word `setfacl` anywhere in a command — even `which setfacl` — matches
+  writePatterns and rejects the whole call. Same shape as the docker gotcha above.
+- `synoacltool` classifies on the token right after the binary name, so assigning it to
+  a shell variable (`B=/host/usr/syno/bin/synoacltool; $B -get ...`) reads as a
+  verbless — therefore mutating — invocation and is refused. Call the binary directly
+  with its verb. This fails closed by design (unknown verb ⇒ write); do not "fix" it by
+  loosening the match. Verified on edgesynology1 2026-07-16: direct `-get`/`-stat` run
+  at tier 1, the variable form does not.
 - Unverified observation: `run_command`/nas-api did not see a newly-created subdir
   under `/volume1/docker` that the operator's own shell saw — verify fresh filesystem
   changes from the operator shell, not `run_command`.
