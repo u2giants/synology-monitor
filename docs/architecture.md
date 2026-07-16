@@ -647,10 +647,21 @@ Stage 3: runStage3Explainer (single-shot)
 
 ## Database
 
-Supabase project `aaxtrlfpnoutziwhshlt`. 53 tables total (migrations 00001–00041).
+Supabase project `aaxtrlfpnoutziwhshlt`. 53 tables total (migrations 00001–00042;
+`00042` is committed but **not applied to any live database** — see below).
 
 **Partitioned tables** (pg_partman, monthly, auto-retention): `metrics`,
 `nas_logs`, `storage_snapshots`, `container_status`, `drive_activities`.
+
+**Everything else has no retention and grows without bound.** The DB reached ~32 GB,
+driven by the high-frequency collector streams (`process_snapshots` alone was ~43.6M
+rows, ~15s cadence, while nothing reads it past 6h). Migration `00042` adds a retention
+system for these, but it has never been applied and has known defects —
+see [telemetry-retention.md](telemetry-retention.md) before touching it.
+
+Note: `process_snapshots`, `disk_io_stats`, `net_connections`, and `sync_task_snapshots`
+have **no `CREATE TABLE` in any migration** — they were created out-of-band and are only
+ever *renamed* by `00031`. The live DB is their only schema of record.
 
 **Key table groups:**
 

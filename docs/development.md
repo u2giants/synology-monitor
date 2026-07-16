@@ -248,7 +248,14 @@ pnpm build            # build all packages (turbo)
 pnpm type-check       # TypeScript check across all apps
 pnpm lint             # lint across all apps
 pnpm check:dashboard-data   # runs scripts/check-dashboard-data.mjs
+pnpm cleanup:telemetry      # runs scripts/run-telemetry-retention-cleanup.mjs
 ```
+
+`cleanup:telemetry` (`--install` / `--dry-run` / `--cleanup`) applies telemetry
+retention and **deletes rows in bulk**. It requires an explicit `SUPABASE_URL` and
+service key and refuses to guess a target — do not add a default. Read
+[telemetry-retention.md](telemetry-retention.md) before running it; the migration it
+installs is not yet safe to apply as written.
 
 Turbo caches build outputs in `.turbo/`. The dependency order:
 `shared:build → (web:build, nas-mcp:build)`.

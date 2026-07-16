@@ -58,6 +58,7 @@ Then load additional docs only when relevant:
 | Change local setup, dev scripts, test/lint/debug workflow, package scripts, or tooling | `AGENTS.md`, `docs/development.md`, relevant package/config files | `docs/deployment.md` unless CI/CD changes |
 | Change deployment, Docker, CI/CD, hosting, release flow, rollback, or runtime environment | `AGENTS.md`, `docs/deployment.md`, `docs/configuration.md`, relevant workflow/deployment files | Local-only development docs unless needed |
 | Change database schema, migrations, models, external IDs, or data flow | `AGENTS.md`, `docs/architecture.md`, `docs/configuration.md` if env/config is affected, relevant migration/model files | Deployment docs unless rollout/deploy behavior changes |
+| Database size/growth, telemetry retention, purging old rows, pg_partman, or migration `00042` | `AGENTS.md`, `docs/telemetry-retention.md` (status, known defects, live install procedure), `docs/supabase-virginia-migration-2026-06.md` (which project is real) | Unrelated subsystem docs |
 | Investigate bugs or incidents | `AGENTS.md`, relevant docs based on affected area, `HANDOFF.md` if present, Critical incidents section in `AGENTS.md`, relevant incident docs under `docs/` | Unrelated folder-level READMEs |
 | Continue unfinished work | `AGENTS.md`, `HANDOFF.md`, relevant docs named inside `HANDOFF.md` | Docs unrelated to the handoff scope |
 | Work on the archive feature (file inventory or archive move) | `AGENTS.md`, `docs/synology-archive.md` (design/behavior), `docs/synology-archive-implementation.md` (build guide), `docs/archive-move-runbook.md` (live-move operator steps), `docs/architecture.md` (nas-api job API), `docs/deployment.md` (on-NAS job state + snapshots) | Unrelated subsystem docs |
@@ -552,6 +553,38 @@ corrected partman, reclaimed 3.34 GB.
 Rule added to prevent recurrence:
 No source whitelists; sender must isolate bad rows; empty tables are bugs.
 
+### 2026-06-22 — A day of DB work installed on the wrong Supabase project
+
+What happened:
+The telemetry-retention migration was installed, and a ~27.8M-row foreground purge
+run, against `qnjimovrsaacneqkggsn` — the **retired Ohio project** — one day after the
+Ohio→Virginia migration. The session reasoned that the old ref "matches the hardcoded
+app URL and the 29GB baseline", and explicitly dismissed the checkout's
+`supabase/.temp/linked-project.json` link to the live project as stale.
+
+Impact:
+All of it was lost when the old project was later deleted — the purge, the retention
+functions, the hourly cron. The live database got nothing and still has no retention.
+No data loss (the old project was already a rollback copy), but a full session wasted
+and the size problem left unsolved for a month.
+
+Root cause:
+The repo lied. The ref-swap correcting 13 files was sitting **unapplied in a `git
+stash`**, so every hardcoded URL still named the retired project and supplied
+convincing false evidence. `scripts/run-telemetry-retention-cleanup.mjs` also had a
+silent `DEFAULT_SUPABASE_URL` fallback pointing at the old project, so an unset
+`SUPABASE_URL` aimed a bulk-delete job at it with no error. This section already said
+not to point new work at the old project; the stale strings outvoted the doc.
+
+Recovery:
+Stash landed, default URL removed, guards added (2026-07-16, commit `46f9f65`).
+
+Rule added to prevent recurrence:
+**Trust `supabase projects list` and `supabase/.temp/linked-project.json` over any URL
+committed in a doc, script default, or `.env.example`.** The connected tool knows
+which project is real; a committed string only knows what was true when written. Never
+give a destructive script a default target — make it fail loudly instead.
+
 ### 2026-05-29 — Live secrets found committed in example/recovery files
 
 What happened:
@@ -708,7 +741,9 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 | open | `analyzeRecentLogs` caller: decide whether to keep AI log clustering as a background job | Owner decision — readers already migrated to `issues` (2026-05-31) |
 | open | `second_opinion_model`: wire a second AI model cross-check into Stage 2 | Future session — see `getSecondOpinionModel()` in `ai-settings.ts` |
 | open | `drive_team_folders` reader: web app never queries team folder data | Future session |
-| open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → migration 00042 |
+| open | `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`: confirmed superseded, not yet dropped | Owner confirm → **migration 00043** (00042 is now telemetry retention) |
+| **open** | **Telemetry retention is installed nowhere.** `00042` exists in the repo but has never been applied to a surviving DB; the live project has no retention and still holds ~40-day-old `process_snapshots`. The DB-size problem (~32 GB) is unsolved | Future session — **read `docs/telemetry-retention.md` first**; it is not safe to apply as written (see next row) |
+| **open** | **`00042` has known defects**: `disk_io_stats` 14d retention breaks the metrics page's 30d range; `CREATE INDEX` on 4 tables that no migration creates; row-level DELETEs redundant with pg_partman on 4 partitioned tables (and `container_status` silently reverses a documented 180d decision) | Future session — details + fixes in `docs/telemetry-retention.md` § Known defects |
 | open | Relay has no CI build workflow | Decide: add workflow or document manual path as canonical |
 | low | 2 DB functions still `smon_`-prefixed (`smon_create_alert`, `smon_get_openai_key`) | Low value; rename with caller updates |
 | **open** | **Manual `docker compose up -d` on each NAS** — `SYS_PTRACE` + `/dev/sd*` mounts in `docker-compose.agent.yml` require a manual compose recreate; Watchtower will not apply these | Owner — run on each NAS after pulling new compose file |
