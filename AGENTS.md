@@ -75,12 +75,12 @@ This map is intentionally task-based. Do not load every Markdown file by default
 |---|---|---|---|
 | `apps/agent` | Go | each NAS (Docker) | Collects telemetry, buffers in SQLite WAL, flushes to Supabase |
 | `apps/nas-api` | Go | each NAS (Docker, :7734) | Three-tier approved-shell-command executor for the issue agent + MCP |
-| `apps/nas-mcp` | Node/TS | VPS (Coolify) | FastMCP server — exposes a 119-definition NAS tool registry to AI chat clients over Streamable HTTP |
+| `apps/nas-mcp` | Node/TS | VPS (Coolify) | FastMCP server — exposes a 133-definition NAS tool registry to AI chat clients over Streamable HTTP |
 | `apps/web` | Next.js | VPS (Coolify) | Dashboard, issue detector, 3-stage issue-agent loop, operator UI |
 | `apps/relay` | Node (.mjs) | VPS | Narrow named-action HTTP proxy for an external (Lovable) frontend |
 
 `packages/shared` holds shared TypeScript types and the NAS tool definitions
-(built with Turbo). `ALL_TOOL_DEFS` currently contains 119 registry definitions,
+(built with Turbo). `ALL_TOOL_DEFS` currently contains 133 registry definitions,
 including `restart_nas_api`; `apps/nas-mcp/src/index.ts` eagerly registers that
 tool alongside `check_disk_space`. **One branch: `main`.** Push to `main` → GitHub Actions builds
 per-app images → web/nas-mcp auto-redeploy via Coolify webhook; agent/nas-api are
@@ -99,7 +99,7 @@ in [docs/supabase-virginia-migration-2026-06.md](docs/supabase-virginia-migratio
 apps/
   agent/        Go — collectors + DSM client + SQLite WAL sender   (we own)
   nas-api/      Go — validator (allowlist/hard-blocks) + executor  (we own)
-  nas-mcp/      Node/TS — MCP server + 119-definition tool registry           (we own; dist/ generated)
+  nas-mcp/      Node/TS — MCP server + 133-definition tool registry           (we own; dist/ generated)
   web/          Next.js — dashboard + issue agent                  (we own src/; .next/ generated)
   relay/        Node .mjs — named-action proxy                     (we own)
 packages/shared/ shared TS types + NAS tool definitions            (we own src/; dist/ generated)
@@ -149,7 +149,7 @@ images. If you ever patch a vendored file, record it here.
 | Add an agent collector | `apps/agent/internal/collector/<name>.go`, wire in `apps/agent/cmd/agent/main.go` with the `wg.Add(1)` pattern | existing collectors |
 | Send a new agent field to Supabase | `apps/agent/internal/sender/types.go` + a `Queue*` method, **and** a matching column via a new `supabase/migrations/*.sql` | applied migration files |
 | Allow a new NAS command tier | `apps/nas-api/internal/validator/validator.go` (+ `validator_test.go`; Go/RE2 regex only, no lookaround/backrefs) | `executor.go` |
-| Add a write capability that shells out to a **new binary** | `writePatterns` in `apps/nas-api/internal/validator/validator.go` — without an entry the command is tier 1 and auto-executes via `run_command`, whatever `write: true` says in `nas-tools.ts` (see §10 quirks) | assuming `write: true` alone gates execution |
+| Add a write capability that shells out to a **new binary** | `writePatterns` in `apps/nas-api/internal/validator/validator.go` — without an entry the command is tier 1 and auto-executes via `run_command`, whatever `write: true` says in `nas-tools.ts` (see §12 quirks) | assuming `write: true` alone gates execution |
 | Change an AI pipeline stage | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts` | `issue-detector.ts` fingerprinting |
 | Change AI model per stage | Settings UI (live dropdowns) → `ai_settings` table; fallback chain in `apps/web/src/lib/server/ai-settings.ts` | hardcoded defaults |
 | Add a selectable model / fix its capabilities | nothing — dropdowns are live from connected providers (`provider-models.ts` → `/api/ai-models`). To **tune** a model's effort/tool-use precisely, add a row to `MODEL_CATALOG` in `packages/shared/src/ai-capabilities.ts` (overrides the heuristic) | the live-fetch list logic unless adding a provider |
@@ -280,6 +280,28 @@ a content write like `printf ... > '/btrfs/volume1/x/seafile-ignore.txt'` would
 classify below tier 3.
 Do not remove: it only ever elevates classification (added for `write_seafile_ignore`).
 
+### There is no ACL-write tool, and `repair_path_ownership` can't write `/volume1`
+Looks like: an oversight — `repair_path_acl` was removed and its neighbour survived.
+Actually: a write tool can be approved, previewed, and audited and still be incapable
+of writing anything, because the *container* decides that, not `nas-tools.ts`. Two
+separate causes, both found 2026-07-16 by checking the tool against the image and the
+mounts rather than against the validator:
+- **Binary missing.** `repair_path_acl` shelled out to `setfacl`/`getfacl`, which the
+  nas-api image never installed (no `acl` package in `apps/nas-api/Dockerfile`) and
+  DSM does not ship. It could only ever print `command not found` under a tier-3
+  approval. Removed rather than re-pointed at `synoacltool`: POSIX ACLs are not the
+  model DSM enforces on these volumes (shares carry `support_acls`), so it is a new
+  capability, not a port — see the note in `nas-tools.ts` before adding one back.
+  Reading ACLs was never broken: `inspect_path_acl` / `inspect_effective_permissions`
+  use `synoacltool -get`, and the image is Debian precisely so DSM's glibc binaries run.
+- **Path read-only.** `repair_path_ownership` still ships and `chown` exists, but the
+  per-share `/volumeN` mounts are `:ro`, so the `/volume1/...` paths its description
+  asks for return `Read-only file system`. Only `/btrfs/volume1/<share>` is writable
+  (mapping precedent: `write_seafile_ignore`). Left unfixed deliberately — chown
+  interacts with the Synology ACL layer, so it needs live validation on a scratch path.
+Before trusting any write tool, check its binary is in the image and its path is on a
+`:rw` mount. "Approved" is not "worked" — neither gate looks at either.
+
 ### A new write capability needs a validator pattern, or it auto-executes
 Looks like: `write: true` in `nas-tools.ts` is what makes a tool require approval.
 Actually: `write: true` only makes `apps/nas-mcp` preview it. Whether the command is
@@ -296,6 +318,16 @@ that shells out to a binary not already in `writePatterns`, add a pattern for it
 mutating verbs and a `validator_test.go` case both ways (mutating elevates, read-only
 stays tier 1 — these binaries serve both). Match verbs, not the binary name: `btrfs
 subvolume list`, `smartctl -a`, and `getfacl` are diagnostics and must stay tier 1.
+
+The gap is not closed by auditing *tools* alone — `run_command` takes any string, so
+a binary no tool builds still needs a pattern. `setfacl` was gated in `8e0971b`, but
+DSM's `synoacltool` — the ACL binary that actually works on these volumes, and the one
+already in the agent's vocabulary via `inspect_path_acl` — was still unmatched, so a
+hand-written `synoacltool -add /volume1/...` classified tier 1 and auto-executed.
+Gated on 2026-07-16 by `synoacltoolMutates` in `validator.go`, which default-denies:
+anything that is not exactly `-get` is a write. Prefer that shape over a verb
+allowlist for binaries whose verb set can grow — an enumerated list fails *open* on a
+verb DSM adds later, and failing open here means unattended execution.
 
 ### `confirmed: false` previews on the tool's write flag, not on tier
 Looks like: `executePredefinedToolOnNas` should skip the preview for tier-1 commands
@@ -322,18 +354,18 @@ hang class (see incidents).
 Do not change because: stateful mode brings back session-resume bugs and forces
 dynamic tool registration that Claude clients ignore.
 
-### NAS MCP exposes 7 small tools but has a 119-definition registry
+### NAS MCP exposes 7 small tools but has a 133-definition registry
 Looks like: most tools are broken/unregistered.
 Actually: deliberate lazy-load. `tools/list` returns only `list_capabilities`,
 `get_capability_details`, `tool_search`, `invoke_tool`, `run_command`,
 `check_disk_space`, and `restart_nas_api`. Clients browse/search/detail on demand
 and execute via `invoke_tool({name,target,args})`.
-Why: pre-loading 119 schemas put ~50k tokens into every session and degraded it
+Why: pre-loading 133 schemas put ~50k tokens into every session and degraded it
 after ~10–15 calls; lazy-load keeps the always-on surface compact.
 Do not change because: it brings back session degradation. New always-on tools go
 in `EAGER_TOOLS` in `index.ts`, accepting the context cost.
 
-`tools-config.json` enables a subset of the 119 shared definitions. Always-on does
+`tools-config.json` enables a subset of the 133 shared definitions. Always-on does
 not mean separate from the registry: `check_disk_space` and `restart_nas_api` are
 shared definitions that `apps/nas-mcp/src/index.ts` registers eagerly.
 
@@ -881,7 +913,7 @@ Backup diagnostics must enumerate candidate paths and surface freshness metadata
 - Do not interpret an empty Supabase table as a healthy subsystem — a collector may
   be hitting an unsupported DSM API. Check `nas_logs` for API-unavailable warnings.
 - Do not commit real secrets, even to `*.env.example`.
-- Do not undo the §10 intentional quirks without reading the linked incident first.
+- Do not undo the §12 intentional quirks without reading the linked incident first.
 <!-- ansible-host-policy: managed rollout from u2giants/ansible -->
 ## Host / server changes — do NOT make them here
 

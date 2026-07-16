@@ -14,7 +14,7 @@
 - Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands or SSH. See `AI_OPERATING_RULES.md`.
 - Durable host/OS changes on `hetz` belong in `/worksp/ansible` / `u2giants/ansible`, then GitHub Actions applies them. Do not use SSH/sudo/live host edits for packages, users, firewall, SSH/sudo, Docker daemon config, systemd units/timers, cron, `/etc`, `/usr/local/bin`, `/usr/local/sbin`, Cloudflare Tunnel 1, Coolify host glue, or backup/DNS watchdogs. Break-glass repair must be followed by an Ansible PR.
 - Do not create feature branches. This repo uses one branch: `main`.
-- Do not "fix" the items listed under [AGENTS.md § 10 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
+- Do not "fix" the items listed under [AGENTS.md § 12 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
 
 ## Commit style
 
@@ -31,7 +31,7 @@ For other AI tools, paste `AGENTS.md` as your first message and follow the *§ 9
 ## Memory / context notes
 
 - Local workspace path: `/worksp/monitor/app`. Working copy of `github.com/u2giants/synology-monitor` on `main`.
-- The NAS MCP server has 119 shared tools in `ALL_TOOL_DEFS` but exposes only 7 small tools per session (`list_capabilities`, `get_capability_details`, `tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). `check_disk_space` and `restart_nas_api` are registry tools registered eagerly by `apps/nas-mcp/src/index.ts`. When debugging tool availability, check catalog/search/detail results, `tools-config.json` enablement, and `EAGER_TOOLS`.
+- The NAS MCP server has 133 shared tools in `ALL_TOOL_DEFS` but exposes only 7 small tools per session (`list_capabilities`, `get_capability_details`, `tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). `check_disk_space` and `restart_nas_api` are registry tools registered eagerly by `apps/nas-mcp/src/index.ts`. When debugging tool availability, check catalog/search/detail results, `tools-config.json` enablement, and `EAGER_TOOLS`.
 - The 3-stage AI pipeline (`stage1-structurer.ts`, `stage2-reasoning.ts`, `stage3-explainer.ts`) is the only active issue-agent pipeline as of 2026-05-30. The legacy 7-stage pipeline and OpenRouter inference path have been removed.
 - `issue_evidence_items` and `issue_evidence` are different tables with different purposes — do not confuse them.
 - `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not yet wired to any pipeline stage.

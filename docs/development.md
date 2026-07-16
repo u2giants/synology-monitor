@@ -221,7 +221,7 @@ apps/nas-api/internal/
   auth/                — bearer token + HMAC verifier
 
 packages/shared/src/
-  nas-tools.ts         — 119 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
+  nas-tools.ts         — 133 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
 ```
 
 ## Database migrations
@@ -402,7 +402,7 @@ Create `apps/agent/internal/collector/yourname.go`. The collector must:
 
    Omitting `wg.Add(1)` means graceful shutdown returns before the collector
    finishes, silently dropping in-flight WAL writes. This exact bug existed in the
-   ShareSync collector (see AGENTS.md §10).
+   ShareSync collector (see AGENTS.md §12).
 
 3. Call `sender.Queue*` to buffer rows. Add a payload type to `sender/types.go`
    and a `Queue*` method to `sender/sender.go` if this is a new table.

@@ -98,7 +98,45 @@ var (
 	outputRedirectRe = regexp.MustCompile(`>\s*\S`)
 	actualDockerRe   = regexp.MustCompile(`(?im)(^|[;&|(\$]\s*)(?:/(?:usr/)?(?:local/)?bin/)?docker(\s|$)`)
 	dockerInvokeRe   = regexp.MustCompile(`(?i)(?:/(?:usr/)?(?:local/)?bin/)?docker\b.*`)
+	// Captures the first flag token after each synoacltool invocation.
+	synoacltoolVerbRe = regexp.MustCompile(`(?i)\bsynoacltool\b\s*(-[A-Za-z-]*)?`)
 )
+
+// synoacltoolReadVerbs are the verbs that only inspect. Taken from the live
+// `synoacltool` usage output on edgesynology1 (DSM 7, binary dated 2022-12-01),
+// not from guesswork — everything it lists that is not here mutates, including
+// the non-obvious ones: -utime writes a timestamp, -copy writes the destination
+// ACL, -set-owner is chown, and -enforce-inherit rewrites children.
+var synoacltoolReadVerbs = map[string]bool{
+	"-h": true, "-check": true, "-get": true, "-getace": true,
+	"-get-perm": true, "-get-archive": true,
+	"-stat": true, "-cstat": true, "-fstat": true, "-lstat": true,
+}
+
+// synoacltoolMutates reports whether a command invokes DSM's synoacltool with a
+// verb that changes state.
+//
+// synoacltool is the native ACL surface here — /volume1 is mounted `synoacl` and
+// POSIX getfacl/setfacl are not installed at all — so it is the binary an agent
+// reaches for when asked to change an ACL, and no other writePatterns entry
+// covers it. An unmatched write classifies tier 1 and auto-executes
+// (AGENTS.md § 12).
+//
+// Default-deny: a verb absent from synoacltoolReadVerbs counts as a write, so a
+// verb DSM adds later fails closed (needs approval) rather than open (runs
+// unattended). The read verbs are allowlisted so diagnostics stay tier 1, per the
+// "match verbs, not the binary name" rule.
+//
+// The read tools' `echo '... (synoacltool) ...'` labels are quoted, and
+// stripQuotedStrings drops them before matching.
+func synoacltoolMutates(command string) bool {
+	for _, m := range synoacltoolVerbRe.FindAllStringSubmatch(stripQuotedStrings(command), -1) {
+		if !synoacltoolReadVerbs[strings.ToLower(m[1])] {
+			return true
+		}
+	}
+	return false
+}
 
 // hasRealOutputRedirect returns true only when the command redirects output
 // to an actual file destination (not /dev/null, not fd-to-fd like 2>&1,
@@ -232,6 +270,12 @@ var filePatterns = []*regexp.Regexp{
 	// mount (the per-share /volumeN mounts are read-only), including quoted paths
 	// with spaces. The plain `/volume` entries above do not match `/btrfs/volume`.
 	regexp.MustCompile(`(>>?)\s*['"]?/(btrfs/)?volume\d+/`),
+	// A synoacltool write against user data is a permissions change on real
+	// shares — tier 3, same as chmod/chown/setfacl above. Covers the writable
+	// /btrfs/volumeN mount too, since the per-share /volumeN mounts are read-only
+	// and any real ACL write must go through /btrfs. Only reached once the command
+	// already counts as a write, so -get stays tier 1.
+	regexp.MustCompile(`(?i)\bsynoacltool\b.*(/btrfs/volume\d+/|/volume\d+/|/home/\w|/root/)`),
 	regexp.MustCompile(`(?i)\brename\b.*\.old\b`),
 	// Destroying a subvolume takes user data or a recovery point with it.
 	// Creating one (snapshot/create) stays tier 2 — it is additive, and is the
@@ -304,6 +348,9 @@ func Validate(command string, requestedTier int) error {
 		if hasRealOutputRedirect(command) {
 			return errors.New("command requires tier 2 or higher (detected write pattern)")
 		}
+		if synoacltoolMutates(command) {
+			return errors.New("command requires tier 2 or higher (detected write pattern)")
+		}
 	}
 
 	// 3. Tier 2: may be a service op but must not touch user files
@@ -342,6 +389,9 @@ func ClassifyTier(command string) int {
 	}
 	if !isWrite {
 		isWrite = hasRealOutputRedirect(command)
+	}
+	if !isWrite {
+		isWrite = synoacltoolMutates(command)
 	}
 	if !isWrite {
 		return TierRead

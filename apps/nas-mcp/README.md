@@ -26,7 +26,7 @@ The server runs FastMCP in stateless HTTP Stream mode, so it does not rely on pe
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 119 shared tool definitions but exposes only **7 small tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface compact (vs ~50k tokens if all 119 were registered upfront). FastMCP session-level instructions tell clients to browse/search/detail before most NAS tasks, then `invoke_tool` with the exact operation name.
+The server has a registry of 133 shared tool definitions but exposes only **7 small tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface compact (vs ~50k tokens if all 133 were registered upfront). FastMCP session-level instructions tell clients to browse/search/detail before most NAS tasks, then `invoke_tool` with the exact operation name.
 
 | Always-on tool | Purpose |
 |---|---|
@@ -266,9 +266,16 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All r
 
 `start_btrfs_scrub`, `cancel_btrfs_scrub`, `start_smart_test`, `cancel_smart_test`, `create_prechange_snapshot`, `set_vm_overcommit_memory`, `persist_vm_overcommit_memory`
 
-### Group `write_files` (9)
+### Group `write_files` (8)
 
-`rename_file_to_old`, `remove_invalid_chars`, `clear_package_lockfiles`, `repair_drive_db_permissions`, `quarantine_path`, `repair_path_ownership`, `repair_path_acl`, `restore_path_from_snapshot`, `restore_from_recycle_bin`
+`rename_file_to_old`, `remove_invalid_chars`, `clear_package_lockfiles`, `repair_drive_db_permissions`, `quarantine_path`, `repair_path_ownership`, `restore_path_from_snapshot`, `restore_from_recycle_bin`
+
+There is deliberately no ACL-write tool. `repair_path_acl` was removed on
+2026-07-16: it shelled out to `setfacl`, which is not installed in the nas-api
+image or on the host, so it could only ever fail. POSIX ACLs are also not the
+model DSM enforces on these volumes. Reading ACLs is unaffected —
+`inspect_path_acl` and `inspect_effective_permissions` use `synoacltool -get`.
+See the note in `packages/shared/src/nas-tools.ts` before adding one back.
 
 ### Group `write_tasks` (5)
 

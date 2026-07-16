@@ -129,11 +129,15 @@ func TestWriteAndUnsafeCommandsStillBlockedOrElevated(t *testing.T) {
 	}
 }
 
-// These three families were absent from writePatterns entirely, so the tools
-// built on them (create_prechange_snapshot, start_btrfs_scrub, start/cancel_smart_test,
-// repair_path_acl) classified tier 1 and auto-executed with no approval —
-// `btrfs subvolume delete` among them. Mutating verbs must elevate; the
-// read-only diagnostics sharing each binary must stay tier 1.
+// These families were absent from writePatterns entirely, so the tools built on
+// them (create_prechange_snapshot, start_btrfs_scrub, start/cancel_smart_test,
+// the former repair_path_acl) classified tier 1 and auto-executed with no
+// approval — `btrfs subvolume delete` among them. Mutating verbs must elevate;
+// the read-only diagnostics sharing each binary must stay tier 1.
+//
+// setfacl and synoacltool are covered here even though no tool builds an ACL
+// write any more: both remain reachable as hand-written run_command input, which
+// is exactly the path that has to stay gated (AGENTS.md § 12).
 func TestMutatingSubcommandsElevate(t *testing.T) {
 	writes := []struct {
 		name     string
@@ -180,6 +184,50 @@ func TestMutatingSubcommandsElevate(t *testing.T) {
 			command:  "setfacl -m 'u:mac:rwx' '/volume1/mac/Decor' 2>&1",
 			wantTier: TierFile,
 		},
+		// synoacltool is DSM's native ACL binary and the only working ACL-write
+		// path on these volumes (POSIX setfacl is not installed at all), so it is
+		// what an agent reaches for via run_command. Every mutating verb must
+		// elevate; -get must not.
+		{
+			name:     "synoacltool -add on a volume path is tier three",
+			command:  "LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -add '/volume1/mac/Decor' 'user:mac:allow:rwxpdDaARWc--:fd--' 2>&1",
+			wantTier: TierFile,
+		},
+		{
+			name:     "synoacltool -del on a volume path is tier three",
+			command:  "/host/usr/syno/bin/synoacltool -del '/volume1/mac/Decor' 0 2>&1",
+			wantTier: TierFile,
+		},
+		{
+			name:     "synoacltool write via the writable btrfs mount is tier three",
+			command:  "/host/usr/syno/bin/synoacltool -set '/btrfs/volume1/mac/Decor' 'user:mac:allow:rwx:fd--' 2>&1",
+			wantTier: TierFile,
+		},
+		{
+			name:     "unknown future synoacltool verb default-denies rather than failing open",
+			command:  "/host/usr/syno/bin/synoacltool -enforce-inherit '/volume1/mac/Decor' 2>&1",
+			wantTier: TierFile,
+		},
+		{
+			name:     "synoacltool off a data path still elevates to service tier",
+			command:  "/host/usr/syno/bin/synoacltool -add /tmp/scratch 'user:mac:allow:rwx:----'",
+			wantTier: TierService,
+		},
+		{
+			name:     "synoacltool -set-owner is a chown and must not pass as a read",
+			command:  "/host/usr/syno/bin/synoacltool -set-owner '/volume1/mac/Decor' user mac",
+			wantTier: TierFile,
+		},
+		{
+			name:     "synoacltool -utime writes a timestamp despite the stat-like name",
+			command:  "/host/usr/syno/bin/synoacltool -utime '/volume1/mac/Decor'",
+			wantTier: TierFile,
+		},
+		{
+			name:     "synoacltool -copy writes the destination ACL",
+			command:  "/host/usr/syno/bin/synoacltool -copy '/volume1/mac/A' '/volume1/mac/B'",
+			wantTier: TierFile,
+		},
 	}
 
 	for _, tt := range writes {
@@ -209,6 +257,20 @@ func TestMutatingSubcommandsElevate(t *testing.T) {
 		"smartctl -l selftest /dev/sda",
 		"smartctl -l error /dev/sda",
 		"getfacl '/volume1/mac/Decor'",
+		// inspect_path_acl / inspect_effective_permissions. The quoted echo label
+		// contains the literal word "synoacltool" with no verb after it: it must be
+		// stripped as quoted data, not read as a verbless (mutating) invocation.
+		"echo '=== SYNOLOGY ACL (synoacltool) ==='\nLD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get '/volume1/mac/Decor' 2>/dev/null || echo 'synoacltool not available'",
+		"LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get '/volume1/mac/Decor' 2>/dev/null",
+		// Every remaining inspect-only verb from the live `synoacltool` usage text.
+		// These must stay tier 1 or ACL diagnostics silently start demanding
+		// approval — the failure mode the "read-only stays tier 1" rule exists for.
+		"/host/usr/syno/bin/synoacltool -getace '/volume1/mac/Decor'",
+		"/host/usr/syno/bin/synoacltool -get-perm '/volume1/mac/Decor' mac",
+		"/host/usr/syno/bin/synoacltool -get-archive '/volume1/mac/Decor'",
+		"/host/usr/syno/bin/synoacltool -check '/volume1/mac/Decor'",
+		"/host/usr/syno/bin/synoacltool -stat '/volume1/mac/Decor'",
+		"/host/usr/syno/bin/synoacltool -lstat '/volume1/mac/Decor'",
 	}
 	for _, command := range reads {
 		t.Run("read stays tier one: "+command, func(t *testing.T) {

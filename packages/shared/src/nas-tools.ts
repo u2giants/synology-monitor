@@ -3232,9 +3232,18 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
+  // KNOWN DEFECT (found 2026-07-16 alongside the repair_path_acl removal, not yet
+  // fixed): unlike repair_path_acl this tool's binary exists — the nas-api image
+  // installs coreutils — but every per-share /volumeN path is bind-mounted :ro
+  // (docker-compose.agent.yml), so a chown against the /volume1/... paths this
+  // description tells callers to pass returns "Read-only file system". Only
+  // /btrfs/volume1/<share> is writable. The mapping precedent is write_seafile_ignore.
+  // Not applied blind here: unlike a content write, chown interacts with the
+  // Synology ACL layer DSM enforces on these volumes, so the fix needs validating
+  // on a scratch path on a live NAS before it is trusted on user data.
   {
     name: "repair_path_ownership",
-    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute.",
+    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute. KNOWN DEFECT: the per-share /volumeN mounts are read-only inside nas-api, so a /volume1/... path fails with 'Read-only file system'; only /btrfs/volume1/<share> is writable. Verify the result rather than trusting an OK.",
     write: true,
     params: { target, filter, exactPath },
     buildCommand: (input) => {
@@ -3259,29 +3268,24 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     },
   },
 
-  {
-    name: "repair_path_acl",
-    description: "WRITE — Runs setfacl on an exact path to repair or set POSIX ACL entries. Pass the ACL spec in filter (e.g. 'u:username:rwx' or 'd:u:username:rwx'). Path must be absolute.",
-    write: true,
-    params: { target, filter, exactPath },
-    buildCommand: (input) => {
-      const p = (input.exactPath as string | undefined)?.trim();
-      if (!p || !p.startsWith("/")) throw new Error("repair_path_acl: exactPath must be an absolute path.");
-      const aclSpec = (input.filter as string | undefined)?.trim();
-      if (!aclSpec) throw new Error("repair_path_acl: filter must be an ACL spec (e.g. 'u:username:rwx').");
-      if (!/^[A-Za-z0-9_:,\-\.]+$/.test(aclSpec)) throw new Error("repair_path_acl: invalid ACL spec characters.");
-      const qp = quote(p);
-      const qs = quote(aclSpec);
-      return [
-        `echo '=== CURRENT ACL ==='`,
-        `getfacl ${qp} 2>&1`,
-        `echo '=== APPLYING setfacl -m ${aclSpec} ==='`,
-        `setfacl -m ${qs} ${qp} 2>&1 && echo OK || echo FAILED`,
-        `echo '=== VERIFY ==='`,
-        `getfacl ${qp} 2>&1`,
-      ].join("\n");
-    },
-  },
+  // repair_path_acl (setfacl-based) was removed on 2026-07-16: it could never
+  // have worked. Neither getfacl nor setfacl is installed in the nas-api image
+  // (see apps/nas-api/Dockerfile — no `acl` package) or anywhere on the host
+  // PATH, verified live on edgesynology1, so the tool could only ever print
+  // "setfacl: command not found" while reporting a tier-3 approved write.
+  //
+  // It was not re-pointed at DSM's synoacltool because that is a different
+  // capability, not a port: POSIX ACLs are not the ACL model these btrfs volumes
+  // enforce (shares carry support_acls; DSM applies NFSv4-style Synology ACLs),
+  // so the 'u:user:rwx' contract has no meaning here, and a synoacltool write
+  // syntax has never been exercised against these NASes. Reading ACLs already
+  // works and is unaffected — inspect_path_acl and inspect_effective_permissions
+  // call `synoacltool -get`. If an ACL *write* is wanted, add it deliberately:
+  // validate the verb syntax live on a scratch path, and route it through
+  // /btrfs/volume1/<share> (the per-share /volumeN mounts are read-only — see
+  // write_seafile_ignore for the mapping precedent). The validator keeps setfacl
+  // and synoacltool gated meanwhile, so hand-written run_command ACL writes still
+  // require approval.
 
   // ── Phase 3: Recovery / Restoration write tools ─────────────────────────
 
@@ -3869,7 +3873,6 @@ export const TOOL_GROUPS: Record<string, string> = {
   repair_drive_db_permissions: "write_files",
   quarantine_path: "write_files",
   repair_path_ownership: "write_files",
-  repair_path_acl: "write_files",
   restore_path_from_snapshot: "write_files",
   restore_from_recycle_bin: "write_files",
 
