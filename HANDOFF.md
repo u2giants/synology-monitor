@@ -149,6 +149,53 @@ Consequently, archive `/jobs/*` endpoints may return 503 and native job state is
 not guaranteed durable. The two NAS compose files are not byte-identical and must
 not be overwritten blindly; preserve each `.env` and local device/share differences.
 
+### E. Two stray `@prechange_*` snapshots on edgesynology1 — operator decision, open
+
+Re-verified present 2026-07-17:
+
+```
+ID 10393 gen 9438608 top level 257 path @prechange_20260716_154207
+ID 10394 gen 9438622 top level 634 path mac/@prechange_20260716_154247
+```
+
+Host paths (confirmed over `ssh edgesynology1`): `/volume1/@prechange_20260716_154207` and
+`/volume1/mac/@prechange_20260716_154247`. Inside nas-api they appear under `/btrfs/volume1/...`.
+
+**Why they exist.** Nobody asked for them. `create_prechange_snapshot` was called with
+`confirmed: false` — "show me what you would do" — and the preview bug executed it for real.
+Fixed in `f4c8c7a`; these two are the residue. They protect no change and no rollback depends
+on them.
+
+**Not dangerous.** Read-only point-in-time images. They cannot corrupt anything and do not
+affect SMB users. The only cost is space: a snapshot pins blocks its parent has since changed,
+so its footprint grows as live data diverges.
+
+**Size: unknown, deliberately unmeasured.** `btrfs qgroup show` → `quotas not enabled`, so the
+cheap answer does not exist; `btrfs filesystem du` across 57 TB is the metadata storm § 7
+forbids while SMB users are active. Context makes the question small: `df -h /volume1` → **109T
+total, 57T used, 53T free, 52%**, and they are a day old. No pressure, no deadline.
+
+**Recommendation: delete when convenient.** No value, slowly growing cost, but genuinely low
+priority at 52% full.
+
+**How — operator only, from a terminal.** No MCP tool deletes snapshots (`tool_search
+"snapshot"` returns create/list/restore only) and `btrfs subvolume delete` is tier 3, so
+`run_command` refuses it by design. `btrfs` is **not** in the NOPASSWD sudoers list, so this
+**will prompt for your password** — expected, not an error:
+
+```sh
+ssh edgesynology1
+sudo btrfs subvolume list /volume1 | grep prechange     # expect exactly IDs 10393 and 10394
+sudo btrfs subvolume delete /volume1/@prechange_20260716_154207
+sudo btrfs subvolume delete /volume1/mac/@prechange_20260716_154247
+sudo btrfs subvolume list /volume1 | grep prechange     # expect NO output
+```
+
+**Do not blind-delete anything else matching the pattern.** The same volume holds
+`@archive_move_snapshots/mv_*` subvolumes (six seen, 2026-06-11 → 06-16). Those are the
+archive-move feature's documented rollback points — deleting one could remove the only way back
+from a move. Whether that set is stale is a separate open question (§ 9).
+
 ## 4. Everything tried that did not work
 
 | Attempt | Why it seemed reasonable | How it failed / lesson |
@@ -227,6 +274,51 @@ not be overwritten blindly; preserve each `.env` and local device/share differen
 - Production web/MCP runtime variables live in Coolify; NAS runtime variables live
   in each stack's untracked `.env`; CI values live in GitHub Secrets.
 - Branch/environment: `main`, production NASes and production Virginia Supabase.
+
+### F. `repair_path_ownership` (6dcf16c) — shipped and enabled, but an independent review says not done
+
+An independent Codex review (read-only, 2026-07-17) of the shipped implementation found defects
+that a second pair of eyes caught and the original pass did not. **Two are confirmed by direct
+measurement, not opinion:**
+
+1. **The ACL safety warning can never fire — it fails open.**
+   `synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING: ACL mode could not be read'`
+   Without `set -o pipefail`, `||` sees `head`'s exit status, which is 0 even when `synoacltool`
+   fails. Reproduced: `/nonexistent/bin -get x 2>&1 | head -8 || echo fired` prints nothing and
+   exits 0. So if ACL inspection fails, the tool proceeds to `chown` with unknown ACL state.
+   Cheap fix: capture into a variable and test the command's own status.
+2. **The symlink test does not test symlinks.** `repair-path-ownership.test.ts:70` is named
+   *"rejects recursion, traversal, off-volume paths, and symlinks"* but asserts only recursion,
+   traversal, and off-volume. There is no symlink case. (Note the guard is a *runtime* shell
+   check, so a builder unit test can at most assert the guard is present in the string — the
+   name overclaims either way.)
+
+Further findings, plausible and unverified here:
+- **Only the final path component is symlink-checked.** `[ ! -L "$path" ]` does not protect a
+  symlinked *parent*; the path is never canonicalised against a share boundary.
+- **Check-to-write race.** Between `[ ! -L ]`, `stat` and `chown`, an SMB client can replace the
+  object; nothing binds device/inode identity across the gap.
+- **Hard links** are not considered — chowning one name changes ownership for every link.
+- **The preview is not informed consent for a non-developer.** It shows a Bash program;
+  `Current ownership` and `=== ACL MODE ===` are echoed from *inside* that script, so they only
+  appear at execution — after approval. The facts that should drive the decision arrive too late
+  to inform it.
+- **MCP approval binding gap.** The confirmation path rebuilds the command on the second call
+  and mints a fresh token without requiring a hash/receipt of the command the human actually
+  saw (`apps/nas-mcp/src/index.ts:173`). The web issue workflow executes a persisted approved
+  command and does not have this gap.
+- **On a Synology-ACL path an ACE can override POSIX ownership**, so `VERIFIED: ownership is
+  153742:100` can be true and still change nothing an SMB user experiences. Recommendation:
+  **fail closed on ACL paths** until `synoacltool -set-owner` semantics are proven, rather than
+  merely reporting the mode.
+
+**Nothing has been run against a real NAS path.** The included test is a synthetic temp-dir
+no-op. The one thing the plan insisted on — a no-op chown proven on a scratch path, on **both**
+NASes (es1 is Linux mode, es2 has a real ACL) — has still not happened. That is exactly how all
+three of these tools stayed broken for months.
+
+Risk is bounded meanwhile: tier 3, one path, non-recursive, human-approved, reversible. Not an
+emergency; not done either.
 
 ## 9. Open questions and risks
 
