@@ -69,35 +69,31 @@ plan a maintenance window or an online repack (`pg_repack`), not an improvised `
 
 **Deletes are irreversible and there is no rollback project.**
 
-### ⚠️ Do not enable the hourly cron as written — the batching does not commit
+### The hourly cron: use the procedure, not the function (fixed in 00044)
 
-`cleanup_high_volume_telemetry` is a **function** (`pg_proc.prokind = 'f'`), and a function
-cannot `COMMIT`. Its inner "batch" loop therefore runs entirely inside **one transaction**:
+The original `cleanup_high_volume_telemetry` is a **function** (`prokind='f'`), and a function
+cannot `COMMIT`. Its inner batch loop ran entirely in **one transaction** — 13 policies × 10 ×
+25,000 = up to **3.25M rows in a single transaction** per hourly run, one WAL burst and a
+long-lived snapshot blocking vacuum. So the cron must **never** run `SELECT * FROM
+cleanup_high_volume_telemetry(...)`.
 
-> 13 enabled policies × 10 batches × 25,000 = **up to 3,250,000 rows deleted in a single
-> transaction** per hourly run.
+**Migration `00044` fixes this** with a procedure, `cleanup_high_volume_telemetry_proc`, that
+`COMMIT`s after every batch, and repoints the cron to `CALL` it. Two non-obvious constraints,
+verified on PG17 (both raise `invalid transaction termination` otherwise):
 
-That defeats the point of batching — one WAL burst, one long-lived snapshot holding back
-vacuum on the very table generating the dead tuples, and everything rolls back together on
-any error. The per-batch `statement_timeout` bounds each `DELETE`, not the transaction.
-(The staged drain measured above did *not* hit this: each `SELECT cleanup_table_by_age(...)`
-was its own autocommitted statement.)
+- a procedure that is **`SECURITY DEFINER`** cannot `COMMIT`;
+- a procedure with a **`SET search_path`** clause cannot `COMMIT`.
 
-Fix one of these before scheduling it:
-- Convert `cleanup_high_volume_telemetry` to a **procedure** that `COMMIT`s between
-  batches (then cron calls `CALL …`, not `SELECT * FROM …`), or
-- Schedule **one bounded batch per invocation**, run more often — e.g. 25k every 5-10 min.
-  Capacity is not the constraint: `process_snapshots` accrues ~22k rows/hour
-  (≈1.6M surviving rows / 72h), so 250k/hour is ~11× production. Bounded work per call
-  is ample.
+So the procedure is deliberately **plain** (neither) and instead **fully schema-qualifies**
+every reference (`public.telemetry_retention_policies`, `public.cleanup_table_by_age`). That is
+safe because the privileged delete happens inside `cleanup_table_by_age`, which *is* `SECURITY
+DEFINER`; the procedure only orchestrates and commits. The `REVOKE … FROM PUBLIC, anon,
+authenticated` + `GRANT … TO service_role` lockdown still applies (a plain procedure in
+`public` is exposed to anon by default — see the security incident above).
 
-Only after that, schedule it:
-
-```sql
--- ONLY once the commit-per-batch issue above is fixed; adjust to match the chosen form.
-SELECT cron.schedule('telemetry-retention-cleanup','17 * * * *',
-  $$SELECT * FROM public.cleanup_high_volume_telemetry(10, 25000);$$);
-```
+The cron block in `00044` schedules `CALL public.cleanup_high_volume_telemetry_proc(10, 25000)`
+at `'17 * * * *'`. Capacity is ample: `process_snapshots` accrues ~22k rows/hour (≈1.6M
+surviving / 72h), and the job can do 250k/hour — ~11× production.
 
 ## 🚨 pg_partman has been dead since 2026-05-29 — read this first
 
