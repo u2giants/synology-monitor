@@ -88,19 +88,31 @@ nas_mkdir_like() {
 }
 
 # ── Conflict-name parsing ────────────────────────────────────────────────────
-# Synology Drive names conflict copies:
+# Synology Drive / Seafile name conflict copies in several shapes. Observed on
+# this NAS (all real):
 #   <base>_<device>_<Mon-DD-HHMMSS-YYYY>_Conflict[.ext]
 #   <base>_<device>_<Mon-DD-HHMMSS-YYYY>_CaseConflict[.ext]
-# e.g. HSR57DYLS05_Elizabeths-MacBook-Pro.local_Jan-19-140821-2026_Conflict
+#   <base>_<device>_<Mon-DD-HHMM-YYYY>_DownloadCaseConflict[.ext]   (Seafile; 4-digit time)
+# e.g. HSR57DYLS05_Elizabeths-MacBook-Pro.local_Jan-19-140821-2026_Conflict   (a DIRECTORY)
 #      UP00ADYLS12_MOCKUP_DESKTOP-HKGCSV3_Jan-15-123319-2026_Conflict.psd
+#      NUN10DYNX01_art_DiskStation_Nov-18-1047-2025_DownloadCaseConflict.ai
 #
-# Note the second example: the BASE itself contains underscores, so a greedy
-# ${name%%_*_Conflict} strip would wrongly yield "UP00ADYLS12" and lose _MOCKUP.
-# Anchor on the device+timestamp shape instead.
-NAS_CONFLICT_RE='_[^_]+_[A-Za-z]{3}-[0-9]{2}-[0-9]{6}-[0-9]{4}_(Case)?Conflict$'
+# Two traps this pattern must survive, both of which caused a resolver to SKIP
+# real conflict directories on 2026-07-17:
+#   1. The device can contain dots (`Elizabeths-MacBook-Pro.local`) and the whole
+#      thing can be a DIRECTORY name. Never `${name%.*}` to "strip an extension"
+#      before testing — that lops the name off at `.local`. Match the full name;
+#      the extension is optional in the regex instead.
+#   2. The BASE itself contains underscores (`UP00ADYLS12_MOCKUP`, `NUN10DYNX01_art`),
+#      so anchor on the device+timestamp shape, not a greedy `_*_Conflict` strip.
+#
+# Time is 4 or 6 digits (HHMM for Seafile download conflicts, HHMMSS for Drive).
+NAS_CONFLICT_CORE='_[^_]+_[A-Za-z]{3}-[0-9]{2}-[0-9]{4,6}-[0-9]{4}_(Download)?(Case)?Conflict'
+NAS_CONFLICT_RE="${NAS_CONFLICT_CORE}\$"                 # stem only (extension already stripped)
+NAS_CONFLICT_MATCH="${NAS_CONFLICT_CORE}(\\.[A-Za-z0-9]+)?\$"  # full name; optional extension
 
 # nas_conflict_base <name-without-extension> -> the original base, or empty if
-# the name is not a conflict artifact.
+# the name is not a conflict artifact. Callers strip a file extension first.
 nas_conflict_base() {
   local s="$1" out
   out="$(printf '%s' "$s" | sed -E "s/${NAS_CONFLICT_RE}//")"
@@ -108,7 +120,8 @@ nas_conflict_base() {
   printf '%s' "$out"
 }
 
-# nas_is_conflict_name <name> -> 0 if it looks like a Drive conflict artifact
+# nas_is_conflict_name <name> -> 0 if it looks like a conflict artifact. Matches
+# the FULL name (extension optional) — do not pre-strip anything; see trap 1.
 nas_is_conflict_name() {
-  printf '%s' "${1%.*}" | grep -qE "${NAS_CONFLICT_RE}"
+  printf '%s' "$1" | grep -qE "${NAS_CONFLICT_MATCH}"
 }

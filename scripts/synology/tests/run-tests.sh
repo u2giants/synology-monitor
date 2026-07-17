@@ -31,6 +31,19 @@ chk "is_conflict_name true for artifact" \
     'nas_is_conflict_name "x_ADMIN_Jul-16-180037-2026_Conflict.ai"'
 chk "is_conflict_name false for normal file" \
     '! nas_is_conflict_name "AA066DYLS01_art.ai"'
+# Regression: a DIRECTORY whose device name contains dots (.local). The buggy
+# ${name%.*} pre-strip lopped it at .local and skipped 8 real conflict dirs.
+chk "is_conflict_name true for .local DIRECTORY" \
+    'nas_is_conflict_name "HSR57DYLS05_Elizabeths-MacBook-Pro.local_Jan-19-140821-2026_Conflict"'
+chk "conflict_base of .local dir strips only the suffix" \
+    '[ "$(nas_conflict_base "HSR57DYLS05_Elizabeths-MacBook-Pro.local_Jan-19-140821-2026_Conflict")" = "HSR57DYLS05" ]'
+# Regression: Seafile DownloadCaseConflict, 4-digit time, base with underscore.
+chk "is_conflict_name true for DownloadCaseConflict" \
+    'nas_is_conflict_name "NUN10DYNX01_art_DiskStation_Nov-18-1047-2025_DownloadCaseConflict.ai"'
+chk "conflict_base of DownloadCaseConflict keeps _art" \
+    '[ "$(nas_conflict_base "NUN10DYNX01_art_DiskStation_Nov-18-1047-2025_DownloadCaseConflict")" = "NUN10DYNX01_art" ]'
+chk "is_conflict_name true for edgesynology2 CaseConflict file" \
+    'nas_is_conflict_name "SNMH7DYLS01_ART_edgesynology2_Jan-21-173321-2026_CaseConflict.ai"'
 
 # ─────────────────────────────────────────────────────────────────────────────
 echo
@@ -103,6 +116,18 @@ chk "its original survives"                '[ -f "$R/SKU2/SKU2_PACKAGING.ai" ]'
 chk "orphan (only copy) left alone"        '[ -f "$R/SKU2/ORPH_thing_ADMIN_Jul-16-180000-2026_Conflict.ai" ]'
 chk "mode-000 dir fixed"                   '[ "$(stat -c %a "$R/SKU3")" = "777" ]'
 chk "nested mode-000 dir fixed"            '[ "$(stat -c %a "$R/SKU3/TP")" = "777" ]'
+
+echo
+echo "### resolve: .local conflict DIRECTORY is processed (not skipped)"
+R3="$T/r3"; mkdir -p "$R3/NCX04MVSX01" "$R3/NCX04MVSX01_Elizabeths-MacBook-Pro.local_Jan-19-141949-2026_Conflict"
+CD="$R3/NCX04MVSX01_Elizabeths-MacBook-Pro.local_Jan-19-141949-2026_Conflict"
+echo dup > "$R3/NCX04MVSX01/keep.ai"; old "$R3/NCX04MVSX01/keep.ai"
+echo dup > "$CD/keep.ai";            old "$CD/keep.ai"          # identical -> del
+echo uniq > "$CD/only-here.ai";      old "$CD/only-here.ai"     # stranded -> move
+ROOT="$R3" DRY_RUN=0 bash "$S/resolve-drive-conflicts.sh" >/dev/null 2>&1
+chk ".local conflict dir was processed"      '[ ! -d "$CD" ] || [ -z "$(ls -A "$CD" 2>/dev/null)" ]'
+chk "identical file in .local dir deleted"   '[ ! -e "$CD/keep.ai" ]'
+chk "stranded file moved out of .local dir"  '[ -f "$R3/NCX04MVSX01/only-here.ai" ]'
 
 echo
 echo "### resolve: empty conflict dir is removed"
