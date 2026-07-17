@@ -1,296 +1,249 @@
-## Archive `___OLD` Directory Mtime Repair
+# Synology Monitor — Active Work Handoff
 
-Status:
-partial
+Updated: 2026-07-17 (America/New_York)
 
-Done:
-- Repaired source directory mtimes under `/volume1/mac/Decor/Character Licensed/___OLD` on `edgesynology1` from `/tmp/edges2_dir_current_authority_20260615.csv`.
-- Verified `source_authority_mismatches_after_repair 0` for the affected `___OLD` source subtree.
-- Verified `source_dirs_today_count=0` and `source_files_today_count=0` under the source `___OLD` tree.
-- Code commit `eb253f25fc6d8e1bdab1f76133b290017e9a0d8a` restores mtimes on source directories that survive a partial archive move.
+This file exists because production operations remain unfinished. It contains
+continuation state only; completed implementation history belongs in `AGENTS.md`
+and topic docs.
 
-Next action:
-- Repair nine Archive directory mtimes under `/volume1/mac/Archive/Decor/Character Licensed/___OLD` on `edgesynology1`. The SSH user cannot apply these without sudo: `os.utime` returned `PermissionError(1, 'Operation not permitted')`.
-- Confirm `GET http://100.107.131.35:7734/health` and `GET http://100.107.131.36:7734/health` report build `eb253f25fc6d8e1bdab1f76133b290017e9a0d8a` or newer after Watchtower updates the NAS API containers.
+## 1. What this application is
 
-Risks / watchouts:
-- Use `edgesynology2` authority data as evidence, but write repairs only to `edgesynology1` unless the user explicitly asks otherwise.
-- The remaining Archive mismatches found on 2026-06-16 were:
-  - `Decor/Character Licensed/___OLD`: `2023-02-24 15:38:42 -0500 <- 2026-06-16 10:33:20 -0400`
-  - `Decor/Character Licensed/___OLD/Blinds - Paper Shades/Redi Order 1/Raw/Revised 36x78in`: `2024-12-06 08:10:42 -0500 <- 2024-12-06 08:10:36 -0500`
-  - `Decor/Character Licensed/___OLD/CNV012 Nick 10x13.5 no LED`: `2026-04-05 12:51:27 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Collage/Marvel AGE001/Cap`: `2026-04-05 12:51:25 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Collage/Marvel AGE001/Iron Man`: `2026-04-05 12:51:32 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Collage/Marvel AGE001/Old/Hulk`: `2026-04-05 12:51:45 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Collage/Marvel AGE001/SpiderMan`: `2026-04-05 12:51:33 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Embossed PVC/WonderWoman`: `2026-04-05 12:51:21 -0400 <- 2026-03-25 00:51:05 -0400`
-  - `Decor/Character Licensed/___OLD/Jojo Siwa/HIRES (1)`: `2026-04-05 12:51:31 -0400 <- 2026-03-25 00:51:05 -0400`
+Synology Monitor operates POP Creations' two production Synology NAS units:
+`edgesynology1` and `edgesynology2`. A Go agent on each NAS sends telemetry to
+Supabase project `aaxtrlfpnoutziwhshlt` (Virginia). A Next.js dashboard at
+`https://mon.designflow.app` detects issues and runs a three-stage AI diagnostic
+pipeline. A Go NAS API on port `7734` executes guarded commands and native archive
+jobs. The FastMCP service at `https://nas-mcp.designflow.app/mcp` exposes NAS
+diagnostics and approval-gated repairs.
 
-## Seafile (`seaf-cli`) inotify watch exhaustion — capabilities + remediation
+Repository: `u2giants/synology-monitor`, local path `/worksp/monitor/app`, branch
+`main`. Normal deployment is GitHub Actions → GHCR → Coolify or NAS Watchtower.
 
-Status:
-partial (code complete + tested; not committed/pushed/deployed; NAS not yet remediated)
+## 2. What active work is trying to accomplish, and why
 
-Done:
-- Diagnosed root cause: `seaf-cli` falsely reports "synchronized" because
-  `fs.inotify.max_user_watches=8192` is exhausted by the ~541k-dir worktree (82%
-  `@eaDir`). Full writeup: `docs/seafile-sync-inotify.md`.
-- Added two MCP capabilities (verified: `go test ./internal/validator/...` ok; turbo
-  `pnpm type-check` clean):
-  - `set_inotify_watches` (tier 2) — `packages/shared/src/nas-tools.ts` + TOOL_GROUPS,
-    enabled in `apps/nas-mcp/tools-config.json`.
-  - `write_seafile_ignore` (tier 3) — same files.
-  - Validator: one `(>>?)\s*['"]?/(btrfs/)?volume\d+/` pattern added to writePatterns
-    + filePatterns in `apps/nas-api/internal/validator/validator.go`, with
-    `TestInotifyAndSeafileIgnoreClassification` in `validator_test.go`.
+Four operational efforts remain:
 
-Next action:
-- Commit + push to `main` (changes are in apps/nas-api, apps/nas-mcp, packages/shared
-  → nas-api updates via Watchtower ~5 min; nas-mcp redeploys via Coolify). No compose
-  change needed (`/host/etc` already mounted, per `persist_vm_overcommit_memory`).
-- Then run the runbook in `docs/seafile-sync-inotify.md` §6 on edgesynology1:
-  `set_inotify_watches` (default `1048576 1024`) → `write_seafile_ignore` per library
-  root → restart seaf-cli daemon → verify 0 `No space left on device` errors after
-  restart.
+1. Restore nine incorrect directory mtimes in the archived `___OLD` tree on
+   `edgesynology1` using `edgesynology2` evidence.
+2. Finish and verify Seafile inotify remediation so seaf-cli cannot silently claim
+   synchronization after its filesystem monitor goes blind.
+3. Finish telemetry retention and restore pg_partman without overwhelming the
+   one-gigabyte Supabase database instance.
+4. Reconcile the live NAS compose files with the repository's durable archive-job
+   mount and `NAS_API_NAME`, which are still absent live even though other pending
+   compose improvements were applied.
 
-Risks / watchouts:
-- Do NOT remediate by restarting the daemon alone (masks, does not fix).
-- Do NOT lower `max_user_watches` "to save memory" — it is a ceiling, not an
-  allocation; lowering only removes headroom.
-- Unverified: whether seaf-cli's monitor watches dirs listed in `seafile-ignore.txt`.
-  Verify per `docs/seafile-sync-inotify.md` §5b after deploy. The ceiling raise is the
-  guaranteed fix regardless.
-- seaf-cli daemon/container restart is NOT a sanctioned capability (docker allowlist
-  blocks it from `run_command`); restart via the seaf-cli stack / DSM Container Manager.
+These are operational continuations, not unfinished application builds.
 
+## 3. Current state
 
-## Supabase telemetry retention and database-size cleanup
+### A. Archive `___OLD` directory mtime repair — partial
 
-Status:
-**partial — installed on live, deletes paused mid-way, hourly cron deliberately NOT
-enabled.** `00042` and both retention indexes are on `aaxtrlfpnoutziwhshlt`; 61,000
-`process_snapshots` rows were deleted in staged batches to prove the path, leaving
-**56.4M expired rows** (97% of the table) still there. Full live state, measured delete
-timings, and the re-enable SQL are in
-**[docs/telemetry-retention.md](docs/telemetry-retention.md)**.
+Completed:
 
-**A bigger problem was found while doing this: pg_partman has been dead since
-2026-05-29** (cron uses `select` on a procedure; 25/25 failures), stranding ~8.4 GB in
-DEFAULT partitions that partman retention can never drop. That doc's first section
-covers it. It is the larger cause of growth and it is **not fixed** — and it means
-`metrics` / `nas_logs` / `storage_snapshots` / `container_status` currently have **no
-retention from either mechanism**.
+- Source directory mtimes under
+  `/volume1/mac/Decor/Character Licensed/___OLD` on `edgesynology1` were repaired
+  from `/tmp/edges2_dir_current_authority_20260615.csv`.
+- Verification returned `source_authority_mismatches_after_repair 0`,
+  `source_dirs_today_count=0`, and `source_files_today_count=0`.
+- Commit `eb253f25fc6d8e1bdab1f76133b290017e9a0d8a` preserves source directory
+  mtimes when a partial archive move leaves the source directory in place.
 
-Full detail — design, the wrong-project incident, known defects, verified-safe list,
-and the step-by-step live install — is in **[docs/telemetry-retention.md](docs/telemetry-retention.md)**.
-Read that first; this section is only the continuation context.
+Still required on `edgesynology1` under
+`/volume1/mac/Archive/Decor/Character Licensed/___OLD`:
 
-Done (2026-07-16):
-- Landed the stashed ref-swap: 13 files no longer name the deleted Ohio project
-  `qnjimovrsaacneqkggsn`. That stash was the root cause of the 2026-06-22 mistake —
-  it made the repo advertise a retired project.
-- Removed the silent `DEFAULT_SUPABASE_URL` fallback from
-  `scripts/run-telemetry-retention-cleanup.mjs`; it now refuses to run without an
-  explicit `SUPABASE_URL`, hard-refuses the retired ref by name, and logs its target.
-  All three guards were exercised and verified.
-- Confirmed at session start that live `aaxtrlfpnoutziwhshlt` had **no retention**
-  (`telemetry_retention_policies` → PGRST205, `telemetry_retention_estimates` → PGRST202)
-  — i.e. the 2026-06-22 work never reached it. *(Superseded: retention has since been
-  installed this session — see Status above.)*
-- Verified the old project `qnjimovrsaacneqkggsn` is **deleted** — absent from
-  `supabase projects list`. Its purge/functions/cron went with it. **There is no
-  rollback project anymore.**
-- Audited every reader of all policy tables (see the doc). No FK or view risk; all
-  timestamp column names correct. Found four defects — all now resolved in the file.
-- Applied the owner's decisions (2026-07-16) and fixed `00042`:
-  - `disk_io_stats` 14d → **35d**, so the metrics page's 30d range keeps working.
-  - Index creation is now `to_regclass`-guarded (it previously hard-failed a rebuild:
-    `ERROR: relation "process_snapshots" does not exist`).
-  - `metrics` / `nas_logs` / `storage_snapshots` / `container_status` removed from the
-    policies, and all `part_config` writes dropped — **pg_partman keeps ownership at its
-    existing settings**, so the deliberate 180d `container_status` decision stands.
-- Verified on a throwaway PG17 container: clean run on a bare DB (guard skips 8 absent
-  tables, inserts 13 policies); batch limit honoured exactly (400 of 1000); runner
-  drains the rest; fresh rows and 20d `disk_io_stats` rows survive.
+| Relative directory | Correct mtime | Current/wrong mtime recorded 2026-06-16 |
+|---|---|---|
+| `Decor/Character Licensed/___OLD` | `2023-02-24 15:38:42 -0500` | `2026-06-16 10:33:20 -0400` |
+| `.../Blinds - Paper Shades/Redi Order 1/Raw/Revised 36x78in` | `2024-12-06 08:10:42 -0500` | `2024-12-06 08:10:36 -0500` |
+| `.../CNV012 Nick 10x13.5 no LED` | `2026-04-05 12:51:27 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Cap` | `2026-04-05 12:51:25 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Iron Man` | `2026-04-05 12:51:32 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Old/Hulk` | `2026-04-05 12:51:45 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/SpiderMan` | `2026-04-05 12:51:33 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Embossed PVC/WonderWoman` | `2026-04-05 12:51:21 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Jojo Siwa/HIRES (1)` | `2026-04-05 12:51:31 -0400` | `2026-03-25 00:51:05 -0400` |
 
-Next action — two independent decisions, both awaiting the owner:
+The SSH user could not apply these with `os.utime`; it returned
+`PermissionError(1, 'Operation not permitted')`. The operation needs an approved
+root-capable path. Read `docs/timestamp-audit-2026-06-15.md` and
+`docs/layered-timestamp-audit-2026-06-15.md` before continuing.
 
-**A. Finish the `process_snapshots` drain (~10 min of work, big win).**
-56.4M expired rows remain; measured 50k per 532 ms with zero blocked sessions. Either
-re-enable the hourly cron (SQL in the doc) and let it grind down over ~2 days, or drain
-it in one controlled pass and then enable the cron. Then `ANALYZE`. Expect most of
-`process_snapshots`' 16 GB back — though **the reported DB size will not drop until
-vacuum reuses/returns the space**; that is expected, not a failure.
+### B. Seafile inotify remediation — code live, operational verification partial
 
-**B. Fix pg_partman (the ~8.4 GB problem).**
-One-word fix (`select` → `CALL`) but the first successful run has 48 days of backlog and
-~27M default rows to relocate on a 1 GB Micro. **Do not** set `ignore_default_data = true`
-to dodge it — that makes partition creation *fail* rather than skip work (Postgres must
-validate the DEFAULT partition on `ATTACH`). Run `CALL public.run_maintenance_proc()`
-manually and watched **before** repointing the cron. Procedure in the doc.
+Root cause and runbook: `docs/seafile-sync-inotify.md`.
 
-Connecting for either: the DB password is in 1Password →
-`Supabase DB Password - synology-monitor (aaxtrlfpnoutziwhshlt, Virginia)`; use `op_run`
-so it never enters a transcript. Direct host is **IPv6-only**; the pooler rejects the
-tenant. `postgres` role has a ~2min `statement_timeout` — override with `PGOPTIONS`.
+Code state:
 
-⚠️ **Two live issues found while doing this — neither caused by the retention work:**
-1. **`anon` could run arbitrary SQL + read the AI key** — CLOSED on live and in `00043`.
-   Key rotation is tracked in AGENTS.md § 16 (owner action, deferred by request).
-2. **Agent ingestion could not keep up** — **FIXED and verified** (`8355599`). `process_snapshots`
-   was ~80 min stale and drifting; lag drained 4950s → **17s** after rollout. One follow-up:
-   **`stop_grace_period: 90s` needs a one-time `docker compose up -d` per NAS** (Watchtower
-   does not apply compose changes). Until then Docker still SIGKILLs the agent at 10s on
-   redeploy — not data loss (the WAL is durable), but the final flush is truncated.
-   (edge2 is ~282 min stale for a separate reason — it was unreachable all session; re-check
-   it now that edge1 is healthy, since its backlog will drain the same way once it returns.)
+- `set_inotify_watches` and `write_seafile_ignore` are defined and enabled.
+- NAS API and NAS MCP builds containing them are deployed.
+- Validator tests cover their write classification.
 
-⚠️ **Gotcha for whoever re-runs `00042`:** its final `DO` block **re-schedules the hourly
-cron**. Re-running the migration silently re-armed the job that was deliberately
-unscheduled (caught 2026-07-16 before it fired). After any `00042` re-run, verify:
-`SELECT count(*) FROM cron.job WHERE jobname='telemetry-retention-cleanup';` and unschedule
-until the commit-per-batch issue is fixed.
+Live state verified 2026-07-17:
 
-Scheduled review — **2026-08-17**: is `nas_logs` a real space driver?
+| NAS | `max_user_watches` | `max_user_instances` | Meaning |
+|---|---:|---:|---|
+| `edgesynology1` | `1048576` | `1024` | Ceiling raise is live |
+| `edgesynology2` | `8192` | `128` | Default remains; change only if this NAS runs the affected seaf-cli workload |
 
-Why this date exists: to let partman own the partitioned tables, `nas_logs` was dropped
-from `telemetry_retention_policies`, so its routine `info` rows (sources `share_config`,
-`package_health`, `drive_admin_stats`, `dsm_system_log`, `backup`, `service`,
-`system_info`) now live partman's full **180d** instead of being trimmed at 30d. A
-partition drop cannot express "delete only low-severity rows", so this was the accepted
-cost of the simpler design. It is the one policy decision in `00042` that was a trade
-rather than a fix, and nothing will surface it on its own — hence a date.
+Unknown: whether every affected library root has `seafile-ignore.txt`, whether the
+seaf-cli daemon was restarted after the change, and whether logs stayed free of
+`No space left on device`. Those are the remaining verification gates.
 
-Check on **2026-08-17** (or 4 weeks after retention actually goes live, whichever is
-later — the comparison is meaningless until the other tables have been trimmed):
+### C. Telemetry retention and pg_partman — partial, high risk
 
-```sql
--- nas_logs total size and share of the database
-SELECT pg_size_pretty(pg_total_relation_size('public.nas_logs')) AS nas_logs_size,
-       pg_size_pretty(pg_database_size(current_database()))      AS db_size,
-       round(100.0 * pg_total_relation_size('public.nas_logs')
-             / nullif(pg_database_size(current_database()),0), 1) AS pct_of_db;
+Authoritative runbook and measurements: `docs/telemetry-retention.md`.
 
--- how much of it is the trimmable routine-info noise
-SELECT severity, source, count(*)
-FROM public.nas_logs
-WHERE ingested_at < now() - interval '30 days'
-GROUP BY 1,2 ORDER BY 3 DESC LIMIT 15;
-```
+Live project: `aaxtrlfpnoutziwhshlt`. The former Ohio project
+`qnjimovrsaacneqkggsn` is deleted; there is no rollback project.
 
-Decide with it:
-- **< ~5% of the DB** → leave it alone; the simpler partman-only design wins.
-- **> ~10%, mostly `severity='info'` from those sources** → reinstate the single
-  `nas_logs` row-level policy that `e1eea2f` removed (recover it from that commit:
-  `git show e1eea2f^:supabase/migrations/00042_telemetry_retention_cleanup.sql`). Accept
-  that row-level DELETEs on a partitioned parent are slower than partition drops, and
-  give it a `(ingested_at)` index built `CONCURRENTLY` first.
+Completed as of 2026-07-16:
 
-Risks / watchouts:
-- **No rollback project exists.** Deletes on `aaxtrlfpnoutziwhshlt` are final.
-- Retention is **not** additive: it deletes rows hourly, forever. (It no longer touches
-  `part_config` — that was removed deliberately; do not reintroduce it.)
-- Untested at scale: the PG17 verification used small tables. Cold-cache behavior on a
-  43M-row table is exactly what the staged batch escalation is there to find.
-- Plain `CREATE INDEX` on the big live tables blocks agent writes while it builds. Use
-  `CONCURRENTLY`, which cannot run in a transaction block (so not via `exec_sql`, which
-  is void-returning anyway — HTTP 204, no rows).
-- The Virginia project sits on a 36 GB disk that already filled and crashed the DB
-  read-only once; AWS gp3 allows a resize only once per 4h.
-- Deleting rows will **not** immediately shrink the size Supabase reports.
+- Migrations `00042` and `00043` are installed live.
+- Both retention indexes are installed.
+- 61,000 expired `process_snapshots` rows were deleted in staged tests.
+- The cleanup runner now requires explicit `SUPABASE_URL`, refuses the retired
+  project ref, and logs its target.
+- `disk_io_stats` retention is 35 days; partman-owned tables were removed from the
+  row-policy list.
+- Anonymous execution of the privileged SQL function was revoked live and recorded
+  in `00043`.
+- Agent backlog isolation shipped; observed lag on NAS 1 drained from about 4,950
+  seconds to 17 seconds.
+- `stop_grace_period: 90s` is present in both live NAS compose files as of
+  2026-07-17.
 
-## NAS write-preview fix — COMPLETE, verified on both NASes
+Still open:
 
-Status:
-**done.** Code complete, pushed, and verified live on **both** NASes. `edgesynology2`'s nas-api
-container — down since 2026-07-08 — was restored 2026-07-16 22:2x UTC and Watchtower immediately
-carried it from a 2026-06-20 image to current (`da9bcf9`, matching `edgesynology1`).
-`run_command` now refuses `synoacltool -add /volume1/...` on **both** boxes while `-get`/`-stat`
-still run at tier 1. There is no remaining exposure from this work.
+- Roughly 56.4 million expired `process_snapshots` rows remained at last measure.
+- The hourly retention cron is deliberately disabled because the current batching
+  function does not commit between batches.
+- pg_partman has failed since 2026-05-29 because cron uses `SELECT` on a procedure.
+  Roughly 27 million rows / 8.4 GB were stranded in DEFAULT partitions at last
+  measure.
+- The first successful `CALL public.run_maintenance_proc()` must be run manually
+  and watched before cron is corrected.
+- The exposed AI key still needs owner-approved rotation through 1Password/Coolify.
+- Review `nas_logs` size on 2026-08-17 or four weeks after retention goes live,
+  whichever is later.
 
-Done:
-- Fixed the reported bug: `create_prechange_snapshot` with `confirmed: false` executed a
-  real snapshot instead of previewing. `apps/nas-mcp` gated confirmation on nas-api's
-  tier classification (`preview.tier >= 2 && !input.confirmed`) rather than the tool's
-  own `write: true` flag, so any write tool the classifier under-scored auto-executed.
-  Now every `write: true` tool previews regardless of tier (`f4c8c7a`).
-- Fixed the root cause underneath it: `ClassifyTier` had **no btrfs patterns at all**, so
-  every btrfs subcommand — including `btrfs subvolume delete` — scored tier 1
-  (read-only, auto-execute). An audit of all 40 shell write tools against the real
-  classifier found the same gap for `smartctl -t`/`-X` and `setfacl`, affecting
-  `create_prechange_snapshot`, `start_btrfs_scrub`, `start`/`cancel_smart_test`, and
-  `repair_path_acl` (`8e0971b`).
-- Follow-up 2026-07-16: that audit gated `setfacl`, but `setfacl` is not installed on
-  these NASes at all — `/volume1` is mounted `synoacl` and DSM's `synoacltool` is the
-  real ACL binary, which matched no pattern and so still ran at tier 1. Gated by verb
-  against the live `synoacltool` usage text, and `repair_path_acl` — which could only ever
-  print "command not found" — was removed. Shipped as `ff05281`; the ACL inspect tools also
-  dropped their dead `getfacl` section in `d48c6f9`.
-- Verified live on `edgesynology1` after Watchtower picked up `ff05281` (2026-07-16
-  16:06 UTC, health reports `ff05281`): `run_command` now **refuses**
-  `synoacltool -add /volume1/mac/Decor ...`, which it executed unattended before, while
-  `-get` and `-stat` still run at tier 1 and `inspect_path_acl` still returns a result.
-  nas-mcp redeployed and `inspect_path_acl` no longer prints `getfacl: command not found`.
-- Verified live on `edgesynology1` after Watchtower picked up `f4c8c7a` (16:56 UTC
-  2026-07-16): `create_prechange_snapshot` with `confirmed: false` returns a preview and
-  creates nothing (`btrfs subvolume list` unchanged); the command now classifies tier 2;
-  `run_command` now refuses `btrfs subvolume delete`, which it previously executed; and
-  read-only diagnostics (`subvolume list`, `scrub status`, `smartctl -a`,
-  `-l selftest`) still run at tier 1.
+### D. NAS compose reconciliation — partial
 
-Next action:
-- **None for this work — it is finished.** Kept only for the diagnostic lessons below, which are
-  generalised in AGENTS.md § 12 and are the reason this section is worth reading at all.
-- **Resolved 2026-07-16:** the container was `Exited (143)` — SIGTERM'd ~3 minutes before the
-  07-08 reboot. A clean stop, `RestartCount=0`, no crash. `restart: unless-stopped` then behaved
-  as designed: unlike `always`, it does **not** restart a container that was explicitly stopped,
-  and that flag survives the reboot. So it stayed down for 8 days while every other container on
-  the box came back. Fixed with a single
-  `sudo /var/packages/ContainerManager/target/usr/bin/docker start synology-monitor-nas-api`
-  over `ssh edgesynology2`. Why nas-api alone was stopped is **unknown** — DSM does not retain
-  the attribution. After any NAS reboot, check `docker ps -a` for `Exited (143)` first.
-- **A second wrong call, same session, same shape:** port 22 on es2 is connection-refused, from
-  which a session concluded "SSH is disabled on edgesynology2". It is not — **es2's SSH is on
-  port 1904** (`ssh edgesynology2`, ahazan@100.107.131.36). One closed port is not a disabled
-  service.
-- **The earlier diagnosis in this section was wrong and cost days — do not repeat it.** It
-  read: *"10s curl timeout from this workstation, and a 45s MCP `run_command` timeout from
-  the VPS over Tailscale, so it is the host — not the network path"*. Every probe used had
-  gone over Tailscale, and es2's Tailscale client was offline (last seen 2026-07-08), so all
-  of them failed for one reason and the conclusion "it is the host" did not follow.
-  Re-measured 2026-07-16 ~21:00 UTC, after the operator restored Tailscale:
-  - `192.168.3.101:5000` (DSM, probed from es1 over the LAN) → **HTTP 200**. The NAS is up.
-  - `192.168.3.101:7734` and `100.107.131.36:7734` → **ECONNREFUSED** (`curl exit=7`) on both
-    paths. Refused, not timed out: packets arrive and nothing is listening. That is a stopped
-    container, not an unreachable host.
-  - `nas_units` in Supabase: `edgesynology2` = **online**, `last_seen` current, agent build
-    `8355599` built 2026-07-16 20:58 — identical to `edgesynology1`. So the box, its Docker
-    stack, and Watchtower are all working, and **telemetry was never interrupted**. Only
-    nas-api is missing.
-  Diagnostic rule this yields: **timeout ≠ refused**. A timeout means the packets never
-  arrived (network/host); a refusal means they did and no process is listening (service).
-  Check DSM `:5000` from `edgesynology1` over the LAN before ever calling a NAS "down" —
-  every other route depends on Tailscale and will lie to you in unison.
-- Once nas-api is running on es2, confirm `GET http://100.107.131.36:7734/health` reports
-  `ff05281` or newer. Watchtower will update the *image* within ~5 min of the container
-  running, but it cannot start a container that is not running — that is why this needs a
-  hand. `edgesynology1` reported `ff05281` at 16:06 UTC.
-- Decide whether to delete the two stray snapshots the bug created on `edgesynology1`
-  before it was fixed: `@prechange_20260716_154207` and `mac/@prechange_20260716_154247`
-  (both 2026-07-16 15:42 UTC). They are read-only btrfs snapshots — harmless, but they
-  pin CoW space that grows as the live subvolume diverges. Deleting them is now tier 3.
+Repository source: `deploy/synology/docker-compose.agent.yml`.
+Live path on each NAS:
+`/volume1/docker/synology-monitor-agent/compose.yaml`.
 
-Risks / watchouts:
-- `edgesynology1` is fixed and verified on `ff05281`. `edgesynology2` will come up on
-  whatever image it last pulled, so **until Watchtower updates it after someone starts the
-  container**, its `run_command` executes `btrfs`, `smartctl -t`/`-X` and
-  `synoacltool -add/-del/-replace/-set-owner` unattended as tier 1. It is not exploitable
-  while the container is down (nothing is listening), so the exposure window opens the
-  moment it starts and closes ~5 min later — worth watching, not panicking over. `setfacl`
-  is moot in practice: it is not installed on either NAS. The `nas-mcp` fix is
-  already live and covers the **named** write tools on both NASes (it does not depend on
-  nas-api's tier), but it cannot cover free-form `run_command`, which takes no
-  `confirmed` argument and gates only on the classifier.
-- Do not "simplify" the two layers back into one. They are independent on purpose: the
-  MCP gate cannot protect `run_command`, and the classifier cannot be trusted to have no
-  gaps. Background: AGENTS.md §12 and `docs/architecture.md`.
+Verified live 2026-07-17 on both NASes:
+
+- `stop_grace_period: 90s` is present.
+- `/etc/group:/host/etc/group:ro` is present and active in nas-api.
+- Both NAS APIs are healthy on build
+  `6dcf16c6a37412c92e209be944fa6b31ca452406`.
+
+Still absent from both live compose files at the last check:
+
+- `NAS_API_NAME`
+- `${NAS_API_JOBS_PATH:-...}:/app/data/jobs:rw`
+
+Consequently, archive `/jobs/*` endpoints may return 503 and native job state is
+not guaranteed durable. The two NAS compose files are not byte-identical and must
+not be overwritten blindly; preserve each `.env` and local device/share differences.
+
+## 4. Everything tried that did not work
+
+| Attempt | Why it seemed reasonable | How it failed / lesson |
+|---|---|---|
+| Apply archive mtimes as the SSH user | The target directories were visible and ordinary `utime` works on owned files | DSM returned `EPERM`; use an approved privileged path, not repeated retries |
+| Restart seaf-cli without raising limits | Restart temporarily restores watches | It only masks exhaustion; the monitor goes blind again |
+| Lower inotify ceilings to reduce memory | A smaller ceiling sounds cheaper | It is only a ceiling, not preallocation; lowering removes needed headroom |
+| Install retention on the remembered Supabase project | The old project had been used as rollback | Work landed on Ohio, not production; always verify project ref first |
+| Run retention batches expecting independent commits | The procedure loops in batches | One function call is one transaction; dead tuples and locks accumulate until return |
+| Fix pg_partman cron immediately | The syntax defect is only `SELECT` versus `CALL` | First success must process a huge backlog on a small instance; observe manually first |
+| Set `ignore_default_data=true` to skip backlog | It sounds like a way to bypass DEFAULT rows | PostgreSQL must validate DEFAULT on attach; this causes partition creation to fail |
+| Assume repository compose changes reach NASes | Watchtower updates the related services | Watchtower updates images only; compose is a manual, NAS-specific copy |
+
+## 5. Root causes and key findings
+
+- Synology/Seafile worktrees contain roughly 541,000 directories; about 82% were
+  `@eaDir`, exhausting the default 8,192 inotify watch ceiling.
+- `edgesynology2` is evidence authority for timestamp repairs, but writes should
+  normally occur only on `edgesynology1` to avoid competing ShareSync metadata events.
+- Retention migration `00042` re-schedules its hourly cron when rerun. After any
+  rerun, explicitly check `cron.job` and unschedule it until commit-per-batch is fixed.
+- Row deletion does not immediately reduce reported database size; vacuum must reuse
+  or return space.
+- Direct Supabase database access is IPv6-only; the pooler rejects this tenant.
+  The `postgres` role has an approximately two-minute statement timeout; use the
+  documented `PGOPTIONS` override through a 1Password-backed command.
+- NAS compose is local state. The repo version is canonical intent, but deployment
+  must merge NAS-specific differences rather than copy blindly.
+
+## 6. Exact next steps
+
+1. **Archive mtime repair:** schedule a quiet window; read both timestamp audit docs;
+   verify the nine current mtimes; apply only the listed directory mtimes on
+   `edgesynology1` through an approved root-capable operation; rerun the authority
+   comparison. Success means zero mismatches and no file-content/ownership changes.
+2. **Seafile verification:** on each affected edge1 library root, confirm
+   `seafile-ignore.txt` contains the standard ignore set; restart the seaf-cli stack
+   through DSM Container Manager; monitor logs and watch consumption. Success means
+   no new `No space left on device` and stable synchronization after restart.
+3. **Retention decision:** choose a controlled one-pass drain or corrected scheduled
+   drain using `docs/telemetry-retention.md`; run batches with blocking/latency checks;
+   `ANALYZE` afterward. Success means expired estimates approach zero without agent lag.
+4. **pg_partman:** run `CALL public.run_maintenance_proc()` manually with the documented
+   timeout override and watch locks, disk, and ingestion; only then fix cron. Success
+   means maintenance completes, DEFAULT rows relocate, and subsequent cron succeeds.
+5. **Compose reconciliation:** diff each live compose against the repo; merge only
+   `NAS_API_NAME` and the durable jobs mount plus any other explicitly approved missing
+   settings; run targeted `docker compose up -d nas-api`. Success means `/app/data/jobs`
+   is writable/persistent, health is current, and `/jobs/*` no longer returns 503.
+6. **Credential follow-up:** obtain owner approval, rotate the AI key in 1Password and
+   Coolify, restart the affected service, and verify provider health. Never print the key.
+7. **Scheduled review:** on 2026-08-17 (or four live-retention weeks later), run the
+   `nas_logs` size/severity queries in the retention doc and decide whether row-level
+   low-severity retention is worth its cost.
+
+## 7. Constraints and gotchas
+
+- No large NAS crawl or recursive metadata write while SMB users are active.
+- Use `/opt/bin/ionice -c3 nice -n 19` for metadata-heavy NAS work.
+- Do not repair both NAS sides by default.
+- Do not re-enable retention cron merely because migration `00042` exists.
+- Do not run plain `CREATE INDEX` on large live telemetry tables; use
+  `CONCURRENTLY` outside a transaction.
+- Do not use `version.json` to verify Coolify deploys; use live HTML build SHA.
+- Do not use routine SSH as a deployment system.
+- Do not expose 1Password values in commands, logs, files, or transcripts.
+
+## 8. Access and environment
+
+- GitHub CLI, `supabase`, `op`, and SSH aliases are available on this workstation.
+- SSH: `edgesynology1` (port 22) and `edgesynology2` (port 1904), both over Tailscale.
+- Docker under non-interactive NAS sudo must use
+  `/var/packages/ContainerManager/target/usr/bin/docker`.
+- Secrets live in 1Password vault `vibe_coding`; the database password item is
+  `Supabase DB Password - synology-monitor (aaxtrlfpnoutziwhshlt, Virginia)`.
+- Production web/MCP runtime variables live in Coolify; NAS runtime variables live
+  in each stack's untracked `.env`; CI values live in GitHub Secrets.
+- Branch/environment: `main`, production NASes and production Virginia Supabase.
+
+## 9. Open questions and risks
+
+- Is `seafile-ignore.txt` installed on every affected library, and does seaf-cli
+  avoid allocating watches for ignored directories? Verify live; do not assume.
+- Which controlled retention-drain strategy does the owner approve?
+- How long will the first successful pg_partman maintenance run, and will the
+  36-GB database disk need preemptive expansion? Observe before cron.
+- Why were the nine archive directory mtimes changed? Repair evidence is strong,
+  but the original actor/event remains unknown.
+- Do both NASes need the archive jobs system enabled immediately, or should compose
+  reconciliation wait for an operator maintenance window?
+- Database deletes are irreversible because the Ohio rollback project is gone.
+
+## Handoff self-audit
+
+Passed 2026-07-17: a new senior engineer can identify the application, reproduce
+the current state, avoid documented dead ends, execute each next step with a
+verification gate, locate required access, and understand every active risk without
+the prior chat transcript.

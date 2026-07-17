@@ -26,7 +26,7 @@ The server runs FastMCP in stateless HTTP Stream mode, so it does not rely on pe
 
 ## Tool surface — lazy-loaded registry
 
-The server has a registry of 133 shared tool definitions but exposes only **7 small tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface compact (vs ~50k tokens if all 133 were registered upfront). FastMCP session-level instructions tell clients to browse/search/detail before most NAS tasks, then `invoke_tool` with the exact operation name.
+The server has a registry of 132 shared tool definitions but exposes only **7 small tools** to MCP clients per session. This keeps the always-loaded `tools/list` surface compact (vs ~50k tokens if all definitions were registered upfront). FastMCP session-level instructions tell clients to browse/search/detail before most NAS tasks, then `invoke_tool` with the exact operation name.
 
 | Always-on tool | Purpose |
 |---|---|
@@ -287,7 +287,8 @@ See the note in `packages/shared/src/nas-tools.ts` before adding one back.
 
 ## Deployment
 
-Standard CI/CD path (see [AI_OPERATING_RULES.md](../../AI_OPERATING_RULES.md)):
+Standard CI/CD path (see [AGENTS.md](../../AGENTS.md) and
+[docs/deployment.md](../../docs/deployment.md)):
 
 - Push to `main` with changes under `apps/nas-mcp/**`
 - `.github/workflows/nas-mcp-image.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`

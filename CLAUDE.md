@@ -1,55 +1,30 @@
-# CLAUDE.md
+# Claude Code Instructions
 
-**Read [AGENTS.md](AGENTS.md) first.** It is the canonical operating guide for this repo and applies to all AI sessions. The notes below are Claude Code-specific only.
+Read [AGENTS.md](AGENTS.md) first. It is the canonical guide for every developer
+and AI tool; this file contains Claude Code-specific notes only.
 
-## Allowed operations
+## Context and ignore behavior
 
-- Edit source under `apps/`, `docs/`, `deploy/`, `supabase/migrations/`, `.github/workflows/`, top-level `*.md`.
-- Run `pnpm build`, `pnpm lint`, `pnpm type-check`, `go build`, `go test` locally.
-- Commit and push to `main` when explicitly asked. Default behavior: do not commit unprompted.
+- Claude Code honors `.claudeignore`. Do not load generated output, dependencies,
+  caches, lockfiles, backups, or `evals/` unless the task requires them.
+- The working copy is normally `/worksp/monitor/app`, repository
+  `u2giants/synology-monitor`, branch `main`.
+- `HANDOFF.md` is required reading only when continuing unfinished work.
 
-## Not allowed
+## MCP discovery
 
-- Direct SSH to the VPS or NAS is **not** a normal deployment path. The VPS has public SSH disabled by design. Do not propose SSH-based deploys, manual `docker build` on the VPS, or runtime container manipulation.
-- Runtime env changes belong in Coolify — apply them directly through the Coolify API or UI. Do not route them through GitHub Actions shell commands or SSH. See `AI_OPERATING_RULES.md`.
-- Durable host/OS changes on `hetz` belong in `/worksp/ansible` / `u2giants/ansible`, then GitHub Actions applies them. Do not use SSH/sudo/live host edits for packages, users, firewall, SSH/sudo, Docker daemon config, systemd units/timers, cron, `/etc`, `/usr/local/bin`, `/usr/local/sbin`, Cloudflare Tunnel 1, Coolify host glue, or backup/DNS watchdogs. Break-glass repair must be followed by an Ansible PR.
-- Do not create feature branches. This repo uses one branch: `main`.
-- Do not "fix" the items listed under [AGENTS.md § 12 — Intentional quirks](AGENTS.md) without reading the linked incident/commit first.
+- The NAS MCP server is named `synology-monitor`, not `nas-mcp`; confirm with
+  `claude mcp list` before declaring it unavailable.
+- A project `.mcp.json` must not exist: it previously shadowed the working global
+  definition with a rotated token. The path is ignored by Git.
+- MCP `tools/list` intentionally shows seven tools. Use `tool_search`,
+  `get_capability_details`, and `invoke_tool` to reach the 132-definition registry.
 
-## Commit style
+## Claude-specific working preferences
 
-- Subject line: `area: short imperative` (e.g. `nas-mcp: …`, `agent: …`, `docs: …`). Match prior history (`git log --oneline`) for the project area.
-- Body: one short paragraph on *why*, not what. Reference incident, prior commit, or user request when relevant.
-- Co-author trailer: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>` (match the model in use).
-
-## Ignore files
-
-`.claudeignore` at the repo root is honored by Claude Code. It excludes build artifacts (`node_modules/`, `.next/`, `dist/`, `.turbo/`), lockfiles, `evals/`, and the vestigial scratch file `ersahazan2Desktopsynology-monitor`. Update it when adding new generated directories.
-
-For other AI tools, paste `AGENTS.md` as your first message and follow the *§ 9 — What to ignore* list.
-
-## Memory / context notes
-
-- Local workspace path: `/worksp/monitor/app`. Working copy of `github.com/u2giants/synology-monitor` on `main`.
-- **The NAS MCP is registered as `synology-monitor`** (URL `nas-mcp.designflow.app/mcp`), not
-  "nas-mcp". Searching your tool list for "nas" finds nothing and proves nothing. It is a
-  different server from `devops-mcp` (`mcp.designflow.app`), which is VPS/host-scoped and has
-  no Synology operations. **Never conclude a capability is unavailable from a negative tool
-  search — run `claude mcp list` first.** On 2026-07-16 a session searched for "synology NAS
-  run_command", got only devops-mcp hits, told the operator the NAS MCP was not connected, and
-  justified an engineering decision with "I cannot verify live." It was connected the whole
-  time. Root cause: a project `.mcp.json` duplicated the server name with a **rotated, dead**
-  token, shadowing the working global definition in `~/.claude.json` and requiring a trust
-  approval that was never given — so its tools never loaded, while `claude mcp list` still
-  reported "Connected" from the global entry. That `.mcp.json` was deleted 2026-07-16 and the
-  path is now in `.gitignore`; the live token lives in `~/.claude.json` and Coolify
-  (`MCP_BEARER_TOKEN`). If the tools are ever missing again, check for a re-created `.mcp.json`
-  before anything else. A connected HTTP MCP can also be driven directly with `curl` (it is
-  stateless — POST `tools/list` or `tools/call`, no handshake).
-- The NAS MCP server has 133 shared tools in `ALL_TOOL_DEFS` but exposes only 7 small tools per session (`list_capabilities`, `get_capability_details`, `tool_search`, `invoke_tool`, `run_command`, `check_disk_space`, `restart_nas_api`). `check_disk_space` and `restart_nas_api` are registry tools registered eagerly by `apps/nas-mcp/src/index.ts`. When debugging tool availability, check catalog/search/detail results, `tools-config.json` enablement, and `EAGER_TOOLS`.
-- The 3-stage AI pipeline (`stage1-structurer.ts`, `stage2-reasoning.ts`, `stage3-explainer.ts`) is the only active issue-agent pipeline as of 2026-05-30. The legacy 7-stage pipeline and OpenRouter inference path have been removed.
-- `issue_evidence_items` and `issue_evidence` are different tables with different purposes — do not confuse them.
-- `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not yet wired to any pipeline stage.
-- `drive_team_folders_partitioned`: schema exists, no child partitions, no writes — future scaling infrastructure; do not drop.
-- HANDOFF.md is created only when work is genuinely incomplete at session end. Delete it as part of the commit that resolves the work it describes.
-- nas-api has a native **archive job system** (`apps/nas-api/internal/jobs/`) behind `/jobs/*` REST endpoints, persisting to a durable `/app/data/jobs` bind mount (design in `docs/synology-archive.md`, build guide in `docs/synology-archive-implementation.md`). **Phase 1** = read-only file inventory (`/jobs/inventory/*`). **Phase 2** = staged, reversible archive move (`/jobs/archive-move/*`: plan→preflight→snapshot→execute→verify→rollback, plus `clean_empty_dirs`); execute/rollback are tier-3 and write via the **writable `/btrfs/volume1/<share>`** mount (not the `:ro` `/volume1/<share>`). Both use `NAS_API_NAME` (the logical `edgesynology1/2` name), **deliberately separate** from the agent's `NAS_NAME`. The jobs mount/env need a one-time `docker compose up -d` per NAS; until then the endpoints return 503. Btrfs snapshot/subvol ops are behind an injectable interface (`fsOps`) so the move logic is unit-tested on temp trees; the real btrfs path is validated live.
+- Run local build, lint, type-check, and Go tests as needed.
+- Commit only when the user asks or the requested workflow explicitly requires it.
+- Commit subjects use `area: short imperative`, matching recent history.
+- Do not add a Claude co-author trailer to commits made by another model/tool.
+- SSH is diagnostic/recovery-only, never the normal deployment path. Follow the
+  deployment and NAS safety rules in `AGENTS.md`.

@@ -72,7 +72,7 @@ in docs.
 |---|---|---|
 | `ghcr.io/u2giants/synology-monitor-agent` | Go binary; telemetry collectors, SQLite WAL sender | Watchtower on each NAS |
 | `ghcr.io/u2giants/synology-monitor-nas-api` | Go binary; three-tier command validator and executor, port 7734 | Watchtower on each NAS |
-| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 133-definition tool registry | Coolify on VPS |
+| `ghcr.io/u2giants/synology-monitor-nas-mcp` | Node.js; MCP server with 132-definition tool registry | Coolify on VPS |
 | `ghcr.io/u2giants/synology-monitor-web` | Next.js; dashboard, issue detector, issue-agent pipeline | Coolify on VPS |
 
 All images are public in GHCR under the `u2giants` organization. Tags: `:latest` (always the most recent main-branch build), `:sha-<short-sha>` (pinnable), `:main` (branch ref, same as latest on main).
@@ -299,13 +299,15 @@ real move should follow `docs/archive-move-runbook.md`.
 ```
 supabase/migrations/00001_initial_schema.sql
 supabase/migrations/00035_drop_source_whitelists.sql
-supabase/migrations/00041_drop_dead_tables.sql
+supabase/migrations/00043_revoke_anon_execute_on_security_definer.sql
 ```
 
 **Rules:**
 - Do not edit or rewrite already-applied migration files. Treat them as append-only history.
 - New columns or tables always get a new migration file.
-- The latest applied migration is `00041`.
+- The latest repository/live migration is `00043`. Confirm live history before
+  applying a future migration and use a new number; never edit a migration that
+  may already have run.
 
 ## Environment variable management
 

@@ -1,6 +1,10 @@
 # Synology Monitor
 
-Telemetry collection, issue detection, and LLM-driven remediation for a two-unit Synology NAS fleet. A Go agent on each NAS pushes metrics and logs to Supabase; a Next.js dashboard groups them into issues and runs a three-stage AI pipeline that diagnoses problems and proposes fixes behind an operator approval gate. An MCP server also exposes 100+ NAS diagnostic tools to AI chat clients.
+Telemetry collection, issue detection, and AI-assisted remediation for POP
+Creations' two production Synology NAS units. Go services collect telemetry and
+execute guarded operations; a Next.js dashboard groups evidence into issues and
+runs a three-stage diagnostic pipeline; a lazy-loaded MCP registry exposes 132 NAS
+diagnostic and repair definitions behind approval controls.
 
 Live at **[mon.designflow.app](https://mon.designflow.app)**.
 
@@ -14,6 +18,7 @@ Live at **[mon.designflow.app](https://mon.designflow.app)**.
 | [docs/configuration.md](docs/configuration.md) | All environment variables |
 | [docs/deployment.md](docs/deployment.md) | CI/CD and release workflow |
 | [docs/1password.md](docs/1password.md) | Pull secrets from 1Password via the MCP server or `op` CLI |
+| [HANDOFF.md](HANDOFF.md) | Current unfinished operations work; read only when continuing it |
 | [PLAN.md](PLAN.md) | Historical issue-agent rebuild plan; current behavior is documented in `docs/architecture.md` |
 
 ## Prerequisites
@@ -34,7 +39,8 @@ pnpm build
 | Run web app locally | `cd apps/web && pnpm dev` (needs `.env.local` — see `docs/development.md`) |
 | Build the Go agent | `cd apps/agent && CGO_ENABLED=1 go build ./...` |
 | Run type checks | `pnpm type-check` |
-| Run Go tests | `cd apps/agent && go test ./...` |
+| Run all Go tests | `(cd apps/agent && go test ./...) && (cd apps/nas-api && go test ./...)` |
+| Run shared NAS-tool tests | `pnpm --filter @synology-monitor/shared test` |
 
 ## Where to look for what
 
@@ -44,6 +50,7 @@ pnpm build
 | Add a new agent telemetry collector | `apps/agent/internal/collector/` + wire in `cmd/agent/main.go` |
 | Change how issues are detected or diagnosed | `apps/web/src/lib/server/issue-detector.ts`, `ai/pipeline-v2.ts` |
 | Allow a new NAS shell command | `apps/nas-api/internal/validator/validator.go` + `validator_test.go` |
+| Continue unfinished production work | `HANDOFF.md`, then only the topic docs it names |
 
 ## Deployment
 

@@ -221,7 +221,7 @@ apps/nas-api/internal/
   auth/                — bearer token + HMAC verifier
 
 packages/shared/src/
-  nas-tools.ts         — 133 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
+  nas-tools.ts         — 132 NAS tool definitions (McpToolDef, ALL_TOOL_DEFS)
 ```
 
 ## Database migrations
@@ -229,7 +229,7 @@ packages/shared/src/
 Migrations are in `supabase/migrations/`. Naming convention:
 `000NN_short_description.sql` where NN is the next number after the current max.
 
-Current max: **00041**.
+Current max: **00043**.
 
 To apply locally with the Supabase CLI:
 
@@ -423,8 +423,8 @@ then drop).
 Add a migration for the new table or column:
 
 ```sh
-# Next number after 00041:
-supabase/migrations/00042_add_my_new_table.sql
+# Next number after 00043:
+supabase/migrations/00044_add_my_new_table.sql
 ```
 
 For a new time-series table, follow the pattern in existing migrations for

@@ -33,6 +33,7 @@
 |---|---|---|
 | `DSM_INSECURE_SKIP_VERIFY` | Set `false` if DSM has a valid TLS cert | `true` |
 | `NAS_API_PORT` | Port the nas-api listens on | `7734` |
+| `NAS_API_NAME` | Logical API identity used in approval tokens and archive jobs (`edgesynology1` / `edgesynology2`) | Container hostname if unset; set explicitly in production |
 | `AGENT_IMAGE_TAG` | Pin to a SHA tag to hold a specific image version | `latest` |
 | `WATCH_PATHS` | Comma-separated paths for inotify security watcher | `/host/shares/...` |
 | `LOG_DIR` | Root directory for log watcher | `/host/log` |
@@ -122,6 +123,13 @@ gating.
 | `VAPID_PRIVATE_KEY` | Web-push private key |
 | `VAPID_SUBJECT` | Web-push contact (e.g. `mailto:you@example.com`) |
 
+### Dashboard copilot authorization
+
+| Variable | Purpose |
+|---|---|
+| `COPILOT_ACTION_SIGNING_KEY` | Signs privileged copilot actions; OpenAI key fallback exists for compatibility but production should set a dedicated value |
+| `COPILOT_ADMIN_EMAILS` | Comma-separated accounts allowed to execute copilot actions |
+
 ---
 
 ## NAS API (`apps/nas-api`)
@@ -134,6 +142,8 @@ gating.
 | `DSM_USERNAME` | Yes | — | Used for DSM WebAPI package restarts |
 | `DSM_PASSWORD` | Yes | — | Used for DSM WebAPI package restarts |
 | `DSM_PORT` | No | `5000` | DSM HTTP port |
+| `NAS_API_NAME` | Production | Container hostname | Stable logical NAS name used by approval signing and job results |
+| `NAS_API_JOBS_PATH` | Compose only | `/volume1/docker/synology-monitor-agent/nas-api-jobs` | Host path bound to `/app/data/jobs`; not read directly by Go code |
 
 ---
 
@@ -151,6 +161,28 @@ gating.
 | `NAS_EDGE2_API_URL` | Yes | — | |
 | `NAS_EDGE2_API_SECRET` | Yes | — | |
 | `NAS_EDGE2_API_SIGNING_KEY` | Yes | — | |
+
+## Relay (`apps/relay`)
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `PORT` | No | `8787` | Relay HTTP listen port |
+| `RELAY_ALLOWED_ORIGINS` | Yes | — | Comma-separated browser origins permitted by CORS |
+| `RELAY_BEARER_TOKEN` | Yes | — | Authenticates relay clients |
+| `RELAY_ADMIN_SECRET` | Yes for writes | — | Additional authorization for state-changing actions |
+| `NAS_EDGE1_API_URL`, `NAS_EDGE1_API_SECRET`, `NAS_EDGE1_API_SIGNING_KEY` | Yes | — | NAS 1 upstream and approval credentials |
+| `NAS_EDGE2_API_URL`, `NAS_EDGE2_API_SECRET`, `NAS_EDGE2_API_SIGNING_KEY` | Yes | — | NAS 2 upstream and approval credentials |
+
+## Operational scripts and build metadata
+
+| Variable | Consumer | Default / notes |
+|---|---|---|
+| `RETENTION_BATCH_LIMIT` | `scripts/run-telemetry-retention-cleanup.mjs` | Rows per cleanup call; use the runbook's staged values |
+| `RETENTION_MAX_BATCHES` | Same | Maximum calls in one run |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Retention/dashboard scripts | Must be explicit; the retention runner rejects the retired Ohio ref |
+| `ISSUE_WORKER_URL` | `apps/web/scripts/issue-worker.mjs` | Drain endpoint for the standalone worker |
+| `BUILD_SHA`, `NEXT_PUBLIC_BUILD_SHA`, `NEXT_PUBLIC_BUILD_DATE` | Docker/workflow and web build metadata | Set by build/deploy tooling; not operator secrets |
+| `UPDATE_GOLDEN` | Shared NAS-tool golden test | Set `1` only to intentionally regenerate the cross-language fixture |
 
 ---
 

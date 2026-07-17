@@ -24,6 +24,11 @@ out/
 .DS_Store
 Thumbs.db
 
+# Backup / vestigial scratch files
+**/*.bak
+**/*.bak.*
+ersahazan2Desktopsynology-monitor
+
 # Turbo
 .turbo/
 
