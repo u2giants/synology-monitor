@@ -154,6 +154,45 @@ function toWritableVolumePath(value: string, toolName: string): string {
   throw new Error(`${toolName}: path must be under /volumeN/ (or /btrfs/volumeN/).`);
 }
 
+// Emits shell that resolves the real (symlink-canonical) path of the shell var
+// `src` and refuses if it escapes the writable share tree. toWritableVolumePath
+// confines the path as a STRING, but `mv` follows symlinks at the OS level: a
+// symlink planted inside a share (e.g. /btrfs/volume1/mac/evil -> /etc) lets a
+// "rename a file" approval rename a file anywhere root can reach — the same bug
+// class as the /btrfs/volumeevil string bypass, fixed there at the string level
+// and open here at the resolution level (found by K3, reproduced). realpath is
+// present on the deployed image (coreutils 9.1) and resolves share paths
+// canonically without surprising remaps (verified live).
+//
+// This is a check-then-use guard: it closes a STATIC hostile symlink (rejected
+// because it resolves outside), but not an attacker who swaps the symlink between
+// this check and the mv. That residual TOCTOU is inherent while the tier is
+// derived from a literal /volumeN path on the mv line — nas-api hard-rejects a
+// /volume-touching command at tier 2 (validator.go:358), so the mv cannot instead
+// operate on the resolved "$real". It closes once nas-api enforces a declared
+// minimum tier per tool. The glob matches /btrfs/volume<1-2 digits>/… exactly, so
+// a sibling dir like /btrfs/volume1x/ does not satisfy it.
+function confineResolvedPathToShare(): string[] {
+  return [
+    `real=$(realpath -e -- "$src" 2>/dev/null) || { echo "ERROR: cannot resolve path: $src"; exit 1; }`,
+    `case "$real" in /btrfs/volume[0-9]/*|/btrfs/volume[0-9][0-9]/*) ;; *) echo "ERROR: path resolves outside the writable share: $src -> $real"; exit 1;; esac`,
+  ];
+}
+
+// Version-agnostic success check (K3): the unambiguous success signature is
+// "source gone AND destination present". The earlier check tested only that the
+// source had gone, so a sync peer recreating the source after a genuinely
+// successful move was misreported as a failure — on exactly the synced shares
+// these tools target. Checking the whole end state also removes the dependency on
+// `mv -n`'s exit code, which differs across coreutils 9.1 vs >= 9.2.
+function renameEndStateCheck(destExpr: string, successMsg: string, failName: string): string[] {
+  return [
+    `if [ ! -e "$src" ] && [ -e ${destExpr} ]; then echo "${successMsg}"`,
+    `elif [ -e "$src" ] && [ -e ${destExpr} ]; then echo "FAILED: destination appeared concurrently (source still present)"; exit 1`,
+    `else echo "FAILED to rename: ${failName}"; exit 1; fi`,
+  ];
+}
+
 function readOnlySql(value: string): string {
   const sql = value.trim().replace(/;+\s*$/, "");
   if (!sql || sql.length > 2000) {
@@ -2789,20 +2828,18 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       // duplication only once nas-api enforces a declared minimum tier per tool,
       // which would make tier independent of what the regex can see.
       //
-      // `mv -n` supplies the no-clobber; the trailing source-survival check is what
-      // makes a lost race REPORT as a failure. It cannot be dropped: deployed
-      // nas-api is Debian 12 / GNU coreutils 9.1, and `mv -n` only began exiting
-      // non-zero on a skipped move in coreutils 9.2 — on 9.1 it exits 0 and moves
-      // nothing, i.e. a silent false success. The check proves the source is gone,
-      // not that this mv is what moved it; hence "checked, not atomic".
+      // `mv -n` supplies the no-clobber; the end-state check (renameEndStateCheck)
+      // is what makes a lost race REPORT correctly and removes any dependence on
+      // `mv -n`'s exit code, which differs across coreutils 9.1 vs >= 9.2.
+      // confineResolvedPathToShare rejects a symlink that escapes the share.
       return [
         `src=${quote(filePath)}`,
         `dest=${quote(`${filePath}.old`)}`,
         `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
+        ...confineResolvedPathToShare(),
         `[ -e "$dest" ] && { echo "ERROR: destination already exists: $dest"; exit 1; }`,
         `mv -n ${quote(filePath)} ${quote(`${filePath}.old`)} || { echo "FAILED to rename: $src"; exit 1; }`,
-        `[ -e "$src" ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
-        `echo "Renamed successfully"`,
+        ...renameEndStateCheck(`"$dest"`, "Renamed successfully", "$src"),
       ].join("\n");
     },
   },
@@ -2820,6 +2857,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       return [
         `src=${quote(filePath)}`,
         `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
+        ...confineResolvedPathToShare(),
         `dir=$(dirname "$src"); file=$(basename "$src")`,
         `newfile=$(printf '%s' "$file" | sed 's/[\\/:*?"<>|]/_/g')`,
         // Each outcome exits on its own line: the old `[ ] && mv && echo || echo`
@@ -2827,11 +2865,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         // characters found" and exiting 0 — a false success on a real failure.
         `if [ "$file" = "$newfile" ]; then echo "No invalid characters found"; exit 0; fi`,
         `[ -e "$dir/$newfile" ] && { echo "ERROR: destination already exists: $dir/$newfile"; exit 1; }`,
-        // Literal path on the mv line, plus `-n` and the source-survival check —
-        // see rename_file_to_old for why each is load-bearing.
+        // Literal path on the mv line — see rename_file_to_old for why the tier-3
+        // classification depends on it and why that is load-bearing.
         `mv -n ${quote(filePath)} "$dir/$newfile" || { echo "FAILED to rename: $file"; exit 1; }`,
-        `[ -e "$src" ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
-        `echo "Renamed: $file -> $newfile"`,
+        ...renameEndStateCheck(`"$dir/$newfile"`, "Renamed: $file -> $newfile", "$file"),
       ].join("\n");
     },
   },

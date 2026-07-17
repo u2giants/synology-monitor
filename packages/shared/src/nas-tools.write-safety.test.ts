@@ -8,7 +8,7 @@
 // builder regresses — a hand-copied command string would not.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -29,8 +29,13 @@ function build(tool: string, filter: string): string {
  * test is byte-for-byte what nas-api would run.
  */
 let root: string;
-function runIn(cmd: string): { code: number; out: string } {
-  const rewritten = cmd.split("/btrfs/volume1").join(join(root, "btrfs", "volume1"));
+function runIn(cmd: string, opts: { pathPrepend?: string } = {}): { code: number; out: string } {
+  // Relocate the WHOLE /btrfs/volume prefix (digit-agnostic) under the sandbox,
+  // so both the literal paths AND the confinement guard's `case /btrfs/volume[0-9]`
+  // pattern move together — otherwise the guard would reject every sandboxed path.
+  const rewritten = cmd.split("/btrfs/volume").join(join(root, "btrfs", "volume"));
+  const env = { ...process.env };
+  if (opts.pathPrepend) env.PATH = `${opts.pathPrepend}:${env.PATH ?? ""}`;
   try {
     // cwd is the sandbox: a payload that escapes quoting writes its marker inside
     // the temp tree rather than into the repo. (Before this was pinned, running the
@@ -40,6 +45,7 @@ function runIn(cmd: string): { code: number; out: string } {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       cwd: root,
+      env,
     });
     return { code: 0, out };
   } catch (e) {
@@ -179,6 +185,62 @@ describe("existing destinations are refused, never overwritten", () => {
     const res = runIn(build("remove_invalid_chars", "/volume1/share/b:1.txt"));
     expect(res.code).not.toBe(0);
     expect(res.out).toContain("destination already exists");
+  });
+});
+
+describe("a symlink that escapes the share is refused (path confined by resolution, not just string)", () => {
+  // toWritableVolumePath confines the path as a STRING, but mv follows symlinks at
+  // the OS level. Reproduced: a symlink inside the share pointing outside it let a
+  // "rename a file" approval rename a file anywhere root could reach. The realpath
+  // guard rejects it. (Same class as the /btrfs/volumeevil string bypass.)
+  for (const tool of TOOLS) {
+    it(`${tool}: refuses to act on a path that resolves outside /btrfs/volumeN`, () => {
+      // 'escape' inside the share is a symlink to a sibling dir OUTSIDE the share tree.
+      const outside = join(root, "outside");
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(join(outside, "secret.txt"), "SENSITIVE");
+      symlinkSync(outside, abs("share/escape"));
+
+      const res = runIn(build(tool, "/volume1/share/escape/secret.txt"));
+
+      expect(res.code, "must refuse a path resolving outside the share").not.toBe(0);
+      expect(res.out).toContain("resolves outside the writable share");
+      // The file outside the share is untouched — nothing renamed, no .old / _ variant.
+      expect(existsSync(join(outside, "secret.txt"))).toBe(true);
+      expect(existsSync(join(outside, "secret.txt.old"))).toBe(false);
+    });
+  }
+});
+
+describe("a lying mv (silent no-op) is reported as failure, not success", () => {
+  // The deployed image is coreutils 9.1, where `mv -n` on a skipped move exits 0
+  // and moves nothing. Simulate the worst case — an mv that ALWAYS exits 0 and
+  // moves nothing — by shimming PATH, and assert the end-state check still reports
+  // failure. This is the version-agnostic property: success is asserted from the
+  // end state (source gone AND dest present), never from mv's exit code.
+  function shimNoopMv(): string {
+    const bin = join(root, "shimbin");
+    mkdirSync(bin, { recursive: true });
+    const p = join(bin, "mv");
+    writeFileSync(p, "#!/bin/sh\nexit 0\n"); // pretends success, moves nothing
+    chmodSync(p, 0o755);
+    return bin;
+  }
+
+  it("rename_file_to_old: exit non-zero and no false 'Renamed successfully'", () => {
+    writeFileSync(abs("share/real.txt"), "x");
+    const res = runIn(build("rename_file_to_old", "/volume1/share/real.txt"), { pathPrepend: shimNoopMv() });
+    expect(res.code).not.toBe(0);
+    expect(res.out).not.toContain("Renamed successfully");
+    expect(res.out).toContain("FAILED to rename");
+  });
+
+  it("remove_invalid_chars: exit non-zero and no false 'Renamed:' on a silent no-op mv", () => {
+    writeFileSync(abs("share/c:1.txt"), "x");
+    const res = runIn(build("remove_invalid_chars", "/volume1/share/c:1.txt"), { pathPrepend: shimNoopMv() });
+    expect(res.code).not.toBe(0);
+    expect(res.out).not.toMatch(/Renamed: /);
+    expect(res.out).toContain("FAILED to rename");
   });
 });
 

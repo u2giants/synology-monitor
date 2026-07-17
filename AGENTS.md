@@ -218,7 +218,12 @@ Why:
 Go regexes do not cross newlines; the shared golden fixture locks this contract.
 
 Do not change because:
-Hoisting the path entirely into a variable silently downgrades approval strength.
+Hoisting the path entirely into a variable classifies the command tier 2, and
+nas-api hard-rejects a tier-2 command whose text still contains `/volume1/`
+(`validator.go:358`) — so the "cleanup" makes nas-api refuse the command and the
+tool stops working, not merely weakens approval. Fails silently (compiles, no
+test failure without the golden contract test). Closes only once nas-api enforces
+a declared minimum tier per tool.
 
 ### Per-share mounts are read-only; writes use `/btrfs/volumeN`
 
