@@ -130,6 +130,39 @@ chk "identical file in .local dir deleted"   '[ ! -e "$CD/keep.ai" ]'
 chk "stranded file moved out of .local dir"  '[ -f "$R3/NCX04MVSX01/only-here.ai" ]'
 
 echo
+echo "### resolve: NESTED conflict dir (SKU fork with subtree) is merged, not skipped"
+# Mirrors NCX04SESC01: a conflict fork whose PPS photos/ + _SAMPLE/ hold unique
+# files the target lacks, plus one identical and one stale nested file.
+R4="$T/r4"; TG="$R4/NCX04SESC01"; CF="$R4/NCX04SESC01_Elizabeths-MacBook-Pro.local_Jan-19-142001-2026_Conflict"
+mkdir -p "$TG/PPS photos" "$TG/_SAMPLE" "$CF/PPS photos" "$CF/_SAMPLE"
+echo keep > "$TG/PPS photos/shot (1).JPG"; old "$TG/PPS photos/shot (1).JPG"
+echo keep > "$CF/PPS photos/shot (1).JPG"; old "$CF/PPS photos/shot (1).JPG"   # identical -> del
+echo uniq2 > "$CF/PPS photos/shot (2).JPG"; old "$CF/PPS photos/shot (2).JPG"  # unique -> move
+echo uniq3 > "$CF/PPS photos/shot (3).PNG"; old "$CF/PPS photos/shot (3).PNG"  # unique -> move
+echo art   > "$CF/_SAMPLE/NCX04SESC01_art.ai"; old "$CF/_SAMPLE/NCX04SESC01_art.ai"  # unique -> move
+echo newmain > "$TG/_SAMPLE/sheet.pdf"; new "$TG/_SAMPLE/sheet.pdf"
+echo oldfork > "$CF/_SAMPLE/sheet.pdf"; old "$CF/_SAMPLE/sheet.pdf"            # stale -> del
+ROOT="$R4" DRY_RUN=0 bash "$S/resolve-drive-conflicts.sh" >/dev/null 2>&1
+chk "unique nested photo moved into target"        '[ -f "$TG/PPS photos/shot (2).JPG" ]'
+chk "second unique nested photo moved"             '[ -f "$TG/PPS photos/shot (3).PNG" ]'
+chk "unique nested art moved into _SAMPLE"          '[ -f "$TG/_SAMPLE/NCX04SESC01_art.ai" ]'
+chk "moved content is intact"                       '[ "$(cat "$TG/PPS photos/shot (2).JPG")" = "uniq2" ]'
+chk "identical nested file did not duplicate"       '[ "$(ls "$TG/PPS photos" | wc -l)" = "3" ]'
+chk "newer target file NOT overwritten by fork"     '[ "$(cat "$TG/_SAMPLE/sheet.pdf")" = "newmain" ]'
+chk "entire conflict fork removed after merge"      '[ ! -d "$CF" ]'
+
+echo
+echo "### resolve: nested conflict-is-NEWER is kept, dir retained"
+R5="$T/r5"; TG5="$R5/SKU/PPS photos"; CF5="$R5/SKU_dev_Jan-19-140000-2026_Conflict/PPS photos"
+mkdir -p "$TG5" "$CF5"
+echo oldmain > "$R5/SKU/PPS photos/x.jpg"; old "$R5/SKU/PPS photos/x.jpg"
+echo newfork > "$CF5/x.jpg"; new "$CF5/x.jpg"
+ROOT="$R5" DRY_RUN=0 bash "$S/resolve-drive-conflicts.sh" >/dev/null 2>&1
+chk "newer fork file kept (not deleted)"     '[ -f "$R5/SKU_dev_Jan-19-140000-2026_Conflict/PPS photos/x.jpg" ]'
+chk "target copy untouched"                  '[ "$(cat "$R5/SKU/PPS photos/x.jpg")" = "oldmain" ]'
+chk "conflict dir retained (has kept file)"  '[ -d "$R5/SKU_dev_Jan-19-140000-2026_Conflict" ]'
+
+echo
 echo "### resolve: empty conflict dir is removed"
 R2="$T/r2"; mkdir -p "$R2/S/X" "$R2/S/X_ADMIN_Jul-16-175945-2026_Conflict"
 ROOT="$R2" DRY_RUN=0 bash "$S/resolve-drive-conflicts.sh" >/dev/null 2>&1

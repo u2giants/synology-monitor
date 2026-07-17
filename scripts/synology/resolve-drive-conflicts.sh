@@ -90,8 +90,24 @@ while IFS= read -r -d '' f; do
 done < <(find "$ROOT" -type f -name '*Conflict*' -not -path '*@eaDir*' -print0 2>/dev/null)
 
 # ── Pass 2: conflict DIRECTORIES ─────────────────────────────────────────────
+# A conflict directory is a divergent copy of its target — often a whole SKU
+# folder with its own nested subtree (TECHPACK/, PPS photos/, _SAMPLE/ ...) that
+# can hold the ONLY copy of real content (e.g. a January fork carrying 24 product
+# photos the current folder lacks). So this must RECURSE and reconcile every file
+# against the target case-aware, not just glance at the top level.
+#
+# Per file, relative to the conflict dir:
+#   - target has no such path  -> MOVE it in (unique content, would otherwise be
+#                                 stranded in a _Conflict folder nobody opens)
+#   - identical content        -> DELETE (redundant)
+#   - conflict copy is NEWER    -> KEEP + report. The target is the authoritative
+#                                 current folder; we never overwrite it from an
+#                                 old fork automatically. A human decides.
+#   - otherwise (older/same)   -> DELETE (stale)
+# After reconciling files, empty subdirectories are removed bottom-up, and the
+# conflict dir itself only if it ends up completely empty.
 echo
-echo "== PASS 2: conflict DIRECTORIES"
+echo "== PASS 2: conflict DIRECTORIES (recursive)"
 while IFS= read -r -d '' c; do
   nas_is_conflict_name "$(basename "$c")" || continue
   par="$(dirname "$c")"; nm="$(basename "$c")"
@@ -102,24 +118,34 @@ while IFS= read -r -d '' c; do
   fi
   echo "  ${c#$ROOT/}  ->  $(basename "$t")/"
   while IFS= read -r -d '' f; do
-    b="$(basename "$f")"; m="$(nas_ci_find "$t" "$b")"
-    if [ -z "$m" ]; then
-      echo "      MOVE (stranded content): $b"
-      [ "$DRY_RUN" = 0 ] && { mv -n "$f" "$t/$b" 2>/dev/null || echo "        ERR mv"; }
+    rel="${f#"$c"/}"                         # path relative to the conflict dir
+    dest="$(nas_resolve_path "$t" "$rel")"   # case-aware target path
+    if [ ! -e "$dest" ]; then
+      echo "      MOVE (unique): $rel"
+      if [ "$DRY_RUN" = 0 ]; then
+        nas_mkdir_like "$(dirname "$dest")" "$(dirname "$f")" || { echo "        ERR mkdir"; }
+        mv -n "$f" "$dest" 2>/dev/null || echo "        ERR mv"
+      fi
       MOVED=$((MOVED+1))
-    elif nas_same "$f" "$m"; then
-      echo "      DEL identical: $b"; [ "$DRY_RUN" = 0 ] && rm -f "$f"; DEL=$((DEL+1))
-    elif [ "$(stat -c %Y "$f")" -gt "$(stat -c %Y "$m")" ]; then
-      echo "      KEEP conflict-is-NEWER -> REVIEW: $b"; KEPT=$((KEPT+1))
+    elif nas_same "$f" "$dest"; then
+      echo "      DEL identical: $rel"; [ "$DRY_RUN" = 0 ] && rm -f "$f"; DEL=$((DEL+1))
+    elif [ "$(stat -c %Y "$f")" -gt "$(stat -c %Y "$dest")" ]; then
+      echo "      KEEP conflict-is-NEWER -> REVIEW: $rel"; KEPT=$((KEPT+1))
     else
-      echo "      DEL stale-older: $b"; [ "$DRY_RUN" = 0 ] && rm -f "$f"; DEL=$((DEL+1))
+      echo "      DEL stale-older: $rel"; [ "$DRY_RUN" = 0 ] && rm -f "$f"; DEL=$((DEL+1))
     fi
-  done < <(find "$c" -maxdepth 1 -type f -not -name '.DS_Store' -print0 2>/dev/null)
+  done < <(find "$c" -type f -not -name '.DS_Store' -not -path '*/@eaDir/*' -print0 2>/dev/null)
 
   if [ "$DRY_RUN" = 0 ]; then
-    rm -f "$c/.DS_Store" 2>/dev/null
-    [ -d "$c/@eaDir" ] && rm -rf "$c/@eaDir" 2>/dev/null
-    rmdir "$c" 2>/dev/null && { echo "      removed empty conflict dir"; RMD=$((RMD+1)); }
+    find "$c" -depth -name '.DS_Store' -type f -delete 2>/dev/null
+    find "$c" -depth -type d -name '@eaDir' -exec rm -rf {} + 2>/dev/null
+    # Remove now-empty subdirectories bottom-up, then the conflict dir itself.
+    find "$c" -depth -type d -empty -delete 2>/dev/null
+    if [ ! -d "$c" ]; then
+      echo "      removed emptied conflict dir"; RMD=$((RMD+1))
+    else
+      echo "      conflict dir RETAINED (still holds files kept for review)"
+    fi
   fi
 done < <(find "$ROOT" -depth -type d -name '*Conflict*' -not -path '*@eaDir*' -print0 2>/dev/null)
 
