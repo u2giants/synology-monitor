@@ -278,22 +278,23 @@ from a move. Whether that set is stale is a separate open question (§ 9).
 ### F. `repair_path_ownership` (6dcf16c) — shipped and enabled, but an independent review says not done
 
 An independent Codex review (read-only, 2026-07-17) of the shipped implementation found defects
-that a second pair of eyes caught and the original pass did not. **Two are confirmed by direct
-measurement, not opinion:**
+that a second pair of eyes caught and the original pass did not.
 
-1. **The ACL safety warning can never fire — it fails open.**
-   `synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING: ACL mode could not be read'`
-   Without `set -o pipefail`, `||` sees `head`'s exit status, which is 0 even when `synoacltool`
-   fails. Reproduced: `/nonexistent/bin -get x 2>&1 | head -8 || echo fired` prints nothing and
-   exits 0. So if ACL inspection fails, the tool proceeds to `chown` with unknown ACL state.
-   Cheap fix: capture into a variable and test the command's own status.
-2. **The symlink test does not test symlinks.** `repair-path-ownership.test.ts:70` is named
-   *"rejects recursion, traversal, off-volume paths, and symlinks"* but asserts only recursion,
-   traversal, and off-volume. There is no symlink case. (Note the guard is a *runtime* shell
-   check, so a builder unit test can at most assert the guard is present in the string — the
-   name overclaims either way.)
+**Two were confirmed by measurement and are now FIXED (`fe0186c`):**
 
-Further findings, plausible and unverified here:
+1. ~~**The ACL safety warning can never fire — it fails open.**~~ **FIXED.**
+   `synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING...'` reported `head`'s exit status
+   (0), so a failed ACL read passed silently and the chown proceeded with unknown ACL state. Now
+   the read is captured with its own exit status (`acl_out=$(...); acl_rc=$?`) and the warning
+   fires on non-zero, before the write. A regression test asserts both directions and was
+   confirmed to fail on the old code.
+2. ~~**The symlink test does not test symlinks.**~~ **FIXED.** The misnamed test was split; a new
+   test executes the generated command against an actual symlink through the temp-dir harness and
+   asserts it aborts before the chown. Confirmed to fail when the runtime `[ ! -L ]` guard is
+   removed.
+
+**Still open (the deeper items — not addressed by `fe0186c`):**
+
 - **Only the final path component is symlink-checked.** `[ ! -L "$path" ]` does not protect a
   symlinked *parent*; the path is never canonicalised against a share boundary.
 - **Check-to-write race.** Between `[ ! -L ]`, `stat` and `chown`, an SMB client can replace the
