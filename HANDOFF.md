@@ -345,6 +345,15 @@ three of these tools stayed broken for months.
 Risk is bounded meanwhile: tier 3, one path, non-recursive, human-approved, reversible. Not an
 emergency; not done either.
 
+**Two preconditions confirmed 2026-07-17 (privilege-hardening session), deeper items still open:**
+The `/host/etc/group` mount is now LIVE on both NASes, so name→gid resolution works
+(`SynologyDrive`→153742 verified in-container on both). And the shipped command clears the
+validator (`IsHardBlocked`=false, tier 3) — the `pass??` glob dodges the `\bpasswd\s+\S` block.
+So the tool is now *runnable*; the "no-op chown on a real scratch path on both NASes" proof still
+has not been done (chown is tier 3, so the only chown surface is the tool itself once approved),
+and every deeper item above (symlinked parent, check-to-write race, hard links, ACL-override,
+MCP approval binding) remains untouched.
+
 ## 9. Open questions and risks
 
 - Is `seafile-ignore.txt` installed on every affected library, and does seaf-cli
@@ -398,12 +407,28 @@ Done and verified live via the MCP on edgesynology1 and edgesynology2:
   NAS compose.yaml (durable). Fixes edge1's `on-failure:10` (gave up after 10 failures,
   no restart on daemon restart).
 
+**Exact proven target config for the nas-api service (both boxes, live-verified 2026-07-17):**
+`privileged: false`, no `- /dev:/dev`, `cap_add: [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]`,
+`restart: always`, and a read-only `devices:` key (NOT `volumes:`), enumerating only the
+nodes that exist on that box:
+- edge1: `/dev/sda`–`/dev/sdf`, `/dev/md0`–`/dev/md9`, `/dev/nvme0`, `/dev/nvme1`,
+  `/dev/nvme0n1`, `/dev/nvme1n1`  (each `- /dev/X:/dev/X:r`)
+- edge2: `/dev/sda`–`/dev/sde`, `/dev/md0`–`/dev/md3`
+Live compose backups on each NAS: `compose.yaml.bak-deprivilege-*` (edge1),
+`compose.yaml.bak-devrawio-*` + `.bak-restart-*` (both). Rollback = restore backup +
+`docker compose up -d nas-api`.
+
 Open follow-ups:
 - **Repo drift NOT reconciled.** `deploy/synology/docker-compose.agent.yml` still has
   devices under `volumes:` and lists `/dev/sdf–sdh` (absent on edge2) — would break both
-  boxes if applied. Back-port the proven per-box config before any repo→NAS sync.
+  boxes if applied. The AGREED reconciliation (debated with Kimi K3) is a generator that
+  emits two byte-exact per-box files (`docker-compose.nas-1.yml` / `.nas-2.yml`) from one
+  base + two device fragments, CI-verified with `git diff --exit-code`, plus a FUNCTIONAL
+  `/drift` endpoint (probe each device openable, caps present, privileged absent). Full
+  spec: [docs/nas-config-drift.md §8](docs/nas-config-drift.md). NOT built yet.
 - **strace / hdparm missing from the image** — `strace_process` and
   `hdparm_device_info` are enabled but their binaries are not in `apps/nas-api/Dockerfile`
-  (found while verifying PTRACE). Spawned as its own task.
+  (found while verifying PTRACE). Spawned as its own task; also fix the Dockerfile comment
+  that credits the `/dev` mounts to hdparm when smartctl is the real consumer.
 - Per-NAS compose is hand-maintained and drifts; there is no sync mechanism. See
   [docs/nas-config-drift.md](docs/nas-config-drift.md).

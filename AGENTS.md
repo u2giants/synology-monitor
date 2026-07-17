@@ -38,6 +38,8 @@ Then load additional docs only when relevant:
 | Modify app behavior or project-owned code | Relevant folder README; `docs/architecture.md` if design changes | Deployment docs unless rollout changes |
 | Add or change a NAS MCP capability | `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md` | Web deployment details |
 | Change agent or NAS API behavior | `docs/architecture.md`, `docs/development.md`, `deploy/synology/README.md` if mounts/env change | Unrelated web docs |
+| NAS container privilege, capabilities, block-device mounts, or SMART/disk health | `docs/nas-privilege-hardening.md`, `deploy/synology/README.md` | Web/AI docs |
+| Repo↔NAS compose drift, or reconciling the compose files | `docs/nas-config-drift.md` | AI pipeline details |
 | Add or change configuration, env vars, feature flags, secrets, or runtime settings | `docs/configuration.md`; `docs/deployment.md` for production | Incident histories |
 | Change local setup, scripts, tests, lint, or package tooling | `docs/development.md`, relevant package files | Production deployment docs |
 | Change deployment, Docker, CI/CD, hosting, rollback, or runtime environment | `docs/deployment.md`, `docs/configuration.md`, relevant workflow/compose files | Local debugging sections |
@@ -256,6 +258,80 @@ The two NASes can expose different ACL modes for equivalent paths.
 Do not change because:
 An ACL writer is a new, separately designed capability—not a command substitution.
 
+### Block devices need `devices:`, not `volumes:` — and SMART needs `SYS_RAWIO`
+
+Looks like:
+`- /dev/sda:/dev/sda:ro` under `volumes:` gives the container access to the disk,
+and `privileged: true` (edge1 until 2026-07-17) is a gratuitous over-grant to remove.
+
+Actually:
+A device under `volumes:` mounts the node WITHOUT a device-cgroup allow rule, so
+`smartctl`/`hdparm` get EPERM and SMART monitoring silently fails — the repo file and
+edge2 both shipped this bug, and edge2's SMART was dead without anyone noticing. Block
+devices must be under a `devices:` key (which grants node + cgroup). And on the DSM 4.4
+kernel `smartctl -a -d scsi` needs `CAP_SYS_ADMIN` **plus** `CAP_SYS_RAWIO` (LOG SENSE
+hits SG_IO EPERM without RAWIO — proven with a zero-restart disposable-container test);
+`SYS_ADMIN` alone is not enough for SCSI SMART but IS what the NVMe admin ioctl needs.
+NVMe nodes are **character-major 250** — a block-major cgroup rule would miss them, so
+they must be listed explicitly (`/dev/nvme0`, `/dev/nvme1`, + namespaces on edge1).
+
+Why:
+Both NASes now run `privileged: false` with `cap_add: [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]`
+and an explicit read-only `devices:` list (verified live 2026-07-17). `privileged: true`
+had been masking the whole thing on edge1. Full record: `docs/nas-privilege-hardening.md`.
+
+Do not change because:
+Reverting to `volumes:`-mounted devices silently kills SMART; dropping `SYS_RAWIO`
+silently kills SCSI SMART; a correct `devices:` list also couples a dead/pulled disk to
+container start-up (loud by design — remove the line for a removed bay). Prove any change
+against `check_smart_detail` on a real `/dev/sdX` and `/dev/nvme0`, not a container that
+merely starts.
+
+### Validator hard-blocks match a tool's own error prose
+
+Looks like:
+Quoting a path in a built command is enough to keep it clear of the validator.
+
+Actually:
+Two permanent, every-tier blocks in `validator.go` match the raw command STRING with no
+quote-stripping, so a write tool's own echoed error/remediation text can get that tool's
+command rejected: `\bpasswd\s+\S` (meant for `passwd <user>`) matches any mention of the
+account FILE followed by whitespace — and since `buildCommand` joins lines with `\n`, a
+bare trailing `... /host/etc/passwd` matches via the next line; and
+`strings.Contains(cmd, "docker compose")` blocks any command whose text names the compose
+command, including inside an echoed hint. `repair_path_ownership` dodges the first by
+globbing (`/host/etc/pass??`); remediation prose must say "recreate via DSM Container
+Manager", never name the compose command.
+
+Why:
+Both fired while building the ownership tools. Pinned by
+`TestPasswdBlockDoesNotCatchAccountFileReads` and `TestRemediationProseIsNotSelfBlocking`.
+
+Do not change because:
+A tool that type-checks can still be dead-on-arrival at the NAS. Run any new built
+command through `IsHardBlocked`/`ClassifyTier` before trusting it.
+
+### Some enabled diagnostic tools have no binary in the image
+
+Looks like:
+`hdparm_device_info` and `strace_process` are enabled, so they work.
+
+Actually:
+Neither `hdparm` nor `strace` is installed in `apps/nas-api/Dockerfile`, so both tools
+only ever error (`command not found` / "hdparm not available") on both NASes — the same
+class as the removed `setfacl` tool. `SYS_PTRACE` is kept regardless (it is declared for
+`strace_process` by design); the fix is adding the binary, not dropping the cap. The
+repo's device-mount comments also wrongly credit those `/dev` mounts to hdparm when
+`smartctl` (smartmontools, which IS installed) is the real consumer.
+
+Why:
+Found while verifying the privilege hardening. Tracked as a follow-up task.
+
+Do not change because:
+Apply the §-quirks checklist before trusting any tool: binary in the Dockerfile? path on
+a writable/accessible mount? identifiers resolvable in the container? proven by one real
+run? `write: true` and "enabled" check none of these.
+
 ### Watchtower cannot apply compose changes
 
 Looks like:
@@ -272,21 +348,36 @@ No workflow distributes NAS compose files.
 Do not change because:
 New mounts, capabilities, and env keys require a deliberate one-time compose
 recreation on each NAS. Preserve each NAS's `.env` and local compose differences.
+There is no sync mechanism and the two NAS files have genuinely diverged (line
+endings, restart policy, device lists); reconciliation is designed in
+`docs/nas-config-drift.md` (a generator emitting two byte-exact per-box files) but
+not yet built. Do NOT copy `deploy/synology/docker-compose.agent.yml` onto a NAS as-is
+— it still lists `/dev/sdf–sdh` absent on edge2 and would fail `compose up`.
 
-### `restart: unless-stopped` preserves an explicit stop across reboot
+### The two monitor services now use `restart: always`
 
 Looks like:
-A NAS reboot should restart every configured service.
+`unless-stopped` (the repo default) is the policy for every service.
 
 Actually:
-An explicitly stopped container remains stopped; `edgesynology2` demonstrated this
-with nas-api in July 2026.
+As of 2026-07-17 `synology-monitor-agent` and `synology-monitor-nas-api` are
+`restart: always` on BOTH NASes — set live via `docker update` (no recreate) and
+persisted in each NAS compose. `always` returns the monitoring control-plane after a
+NAS/Docker restart even if it was previously recorded as stopped; `unless-stopped`
+preserves a stopped state across a daemon restart, and edge1's prior `on-failure:10`
+gave up after 10 failures and did not cover daemon restarts. (seaf-cli/watchtower keep
+their existing policies.)
 
 Why:
-That is Docker's intended `unless-stopped` behavior.
+A control-plane that stays down after a reboot is worse than one that resurrects. Note
+a related reachability trap: `192.168.3.101` (edge2's LAN IP) is NOT reachable from the
+`hetz` VPS — a refused connection there is not evidence a NAS is down. Reach the NASes
+by Tailscale (`100.107.131.35` / `100.107.131.36`) or the MCP.
 
 Do not change because:
-Diagnose `Exited (143)` and operator intent before changing restart policy.
+Reverting the two monitors to a policy that can stay stopped reintroduces the
+silent-outage risk. A deliberate `docker stop` will not survive a daemon restart under
+`always` — that trade-off is accepted for the monitors.
 
 ### Agent WAL sender isolates bad rows
 
@@ -354,9 +445,20 @@ rollback, health checks, and compose exceptions are in `docs/deployment.md`.
 
 ## Direct NAS maintenance safety
 
-- Use SSH aliases `edgesynology1` and `edgesynology2`; do not hand-build addresses.
-- Non-interactive Docker requires
-  `/var/packages/ContainerManager/target/usr/bin/docker` under `sudo`.
+- Use SSH aliases `edgesynology1` and `edgesynology2` (user `ahazan`; edge2 SSH is on
+  port **1904**, in `~/.ssh/config`); do not hand-build addresses.
+- **`ahazan` has passwordless sudo for `/usr/bin/python3` ONLY** (`(ALL) NOPASSWD:
+  /usr/bin/python3` on both NASes — effectively passwordless root). Plain `sudo docker`,
+  `sudo sed`, `sudo cp` HANG on a password prompt with no answer available. Do every
+  privileged action as `sudo -n /usr/bin/python3 -c '...'` — edit files with Python I/O,
+  run docker via `subprocess`. `docker` is at `/usr/local/bin/docker` (also
+  `/var/packages/ContainerManager/target/usr/bin/docker`), not on `ahazan`'s PATH.
+- Change compose/containers backup-first and one service at a time
+  (`docker compose up -d nas-api`, never a bare `up -d` which recreates everything).
+  Restart policy can be changed live with `docker update --restart=...` (no recreate).
+- `scp`/sftp is disabled on the NASes; move file contents with `base64` over `ssh`.
+- Note edge1's compose is LF and edge2's is CRLF — a `sed` tuned for one silently
+  matches nothing on the other. Re-measure before editing either.
 - For metadata-heavy reads use `/opt/bin/ionice -c3 nice -n 19 <command>`.
 - Avoid large crawls, recursive ownership changes, archive moves, or timestamp work
   while SMB users are active.
