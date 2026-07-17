@@ -90,6 +90,7 @@ services:
       - /lib:/host/lib:ro
       - /usr/lib:/host/usr/lib:ro
       - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro  # NAS group names for uid/gid resolution in repair tools
       - /etc/VERSION:/host/etc/VERSION:ro
       - /etc/synoinfo.conf:/host/etc/synoinfo.conf:ro
       - /etc.defaults:/host/etc.defaults:ro

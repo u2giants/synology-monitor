@@ -40,5 +40,30 @@
     "filter": "/volume1/mac/y`touch /tmp/OWNED`.txt",
     "expectedTier": 3,
     "command": "src='/btrfs/volume1/mac/y`touch /tmp/OWNED`.txt'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\ndir=$(dirname \"$src\"); file=$(basename \"$src\")\nnewfile=$(printf '%s' \"$file\" | sed 's/[\\/:*?\"<>|]/_/g')\nif [ \"$file\" = \"$newfile\" ]; then echo \"No invalid characters found\"; exit 0; fi\n[ -e \"$dir/$newfile\" ] && { echo \"ERROR: destination already exists: $dir/$newfile\"; exit 1; }\nmv -n '/btrfs/volume1/mac/y`touch /tmp/OWNED`.txt' \"$dir/$newfile\" || { echo \"FAILED to rename: $file\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Renamed: $file -> $newfile\""
+  },
+  {
+    "tool": "quarantine_path",
+    "filter": "/volume1/mac/suspect.dat",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/suspect.dat'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\nts=$(date +%Y%m%d_%H%M%S)\ndest=\"$src.quarantine.$ts\"\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/mac/suspect.dat' \"$dest\" || { echo \"FAILED to quarantine: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Quarantined successfully: $dest\""
+  },
+  {
+    "tool": "repair_path_ownership",
+    "filter": "mac:users",
+    "exactPath": "/volume1/mac/scratch.txt",
+    "expectedTier": 3,
+    "command": "path='/btrfs/volume1/mac/scratch.txt'\nowner='mac'\ngroup='users'\necho 'Logical path: /volume1/mac/scratch.txt'\necho 'Writable path: /btrfs/volume1/mac/scratch.txt'\n[ -e \"$path\" ] || { echo \"ERROR: no such path: $path\"; exit 1; }\n[ ! -L \"$path\" ] || { echo \"ERROR: symbolic links are refused: $path\"; exit 1; }\n[ -r /host/etc/pass?? ] || { echo \"ERROR: NAS user database is not mounted under /host/etc\"; exit 1; }\n[ -r /host/etc/group ] || { echo \"ERROR: NAS group database is not mounted at /host/etc/group (apply the compose update on this NAS)\"; exit 1; }\ncase \"$owner\" in *[!0-9]*) uid=$(awk -F: -v n=\"$owner\" '$1==n{print $3; exit}' /host/etc/pass??);; *) uid=$owner;; esac\ncase \"$group\" in *[!0-9]*) gid=$(awk -F: -v n=\"$group\" '$1==n{print $3; exit}' /host/etc/group);; *) gid=$group;; esac\n[ -n \"$uid\" ] || { echo \"ERROR: user '$owner' not found in NAS user database\"; exit 1; }\n[ -n \"$gid\" ] || { echo \"ERROR: group '$group' not found in NAS group database\"; exit 1; }\ncurrent=$(stat -c '%u:%g' \"$path\") || exit 1\necho \"Current ownership: $current\"\necho \"Requested ownership: $owner:$group ($uid:$gid)\"\necho '=== ACL MODE ==='\nLD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get \"$path\" 2>&1 | head -8 || echo 'WARNING: ACL mode could not be read'\nchown \"$uid:$gid\" '/btrfs/volume1/mac/scratch.txt' || { echo \"FAILED: chown returned an error\"; exit 1; }\nactual=$(stat -c '%u:%g' \"$path\") || exit 1\n[ \"$actual\" = \"$uid:$gid\" ] || { echo \"FAILED: ownership is $actual after chown; expected $uid:$gid\"; exit 1; }\necho \"VERIFIED: ownership is $actual\""
+  },
+  {
+    "tool": "restore_path_from_snapshot",
+    "filter": "/volume1/mac/#snapshot/a.txt|/volume1/mac/a.txt",
+    "expectedTier": 3,
+    "command": "echo '=== SOURCE (snapshot) ==='\n[ -e '/btrfs/volume1/mac/#snapshot/a.txt' ] || { echo \"ERROR: source does not exist\"; exit 1; }\necho '=== DESTINATION ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>/dev/null && echo \"EXISTS — refusing to overwrite\" && exit 1 || echo \"(does not exist — safe to restore)\"\necho '=== RESTORING ==='\ncp -a '/btrfs/volume1/mac/#snapshot/a.txt' '/btrfs/volume1/mac/a.txt' 2>&1 || { echo \"FAILED to restore\"; exit 1; }\necho '=== VERIFY ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>&1"
+  },
+  {
+    "tool": "restore_from_recycle_bin",
+    "filter": "/volume1/mac/#recycle/a.txt|/volume1/mac/a.txt",
+    "expectedTier": 3,
+    "command": "echo '=== SOURCE (recycle bin) ==='\n[ -e '/btrfs/volume1/mac/#recycle/a.txt' ] || { echo \"ERROR: source does not exist\"; exit 1; }\necho '=== DESTINATION CHECK ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>/dev/null && echo \"EXISTS — refusing to overwrite\" && exit 1 || echo \"(does not exist — safe to restore)\"\necho '=== RESTORING ==='\nmv -n '/btrfs/volume1/mac/#recycle/a.txt' '/btrfs/volume1/mac/a.txt' 2>&1 || { echo \"FAILED to restore\"; exit 1; }\n[ -e '/btrfs/volume1/mac/#recycle/a.txt' ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho '=== VERIFY ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>&1"
   }
 ]

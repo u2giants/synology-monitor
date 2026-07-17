@@ -3260,93 +3260,71 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   },
 
   {
-    // DISABLED in tools-config.json 2026-07-16 — same two faults as
-    // repair_path_ownership, verified live: it chowns SynologyDrive:SynologyDrive,
-    // which does not resolve in the container (NAS accounts live in
-    // /host/etc/passwd, not /etc/passwd), against /volume[0-9]*/@synologydrive,
-    // which is a :ro mount. Both must be fixed together; see the note above
-    // repair_path_ownership.
-    name: "repair_drive_db_permissions",
-    description: "WRITE — Fixes ownership and permissions on @synologydrive database directories across all volumes. Useful when Synology Drive fails to start due to permission errors on its database files. DISABLED 2026-07-16 — BROKEN: chowns an account the container cannot resolve, on a read-only mount. Do not re-enable until fixed and verified live.",
-    write: true,
-    params: { target },
-    buildCommand: (_input) => {
-      return [
-        `echo '=== SYNOLOGYDRIVE DIRS ==='`,
-        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null`,
-        `echo '=== REPAIRING OWNERSHIP ==='`,
-        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null | while read d; do`,
-        `  echo "chown -R SynologyDrive:SynologyDrive $d"`,
-        `  chown -R SynologyDrive:SynologyDrive "$d" 2>&1 && echo "OK: $d" || echo "FAILED: $d"`,
-        `done`,
-        `echo '=== VERIFY ==='`,
-        `find /volume[0-9]* -maxdepth 2 -name '@synologydrive' -type d 2>/dev/null | xargs -I{} stat --format='%U:%G %a %n' {} 2>/dev/null`,
-      ].join("\n");
-    },
-  },
-
-  {
     name: "quarantine_path",
-    description: "WRITE — Renames an exact path by appending .quarantine.{timestamp} to isolate a problematic file or directory without deleting it. Pass the exact absolute path in filter.",
+    description: "WRITE (tier 3) — Renames an exact /volumeN path by appending .quarantine.{timestamp} to isolate it without deleting it. Uses the nas-api writable /btrfs mount, refuses an existing destination, and asks for approval first.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
-      const p = (input.filter as string | undefined)?.trim();
-      if (!p) throw new Error("quarantine_path: filter must be an absolute path.");
-      if (!p.startsWith("/")) throw new Error("quarantine_path: path must be absolute.");
+      const raw = (input.filter as string | undefined)?.trim();
+      if (!raw) throw new Error("quarantine_path: filter must be an absolute path.");
+      const p = toWritableVolumePath(raw, "quarantine_path");
       const q = quote(p);
       return [
-        `echo '=== PATH TO QUARANTINE ==='`,
-        `ls -la ${q} 2>&1`,
-        `echo '=== QUARANTINING ==='`,
+        `src=${q}`,
+        `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
         `ts=$(date +%Y%m%d_%H%M%S)`,
-        `dest="${p}.quarantine.\${ts}"`,
-        `mv ${q} "$dest" && echo "Renamed to: $dest" || echo "FAILED"`,
+        `dest="$src.quarantine.$ts"`,
+        `[ -e "$dest" ] && { echo "ERROR: destination already exists: $dest"; exit 1; }`,
+        `mv -n ${q} "$dest" || { echo "FAILED to quarantine: $src"; exit 1; }`,
+        `[ -e "$src" ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
+        `echo "Quarantined successfully: $dest"`,
       ].join("\n");
     },
   },
 
-  // DISABLED in tools-config.json 2026-07-16 — two independent faults, both verified
-  // live on edgesynology1. Unlike repair_path_acl the binary exists (coreutils is in
-  // the image), but:
-  //   1. Every per-share /volumeN path is bind-mounted :ro (docker-compose.agent.yml),
-  //      so chown on the /volume1/... paths this description asks for returns
-  //      "Read-only file system". Only /btrfs/volume1/<share> is rw. Mapping
-  //      precedent: write_seafile_ignore.
-  //   2. The container cannot resolve NAS account names. Its /etc/passwd is Debian's
-  //      own (18 lines); the NAS's (55 lines) is mounted at /host/etc/passwd, and
-  //      /etc/group is not mounted from the host at all. `chown mac:users` therefore
-  //      dies with "invalid user", and `stat` on a share prints UNKNOWN:users for
-  //      uid 1024. Only numeric uid:gid works today.
-  // A correct fix must map the path to /btrfs, resolve owner→uid from
-  // /host/etc/passwd, and resolve group→gid — which needs /etc/group added to the
-  // compose mounts plus a one-time `docker compose up -d` per NAS. It must then be
-  // proven with a no-op chown on a scratch path before it is trusted on user data:
-  // chown also interacts with the Synology ACL layer. repair_drive_db_permissions
-  // has BOTH faults as well (SynologyDrive:SynologyDrive on /volume[0-9]*).
+  // Ownership repair resolves NAS principal names from the host reference files,
+  // then passes numeric ids to chown. It never replaces the container's own account
+  // database. Operator-facing /volumeN paths are mapped to the only writable mount,
+  // /btrfs/volumeN. Recursion is deliberately rejected: an unbounded chown across a
+  // live SMB share needs a separate, count-bounded capability and approval contract.
   {
     name: "repair_path_ownership",
-    description: "WRITE — Runs chown on an exact path to fix file ownership. Pass 'owner:group' or 'recursive:owner:group' in filter (recursive prefix triggers -R). Path must be absolute. DISABLED 2026-07-16 — BROKEN: /volumeN paths are read-only inside nas-api (only /btrfs/volumeN is writable) and NAS account names do not resolve in the container, so chown fails with 'invalid user'. Do not re-enable until both are fixed and verified live.",
+    description: "WRITE (tier 3) — Changes ownership of one exact /volumeN path. Pass 'owner:group' in filter; names are resolved from the NAS account files and numeric ids are accepted. Recursion is refused. Shows logical and writable paths, current ACL/ownership, and verifies the result after approval.",
     write: true,
     params: { target, filter, exactPath },
     buildCommand: (input) => {
-      const p = (input.exactPath as string | undefined)?.trim();
-      if (!p || !p.startsWith("/")) throw new Error("repair_path_ownership: exactPath must be an absolute path.");
+      const logicalPath = (input.exactPath as string | undefined)?.trim();
+      if (!logicalPath) throw new Error("repair_path_ownership: exactPath is required.");
+      const writablePath = toWritableVolumePath(logicalPath, "repair_path_ownership");
       const f = (input.filter as string | undefined)?.trim() || "";
-      let recursive = false;
-      let ownerGroup = f;
-      if (f.startsWith("recursive:")) { recursive = true; ownerGroup = f.slice("recursive:".length); }
-      if (!/^[A-Za-z0-9_\-]+:[A-Za-z0-9_\-]+$/.test(ownerGroup)) throw new Error("repair_path_ownership: filter must be 'owner:group' or 'recursive:owner:group'.");
-      const qp = quote(p);
-      const qo = quote(ownerGroup);
-      const flag = recursive ? "-R " : "";
+      if (f.startsWith("recursive:")) throw new Error("repair_path_ownership: recursive ownership changes are disabled; repair one exact path at a time.");
+      const ownerGroup = f;
+      if (!/^[A-Za-z0-9_\-]+:[A-Za-z0-9_\-]+$/.test(ownerGroup)) throw new Error("repair_path_ownership: filter must be 'owner:group'.");
+      const [owner, group] = ownerGroup.split(":");
+      const qp = quote(writablePath);
       return [
-        `echo '=== CURRENT OWNERSHIP ==='`,
-        `ls -la ${qp} 2>&1`,
-        `echo '=== APPLYING chown ${flag}${ownerGroup} ==='`,
-        `chown ${flag}${qo} ${qp} 2>&1 && echo OK || echo FAILED`,
-        `echo '=== VERIFY ==='`,
-        `ls -la ${qp} 2>&1`,
+        `path=${qp}`,
+        `owner=${quote(owner)}`,
+        `group=${quote(group)}`,
+        `echo ${quote(`Logical path: ${logicalPath}`)}`,
+        `echo ${quote(`Writable path: ${writablePath}`)}`,
+        `[ -e "$path" ] || { echo "ERROR: no such path: $path"; exit 1; }`,
+        `[ ! -L "$path" ] || { echo "ERROR: symbolic links are refused: $path"; exit 1; }`,
+        `[ -r /host/etc/pass?? ] || { echo "ERROR: NAS user database is not mounted under /host/etc"; exit 1; }`,
+        `[ -r /host/etc/group ] || { echo "ERROR: NAS group database is not mounted at /host/etc/group (apply the compose update on this NAS)"; exit 1; }`,
+        `case "$owner" in *[!0-9]*) uid=$(awk -F: -v n="$owner" '$1==n{print $3; exit}' /host/etc/pass??);; *) uid=$owner;; esac`,
+        `case "$group" in *[!0-9]*) gid=$(awk -F: -v n="$group" '$1==n{print $3; exit}' /host/etc/group);; *) gid=$group;; esac`,
+        `[ -n "$uid" ] || { echo "ERROR: user '$owner' not found in NAS user database"; exit 1; }`,
+        `[ -n "$gid" ] || { echo "ERROR: group '$group' not found in NAS group database"; exit 1; }`,
+        `current=$(stat -c '%u:%g' "$path") || exit 1`,
+        `echo "Current ownership: $current"`,
+        `echo "Requested ownership: $owner:$group ($uid:$gid)"`,
+        `echo '=== ACL MODE ==='`,
+        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING: ACL mode could not be read'`,
+        `chown "$uid:$gid" ${qp} || { echo "FAILED: chown returned an error"; exit 1; }`,
+        `actual=$(stat -c '%u:%g' "$path") || exit 1`,
+        `[ "$actual" = "$uid:$gid" ] || { echo "FAILED: ownership is $actual after chown; expected $uid:$gid"; exit 1; }`,
+        `echo "VERIFIED: ownership is $actual"`,
       ].join("\n");
     },
   },
@@ -3383,24 +3361,25 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "restore_path_from_snapshot",
-    description: "WRITE — Restores a file or directory from a Btrfs snapshot. Pass the snapshot path (from list_snapshot_candidates) and the destination path in filter as 'snapshot_path|dest_path'. Both must be absolute. Does NOT overwrite — destination must not exist.",
+    description: "WRITE (tier 3) — Restores a file or directory from a Btrfs snapshot through the writable /btrfs mount. Pass 'snapshot_path|dest_path'. Does not overwrite and verifies the destination.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const f = (input.filter as string | undefined)?.trim() || "";
       const parts = f.split("|");
       if (parts.length !== 2) throw new Error("restore_path_from_snapshot: filter must be 'snapshot_path|dest_path'.");
-      const [src, dst] = parts.map(s => s.trim());
-      if (!src.startsWith("/") || !dst.startsWith("/")) throw new Error("restore_path_from_snapshot: both paths must be absolute.");
+      const [rawSrc, rawDst] = parts.map(s => s.trim());
+      const src = toWritableVolumePath(rawSrc, "restore_path_from_snapshot source");
+      const dst = toWritableVolumePath(rawDst, "restore_path_from_snapshot destination");
       const qs = quote(src);
       const qd = quote(dst);
       return [
         `echo '=== SOURCE (snapshot) ==='`,
-        `ls -la ${qs} 2>&1`,
+        `[ -e ${qs} ] || { echo "ERROR: source does not exist"; exit 1; }`,
         `echo '=== DESTINATION ==='`,
         `ls -la ${qd} 2>/dev/null && echo "EXISTS — refusing to overwrite" && exit 1 || echo "(does not exist — safe to restore)"`,
         `echo '=== RESTORING ==='`,
-        `cp -a ${qs} ${qd} 2>&1 && echo "OK: restored to ${dst}" || echo "FAILED"`,
+        `cp -a ${qs} ${qd} 2>&1 || { echo "FAILED to restore"; exit 1; }`,
         `echo '=== VERIFY ==='`,
         `ls -la ${qd} 2>&1`,
       ].join("\n");
@@ -3409,25 +3388,27 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
   {
     name: "restore_from_recycle_bin",
-    description: "WRITE — Restores a file from a share's recycle bin (#recycle) to its original or specified destination. Pass 'recycle_bin_path|dest_path' in filter — both absolute. Destination must not exist.",
+    description: "WRITE (tier 3) — Restores a file from #recycle through the writable /btrfs mount. Pass 'recycle_path|dest_path'. Does not overwrite and verifies the destination.",
     write: true,
     params: { target, filter },
     buildCommand: (input) => {
       const f = (input.filter as string | undefined)?.trim() || "";
       const parts = f.split("|");
       if (parts.length !== 2) throw new Error("restore_from_recycle_bin: filter must be 'recycle_path|dest_path'.");
-      const [src, dst] = parts.map(s => s.trim());
-      if (!src.startsWith("/") || !dst.startsWith("/")) throw new Error("restore_from_recycle_bin: both paths must be absolute.");
-      if (!src.includes("#recycle")) throw new Error("restore_from_recycle_bin: source path must include #recycle.");
+      const [rawSrc, rawDst] = parts.map(s => s.trim());
+      if (!rawSrc.split("/").includes("#recycle")) throw new Error("restore_from_recycle_bin: source path must include a #recycle component.");
+      const src = toWritableVolumePath(rawSrc, "restore_from_recycle_bin source");
+      const dst = toWritableVolumePath(rawDst, "restore_from_recycle_bin destination");
       const qs = quote(src);
       const qd = quote(dst);
       return [
         `echo '=== SOURCE (recycle bin) ==='`,
-        `ls -la ${qs} 2>&1`,
+        `[ -e ${qs} ] || { echo "ERROR: source does not exist"; exit 1; }`,
         `echo '=== DESTINATION CHECK ==='`,
         `ls -la ${qd} 2>/dev/null && echo "EXISTS — refusing to overwrite" && exit 1 || echo "(does not exist — safe to restore)"`,
         `echo '=== RESTORING ==='`,
-        `mv ${qs} ${qd} 2>&1 && echo "OK: restored to ${dst}" || echo "FAILED"`,
+        `mv -n ${qs} ${qd} 2>&1 || { echo "FAILED to restore"; exit 1; }`,
+        `[ -e ${qs} ] && { echo "FAILED: destination appeared concurrently; nothing was moved"; exit 1; }`,
         `echo '=== VERIFY ==='`,
         `ls -la ${qd} 2>&1`,
       ].join("\n");
@@ -3962,7 +3943,6 @@ export const TOOL_GROUPS: Record<string, string> = {
   rename_file_to_old: "write_files",
   remove_invalid_chars: "write_files",
   clear_package_lockfiles: "write_files",
-  repair_drive_db_permissions: "write_files",
   quarantine_path: "write_files",
   repair_path_ownership: "write_files",
   restore_path_from_snapshot: "write_files",

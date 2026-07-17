@@ -266,9 +266,9 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All r
 
 `start_btrfs_scrub`, `cancel_btrfs_scrub`, `start_smart_test`, `cancel_smart_test`, `create_prechange_snapshot`, `set_vm_overcommit_memory`, `persist_vm_overcommit_memory`
 
-### Group `write_files` (8)
+### Group `write_files` (7)
 
-`rename_file_to_old`, `remove_invalid_chars`, `clear_package_lockfiles`, `repair_drive_db_permissions`, `quarantine_path`, `repair_path_ownership`, `restore_path_from_snapshot`, `restore_from_recycle_bin`
+`rename_file_to_old`, `remove_invalid_chars`, `clear_package_lockfiles`, `quarantine_path`, `repair_path_ownership`, `restore_path_from_snapshot`, `restore_from_recycle_bin`
 
 There is deliberately no ACL-write tool. `repair_path_acl` was removed on
 2026-07-16: it shelled out to `setfacl`, which is not installed in the nas-api

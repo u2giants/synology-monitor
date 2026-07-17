@@ -28,6 +28,7 @@ import (
 type goldenCase struct {
 	Tool         string `json:"tool"`
 	Filter       string `json:"filter"`
+	ExactPath    string `json:"exactPath"`
 	ExpectedTier int    `json:"expectedTier"`
 	Command      string `json:"command"`
 }

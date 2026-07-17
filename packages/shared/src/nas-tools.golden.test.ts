@@ -30,16 +30,20 @@ const CASES = [
   { tool: "remove_invalid_chars", filter: "/volume1/mac/bad:name?.txt", expectedTier: 3 },
   { tool: "remove_invalid_chars", filter: "/btrfs/volume1/files/a|b.txt", expectedTier: 3 },
   { tool: "remove_invalid_chars", filter: "/volume1/mac/y`touch /tmp/OWNED`.txt", expectedTier: 3 },
+  { tool: "quarantine_path", filter: "/volume1/mac/suspect.dat", expectedTier: 3 },
+  { tool: "repair_path_ownership", filter: "mac:users", exactPath: "/volume1/mac/scratch.txt", expectedTier: 3 },
+  { tool: "restore_path_from_snapshot", filter: "/volume1/mac/#snapshot/a.txt|/volume1/mac/a.txt", expectedTier: 3 },
+  { tool: "restore_from_recycle_bin", filter: "/volume1/mac/#recycle/a.txt|/volume1/mac/a.txt", expectedTier: 3 },
 ];
 
-function build(tool: string, filter: string): string {
+function build(tool: string, filter: string, exactPath?: string): string {
   const def = ALL_TOOL_DEFS.find((t) => t.name === tool);
   if (!def?.buildCommand) throw new Error(`tool not found or has no buildCommand: ${tool}`);
-  return def.buildCommand({ filter } as never);
+  return def.buildCommand({ filter, exactPath } as never);
 }
 
 describe("nas write-tool command golden (cross-language contract with nas-api)", () => {
-  const current = CASES.map((c) => ({ ...c, command: build(c.tool, c.filter) }));
+  const current = CASES.map((c) => ({ ...c, command: build(c.tool, c.filter, "exactPath" in c ? c.exactPath : undefined) }));
 
   it("golden file matches the current builder output", () => {
     if (process.env.UPDATE_GOLDEN === "1") {
