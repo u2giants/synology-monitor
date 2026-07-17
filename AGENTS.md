@@ -478,13 +478,40 @@ continuation item is truly complete.
 
 ## Non-negotiable rules
 
-1. GitHub `main` is code truth. Check for concurrent work before pull/commit/push.
-2. Root-cause fixes only; loud failures instead of silent fallback.
-3. Add tests for code created and visually verify UI work.
-4. Do not hard-code configurable settings or model choices.
-5. Applied migrations are immutable; new database work gets a new migration and
+1. **The operator is not a programmer. Hand him runnable commands, never verbs.**
+     "Deploy nas-mcp", "enable the tool in `tools-config.json`", "recreate the
+     container", "run the migration" are not instructions — they are the task,
+     restated. They only look actionable because *you* can already see the host, the
+     path, and the command behind them; he cannot. Every hand-off step must be:
+     1. The literal command, copy-pasteable, one per line, with `sudo` where needed
+        and the real host and path filled in (`ssh ahazan@100.107.131.35` for
+        edgesynology1, `ssh ahazan@100.107.131.36` port **1904** for edgesynology2 —
+        both are SSH-config aliases `edgesynology1`/`edgesynology2`; not `ssh <nas>`).
+     2. What correct output looks like, so he can judge success without asking —
+        "you should see `74:      - /etc/group:/host/etc/group:ro`", not "verify it
+        applied". **Mark which parts of the expected output vary.** A made-up file
+        size in an example gets compared literally: on 2026-07-16 a sample line with
+        an invented `1234` had him report a mismatch against his real `1396` when the
+        step had in fact succeeded. Say "the size and date will differ — only the
+        filename matters", or show real captured output and label it as shape-only.
+     3. A command you have actually run, or whose exact form you have tested. Do not
+        hand over a command you composed but never executed — the quoting, the flag,
+        or the path will be wrong, and he has no way to tell your typo from his. The
+        `sed` that worked on edgesynology1 matched **zero** lines on edgesynology2
+        (CRLF endings) and would have silently done nothing.
+     4. Named clicks if it is a UI action (DSM → Container Manager → Project → …).
+     If you cannot produce a runnable command because a value is unknown or you lack
+     access, say exactly which value is missing and ask. Do not paper over the gap
+     with a verb. This is the most repeated complaint in this project's history.
+
+
+2. GitHub `main` is code truth. Check for concurrent work before pull/commit/push.
+3. Root-cause fixes only; loud failures instead of silent fallback.
+4. Add tests for code created and visually verify UI work.
+5. Do not hard-code configurable settings or model choices.
+6. Applied migrations are immutable; new database work gets a new migration and
    the shared-db mirror/PR where applicable.
-6. Never store secret values in code, docs, commits, or generated examples.
-7. Host/OS configuration belongs in `u2giants/ansible`; routine server SSH deploys
+7. Never store secret values in code, docs, commits, or generated examples.
+8. Host/OS configuration belongs in `u2giants/ansible`; routine server SSH deploys
    are forbidden.
-8. Report completion with commit SHA, workflow outcome, and live SHA/health evidence.
+9. Report completion with commit SHA, workflow outcome, and live SHA/health evidence.
