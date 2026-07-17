@@ -3,7 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
-import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
+import { getNasConfigs, nasPreview, nasExec, buildExecApprovalToken } from "./nas-client.js";
 import { renderUntrustedBlock, QUOTE_LEGEND } from "./preview-format.js";
 import { runJobTool } from "./job-client.js";
 import { ALL_TOOL_DEFS, type McpToolDef, searchTools, formatToolForSearch, findToolByName, getGroup, listUntaggedTools } from "./nas-tools.js";
@@ -159,12 +159,13 @@ export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record
     if (!tool.write) {
       const result = await nasExec(config, command, 1, undefined, undefined, {
         signal,
+        toolName: tool.name,
       });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
       return `[${config.name}]\n${output || "(no output)"}`;
     }
 
-    const preview = await nasPreview(config, command, { signal });
+    const preview = await nasPreview(config, command, { signal, toolName: tool.name });
 
     if (preview.blocked) {
       return [
@@ -191,10 +192,10 @@ export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record
 
     let approvalToken: string | undefined;
     if (preview.tier >= 2) {
-      approvalToken = buildApprovalToken(config, command, preview.tier);
+      approvalToken = buildExecApprovalToken(config, command, preview.tier, tool.name);
     }
 
-    const result = await nasExec(config, command, preview.tier, approvalToken, undefined, { signal });
+    const result = await nasExec(config, command, preview.tier, approvalToken, undefined, { signal, toolName: tool.name });
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
     return `[${config.name}]\n${output || "(no output)"}`;
   } catch (err) {

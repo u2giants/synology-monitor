@@ -75,9 +75,8 @@ export function resolveNasApiConfig(nasName: string): NasApiConfig | null {
  * Builds a base64url-encoded HMAC-signed approval token for a Tier 2/3 command.
  * The token is verified by the NAS API before executing the command.
  *
- * Token format mirrors auth.go ApprovalToken:
- *   { command, tier, expires_at, signature }
- * Signature = HMAC-SHA256(approvalSigningKey, command + "\n" + expires_at)
+ * Token format mirrors auth.go ExecApprovalTokenV2. Web commands are free-form,
+ * so tool_name is empty, but it and the tier are still bound into the HMAC.
  */
 export function buildNasApiApprovalToken(
   config: NasApiConfig,
@@ -86,11 +85,26 @@ export function buildNasApiApprovalToken(
 ): string {
   const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
   const signature = createHmac("sha256", config.approvalSigningKey)
-    .update(`${command}\n${expiresAt}`)
+    .update(`exec-v2\n${command}\n${tier}\n\n${expiresAt}`)
     .digest("hex");
 
-  const token = { command, tier, expires_at: expiresAt, signature };
+  const token = { version: 2, command, tier, tool_name: "", expires_at: expiresAt, signature };
   return Buffer.from(JSON.stringify(token)).toString("base64url");
+}
+
+/** Native /jobs endpoints retain their canonical command+expiry token contract. */
+function buildNativeJobApprovalToken(
+  config: NasApiConfig,
+  command: string,
+  tier: 2 | 3,
+): string {
+  const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const signature = createHmac("sha256", config.approvalSigningKey)
+    .update(`${command}\n${expiresAt}`)
+    .digest("hex");
+  return Buffer.from(
+    JSON.stringify({ command, tier, expires_at: expiresAt, signature }),
+  ).toString("base64url");
 }
 
 /**
@@ -303,14 +317,14 @@ async function inventoryFetch(
 export async function startInventory(config: NasApiConfig, raw: InventoryStartInput): Promise<Response> {
   const { body, params } = normalizeInventoryBody(raw);
   const canonical = canonicalInventoryOp("start", config.name, "", params);
-  const token = buildNasApiApprovalToken(config, canonical, 2);
+  const token = buildNativeJobApprovalToken(config, canonical, 2);
   return inventoryFetch(config, "POST", "/jobs/inventory", { body, approvalToken: token });
 }
 
 export async function scheduleInventory(config: NasApiConfig, raw: InventoryStartInput): Promise<Response> {
   const { body, params } = normalizeInventoryBody(raw);
   const canonical = canonicalInventoryOp("schedule", config.name, "", params);
-  const token = buildNasApiApprovalToken(config, canonical, 2);
+  const token = buildNativeJobApprovalToken(config, canonical, 2);
   return inventoryFetch(config, "POST", "/jobs/inventory/schedule", { body, approvalToken: token });
 }
 
@@ -324,7 +338,7 @@ export async function statusInventory(config: NasApiConfig, id: string): Promise
 
 export async function cancelInventory(config: NasApiConfig, id: string): Promise<Response> {
   const canonical = canonicalInventoryOp("cancel", config.name, id);
-  const token = buildNasApiApprovalToken(config, canonical, 2);
+  const token = buildNativeJobApprovalToken(config, canonical, 2);
   return inventoryFetch(config, "POST", `/jobs/inventory/${encodeURIComponent(id)}/cancel`, { approvalToken: token });
 }
 
@@ -403,7 +417,7 @@ function prepMovePlan(config: NasApiConfig, raw: MovePlanInput) {
 
 export async function planMove(config: NasApiConfig, raw: MovePlanInput): Promise<Response> {
   const { body, canonical } = prepMovePlan(config, raw);
-  const token = buildNasApiApprovalToken(config, canonical, 2);
+  const token = buildNativeJobApprovalToken(config, canonical, 2);
   return inventoryFetch(config, "POST", "/jobs/archive-move/plan", { body, approvalToken: token });
 }
 
@@ -437,7 +451,7 @@ export async function verifyMove(config: NasApiConfig, id: string): Promise<Resp
 function moveTokenFor(config: NasApiConfig, op: "execute" | "cancel" | "rollback" | "repair_dir_mtimes", id: string): string {
   const canonical = `move.${op}|nas=${config.name}|job_id=${id}`;
   const tier: 2 | 3 = op === "cancel" ? 2 : 3;
-  return buildNasApiApprovalToken(config, canonical, tier);
+  return buildNativeJobApprovalToken(config, canonical, tier);
 }
 
 export async function executeMove(config: NasApiConfig, id: string): Promise<Response> {

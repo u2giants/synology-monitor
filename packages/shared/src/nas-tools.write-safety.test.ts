@@ -279,22 +279,19 @@ describe("path contract", () => {
   }
 });
 
-describe("tier-3 classification contract (guards a fragile, invisible invariant)", () => {
-  // nas-api's ClassifyTier matches filePatterns line-by-line, and Go regexes do not
-  // cross newlines. It therefore needs a literal /volumeN path on the SAME LINE as
-  // the mv to rate this a tier-3 user-data write. Refactoring the mv to use "$src"
-  // silently classifies tier 2 — no error, no failure, just a weaker approval.
-  // This asserts the shape; nas-api's Go test asserts the tier itself against the
-  // real classifier, using the golden file this suite keeps current.
+describe("declared tier removes the classifier-driven command wart", () => {
+  // nas-api now enforces the named tool's declared minimum independently of
+  // lexical path proximity, so the raw caller path is assigned once and mv uses
+  // shell variables. The Go golden contract proves the resulting command is still
+  // effectively tier 3 even though ClassifyTier alone sees tier 2.
   for (const tool of TOOLS) {
-    it(`${tool}: the mv line carries a literal quoted /btrfs/volumeN path`, () => {
+    it(`${tool}: the mv line uses the safely quoted source variable`, () => {
       const mvLine = build(tool, "/volume1/share/x.txt")
         .split("\n")
         .find((l) => l.startsWith("mv "));
       expect(mvLine, "no mv line found").toBeDefined();
-      expect(mvLine, "mv must carry the literal path, not \"$src\" — see the comment above").toMatch(
-        /mv -n '\/btrfs\/volume\d+\/[^']*'/,
-      );
+      expect(mvLine).toContain('mv -n "$src"');
+      expect(mvLine).not.toContain("/btrfs/volume");
     });
   }
 });

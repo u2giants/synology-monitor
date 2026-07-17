@@ -36,13 +36,15 @@ var (
 type execRequest struct {
 	Command       string `json:"command"`
 	Tier          int    `json:"tier"`
+	ToolName      string `json:"tool_name,omitempty"`      // named registry tool; empty for free-form commands
 	TimeoutMs     int64  `json:"timeout_ms,omitempty"`     // 0 → DefaultTimeout
 	ApprovalToken string `json:"approval_token,omitempty"` // required for tier 2/3
 }
 
 // previewRequest is the body expected on POST /preview.
 type previewRequest struct {
-	Command string `json:"command"`
+	Command  string `json:"command"`
+	ToolName string `json:"tool_name,omitempty"` // empty keeps pure free-form classification
 }
 
 // previewResponse is returned by POST /preview.
@@ -153,19 +155,29 @@ func handleExec(v *auth.Verifier) http.HandlerFunc {
 			return
 		}
 
-		// Validate the command against tier rules.
-		if err := validator.Validate(req.Command, req.Tier); err != nil {
+		effectiveTier, err := validator.EffectiveTier(req.Command, req.ToolName)
+		if err != nil {
+			writeJSON(w, http.StatusForbidden, errResp{err.Error()})
+			return
+		}
+		if req.Tier != effectiveTier {
+			writeJSON(w, http.StatusForbidden, errResp{fmt.Sprintf("tier mismatch: effective tier is %d", effectiveTier)})
+			return
+		}
+
+		// Validate the command against the effective tier's additional allowlists.
+		if err := validator.Validate(req.Command, effectiveTier); err != nil {
 			writeJSON(w, http.StatusForbidden, errResp{err.Error()})
 			return
 		}
 
 		// Tier 2 and 3 require a valid approval token signed by the web app.
-		if req.Tier >= 2 {
+		if effectiveTier >= 2 {
 			if req.ApprovalToken == "" {
 				writeJSON(w, http.StatusForbidden, errResp{"approval_token required for tier 2/3"})
 				return
 			}
-			if err := v.VerifyApprovalToken(req.ApprovalToken, req.Command, req.Tier); err != nil {
+			if err := v.VerifyExecApprovalToken(req.ApprovalToken, req.Command, effectiveTier, req.ToolName); err != nil {
 				writeJSON(w, http.StatusForbidden, errResp{err.Error()})
 				return
 			}
@@ -196,7 +208,11 @@ func handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tier := validator.ClassifyTier(req.Command)
+	tier, err := validator.EffectiveTier(req.Command, req.ToolName)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, errResp{err.Error()})
+		return
+	}
 	// On a hard-block, return WHY (actionable, and explicit that the block is
 	// permanent/stateless) instead of just echoing the command — that summary is
 	// the only signal an MCP session gets, and a bare echo is what makes sessions
