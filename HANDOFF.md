@@ -366,3 +366,44 @@ Passed 2026-07-17: a new senior engineer can identify the application, reproduce
 the current state, avoid documented dead ends, execute each next step with a
 verification gate, locate required access, and understand every active risk without
 the prior chat transcript.
+Risks / watchouts:
+- `edgesynology1` is fixed and verified on `ff05281`. `edgesynology2` will come up on
+  whatever image it last pulled, so **until Watchtower updates it after someone starts the
+  container**, its `run_command` executes `btrfs`, `smartctl -t`/`-X` and
+  `synoacltool -add/-del/-replace/-set-owner` unattended as tier 1. It is not exploitable
+  while the container is down (nothing is listening), so the exposure window opens the
+  moment it starts and closes ~5 min later — worth watching, not panicking over. `setfacl`
+  is moot in practice: it is not installed on either NAS. The `nas-mcp` fix is
+  already live and covers the **named** write tools on both NASes (it does not depend on
+  nas-api's tier), but it cannot cover free-form `run_command`, which takes no
+  `confirmed` argument and gates only on the classifier.
+- Do not "simplify" the two layers back into one. They are independent on purpose: the
+  MCP gate cannot protect `run_command`, and the classifier cannot be trusted to have no
+  gaps. Background: AGENTS.md §12 and `docs/architecture.md`.
+
+## NAS-API privilege hardening — APPLIED both NASes, 2026-07-17
+
+Full record: **[docs/nas-privilege-hardening.md](docs/nas-privilege-hardening.md)**.
+
+Done and verified live via the MCP on edgesynology1 and edgesynology2:
+- Removed `privileged: true` + `/dev:/dev` (edge1); replaced with `cap_add:
+  [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]` + an explicit read-only `devices:` key on both
+  boxes. `SYS_RAWIO` is required for SCSI `smartctl -a -d scsi` on the DSM 4.4 kernel
+  (proven with a zero-restart disposable-container test; `SYS_ADMIN` alone hits SG_IO
+  EPERM). edge2's SMART was silently broken (devices were under `volumes:`, no cgroup
+  access) and is now fixed. edge1 NVMe SMART reads full health de-privileged
+  (overall-health PASSED).
+- Restart policy: `synology-monitor-agent` + `synology-monitor-nas-api` set to
+  `restart: always` on both boxes — live via `docker update` (no recreate) AND in each
+  NAS compose.yaml (durable). Fixes edge1's `on-failure:10` (gave up after 10 failures,
+  no restart on daemon restart).
+
+Open follow-ups:
+- **Repo drift NOT reconciled.** `deploy/synology/docker-compose.agent.yml` still has
+  devices under `volumes:` and lists `/dev/sdf–sdh` (absent on edge2) — would break both
+  boxes if applied. Back-port the proven per-box config before any repo→NAS sync.
+- **strace / hdparm missing from the image** — `strace_process` and
+  `hdparm_device_info` are enabled but their binaries are not in `apps/nas-api/Dockerfile`
+  (found while verifying PTRACE). Spawned as its own task.
+- Per-NAS compose is hand-maintained and drifts; there is no sync mechanism. See
+  [docs/nas-config-drift.md](docs/nas-config-drift.md).
