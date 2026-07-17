@@ -57,6 +57,91 @@ Until then, the `/jobs/inventory/*` endpoints return `503` (and the
 `/volume1/docker/synology-monitor-agent/nas-api-jobs` are read-only inventory data
 and safe to inspect or delete.
 
+## Host account-group mount (`/host/etc/group`) — one-time, per NAS
+
+Added to `docker-compose.agent.yml` 2026-07-16 so the ownership tools can resolve a
+NAS group name to a numeric gid. Without it `repair_path_ownership` and
+`repair_drive_db_permissions` refuse to run (by design — they will not guess a gid).
+
+**Watchtower cannot do this one.** It watches `synology-monitor-agent`,
+`synology-monitor-nas-api` and `seaf-cli` and recreates a container when its *image*
+changes, reusing the existing container's configuration. A new bind mount is a
+*configuration* change and is invisible to it. Same reason the archive-jobs mount
+above needed a manual step.
+
+**The compose file that runs on the NAS is not this repo's file.** Each NAS has its
+own hand-maintained `/volume1/docker/synology-monitor-agent/compose.yaml` (note the
+`.bak-*` history beside it). Editing `deploy/synology/docker-compose.agent.yml` in
+the repo does **not** change what runs. The NAS copy must be edited on the NAS.
+
+Run on **edgesynology1** (`192.168.3.100`). DSM Container Manager cannot do this —
+the project was not created through it.
+
+**Both NASes are done as of 2026-07-16** — edgesynology1 by hand, edgesynology2 via an
+agent run. Verified live on both: `SynologyDrive` resolves to gid `153742` inside
+nas-api. The steps below are the record, and the pattern to reuse for the next
+compose-level change.
+
+**edgesynology2's file has CRLF line endings and edgesynology1's does not.** The `sed`
+below is written for edgesynology1's LF file; on edgesynology2 it matches **zero** lines
+and silently does nothing. Do not assume the two boxes' compose files are alike — they
+are separately hand-maintained and differ in line endings, restart policy, device
+mounts, and privilege. Always re-measure before editing.
+
+```sh
+ssh ahazan@100.107.131.35     # edgesynology1 (Tailscale; LAN 192.168.3.100)
+cd /volume1/docker/synology-monitor-agent
+sudo cp compose.yaml compose.yaml.bak-group-mount
+sudo sed -i 's|^      - /etc/passwd:/host/etc/passwd:ro$|&\n      - /etc/group:/host/etc/group:ro|' compose.yaml
+grep -n "host/etc/group" compose.yaml
+```
+
+That `sed` deliberately anchors on `:ro$` (end of line). The `nas-api` service's bind
+has nothing after `:ro`; the `synology-monitor-agent` service's has a trailing
+`# UID→username resolution` comment, so only `nas-api` is touched. The `grep` must
+print exactly **one** line, directly below the `nas-api` account-file bind:
+
+```
+74:      - /etc/group:/host/etc/group:ro
+```
+
+If it prints two lines, or none, stop — restore with
+`sudo cp compose.yaml.bak-group-mount compose.yaml` and re-check by hand.
+
+Then apply it and confirm the file is visible inside the container:
+
+```sh
+sudo docker compose up -d nas-api
+sudo docker exec synology-monitor-nas-api ls -l /host/etc/group
+```
+
+Only `nas-api` restarts; the agent and seaf-cli are untouched.
+
+The last command must print a `-rw-r--r--` line ending in `/host/etc/group`. **The
+size and date will differ from any example — that is normal and not a failure.** The
+only thing that matters is that the file is listed at all. Anything containing
+`No such file or directory` means the mount did not apply.
+
+Actual output from the 2026-07-16 rollout on edgesynology1, for shape only:
+
+```
+-rw-r--r-- 1 root root 1396 Apr 10 20:19 /host/etc/group
+```
+
+Confirm the lookups the tools depend on actually resolve (this is the point of the
+mount, and is worth more than the `ls`):
+
+```sh
+sudo docker exec synology-monitor-nas-api sh -c "awk -F: -v n=SynologyDrive '\$1==n{print \"gid=\"\$3}' '/host/etc/group'"
+```
+
+Must print `gid=` followed by a number (`gid=153742` on edgesynology1 — **the number
+differs per NAS**). Printing nothing means the group is unresolvable and the ownership
+tools will correctly refuse to run.
+
+`edgesynology2` cannot be done until its nas-api container is running again
+(`192.168.3.101:7734` has refused connections since 2026-07-08).
+
 ## Running containers
 
 The compose stack runs three containers:

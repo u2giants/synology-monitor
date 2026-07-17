@@ -410,3 +410,85 @@ func TestDSMContainerManagerWebAPIServiceAllowlist(t *testing.T) {
 		t.Fatal("Validate(TierService) unexpectedly allowed DSM WebAPI stop for an arbitrary container")
 	}
 }
+
+// The `passwd <user>` block is a permanent, every-tier block, and its pattern
+// (\bpasswd\s+\S) matches any mention of the account FILE that is followed by
+// whitespace — including a newline, since built commands are "\n"-joined. So a
+// bare trailing `... /host/etc/passwd` is blocked via the NEXT line, and the
+// session gets a misleading "User/group account changes are blocked".
+//
+// repair_path_ownership must read that file to resolve a NAS user name to a uid.
+// It dodges the pattern by globbing — `/host/etc/pass??` — so the literal string
+// "passwd" never appears in the command at all. Quoting ('/host/etc/passwd')
+// also works, since the next char is then a quote rather than whitespace. Either
+// is fine; an unquoted bare path is not.
+//
+// This test pins the boundary in both directions. If you retune the pattern,
+// these cases say what the ownership tools depend on; if you are writing a tool
+// that reads the account file, the blocked cases show what will bite you.
+// Verified live on edgesynology1 2026-07-16: quoted and globbed forms run, the
+// bare unquoted form returns "User/group account changes are blocked".
+func TestPasswdBlockDoesNotCatchAccountFileReads(t *testing.T) {
+	// Real chown-by-name lookups the ownership tools emit. Must survive.
+	allowed := []string{
+		// The globbed form repair_path_ownership actually ships (6dcf16c).
+		`case "$owner" in *[!0-9]*) uid=$(awk -F: -v n="$owner" '$1==n{print $3; exit}' /host/etc/pass??);; *) uid=$owner;; esac`,
+		`[ -r /host/etc/pass?? ] || { echo "ERROR: NAS user database is not mounted under /host/etc"; exit 1; }`,
+		`uid=$(awk -F: -v n='admin' '$1==n{print $3; exit}' '/host/etc/passwd')`,
+		`awk -F: -v n='SynologyDrive' '$1==n{print $3; exit}' '/host/etc/passwd'` + "\n" + `echo next`,
+		`[ -f '/host/etc/passwd' ] || { echo "ERROR: /host/etc/passwd: not mounted."; exit 1; }`,
+		`echo "add '/etc/passwd:/host/etc/passwd:ro' to the compose file"`,
+		`echo "user 'x' does not exist in '/host/etc/passwd'. Refusing."`,
+	}
+	for _, cmd := range allowed {
+		if IsHardBlocked(cmd) {
+			t.Errorf("account-file read must not be hard-blocked: %q\nreason: %s", cmd, BlockExplanation(cmd))
+		}
+	}
+
+	// The actual account-mutation commands the block exists for. Must stay blocked.
+	blocked := []string{
+		`passwd admin`,
+		`passwd -l root`,
+		`useradd bob`,
+		`usermod -aG users bob`,
+		`groupadd staff`,
+		// Unquoted trailing path + newline: the false positive that shipped a
+		// misleading "account changes are blocked" error. Still blocked today —
+		// tools must quote the path rather than rely on this being fixed.
+		`wc -l /host/etc/passwd` + "\n" + `echo next`,
+	}
+	for _, cmd := range blocked {
+		if !IsHardBlocked(cmd) {
+			t.Errorf("expected hard block for %q", cmd)
+		}
+	}
+}
+
+// Hard blocks match the raw command string, so a tool's own error/remediation
+// PROSE can get that tool's command rejected — the text is not exempt for being
+// inside an echo or a quoted string. This bit the ownership-tool rewrite twice:
+// advice that named the compose command tripped disallowedDockerCompose, which is
+// a bare strings.Contains(cmd, "docker compose") with no quote-stripping.
+//
+// If you are writing remediation text that has to tell an operator to recreate a
+// container, point at DSM Container Manager and the docker-compose.agent.yml
+// filename (hyphenated, safe) rather than naming the command.
+func TestRemediationProseIsNotSelfBlocking(t *testing.T) {
+	safe := []string{
+		`echo "Fix: add '/etc/group:/host/etc/group:ro' to the nas-api service in deploy/synology/docker-compose.agent.yml, then recreate the container on this NAS via DSM Container Manager."`,
+		`echo "see docs/synology-archive-implementation.md for the one-time mount rollout"`,
+	}
+	for _, cmd := range safe {
+		if IsHardBlocked(cmd) {
+			t.Errorf("remediation prose must not block its own command: %q\nreason: %s", cmd, BlockExplanation(cmd))
+		}
+	}
+
+	// Naming the compose command blocks the whole command, even quoted inside an
+	// echo. Documented, not desired — the substring check is deliberately blunt.
+	if !IsHardBlocked(`echo "run 'docker compose up -d' on this NAS"`) {
+		t.Error("expected quoted 'docker compose' prose to still be hard-blocked; " +
+			"if this now passes, the ownership tools' remediation text may be reworded")
+	}
+}
