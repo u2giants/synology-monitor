@@ -149,7 +149,22 @@ Consequently, archive `/jobs/*` endpoints may return 503 and native job state is
 not guaranteed durable. The two NAS compose files are not byte-identical and must
 not be overwritten blindly; preserve each `.env` and local device/share differences.
 
-### E. Two stray `@prechange_*` snapshots on edgesynology1 — operator decision, open
+### E. Two stray `@prechange_*` snapshots on edgesynology1 — DELETED 2026-07-17 ✅
+
+**Resolved.** Both accidental snapshots (ID 10393 `@prechange_20260716_154207`, ID 10394
+`mac/@prechange_20260716_154247`) were deleted 2026-07-17 after independent YES verdicts from
+Kimi K2.6 and real Kimi K3 (K3 via the local `~/.kimi-code` CLI; the OpenRouter path 404s K3 on
+a data-policy guardrail). K3's hardened checklist was applied fail-closed: each target's ID and
+`readonly` flag re-verified immediately before deletion, and the archive `mv_*` rollback
+snapshots counted before and after (**21, unchanged** — note the true count is 21, not the "6"
+an earlier truncated `head -6` implied; the before/after invariant caught that). Post-verified
+from a second independent path (MCP `run_command`): 0 prechange remain, both host paths gone, 21
+`mv_*` intact.
+
+Execution note: `sudo btrfs` needs a password on the NAS, so the delete ran unattended via the
+passwordless `sudo /usr/bin/python3` root path (operator-approved 2026-07-17). Nothing else to do.
+
+<details><summary>Original decision record (for history)</summary>
 
 Re-verified present 2026-07-17:
 
@@ -192,9 +207,11 @@ sudo btrfs subvolume list /volume1 | grep prechange     # expect NO output
 ```
 
 **Do not blind-delete anything else matching the pattern.** The same volume holds
-`@archive_move_snapshots/mv_*` subvolumes (six seen, 2026-06-11 → 06-16). Those are the
+`@archive_move_snapshots/mv_*` subvolumes (**21 of them**, 2026-06-11 onward). Those are the
 archive-move feature's documented rollback points — deleting one could remove the only way back
 from a move. Whether that set is stale is a separate open question (§ 9).
+
+</details>
 
 ## 4. Everything tried that did not work
 
