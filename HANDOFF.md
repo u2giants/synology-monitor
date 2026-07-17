@@ -250,6 +250,13 @@ from a move. Whether that set is stale is a separate open question (§ 9).
 7. **Scheduled review:** on 2026-08-17 (or four live-retention weeks later), run the
    `nas_logs` size/severity queries in the retention doc and decide whether row-level
    low-severity retention is worth its cost.
+8. **Stray prechange snapshots:** gated on operator/designer sign-off, not urgent — see
+   §3.E for why they exist, why they are harmless, and the operator-terminal delete
+   procedure (no MCP tool deletes snapshots; `btrfs subvolume delete` is tier 3 and
+   `run_command` refuses it). Before deleting, confirm with the designers that the archive
+   move looks correct and nothing needs to be recovered from these two. A one-time Claude
+   scheduled task (`ask-designers-remove-prechange-snapshots`, fires 2026-07-24) surfaces
+   this so it is not tracked only in an ephemeral place.
 
 ## 7. Constraints and gotchas
 
@@ -332,6 +339,8 @@ emergency; not done either.
   but the original actor/event remains unknown.
 - Do both NASes need the archive jobs system enabled immediately, or should compose
   reconciliation wait for an operator maintenance window?
+- Have the designers confirmed the archive move looks correct, so the two stray
+  `@prechange_20260716_1542*` snapshots on `edgesynology1` can be deleted? (See step 8.)
 - Database deletes are irreversible because the Ohio rollback project is gone.
 
 ## Handoff self-audit
