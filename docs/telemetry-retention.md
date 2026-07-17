@@ -2,19 +2,18 @@
 
 ## Status
 
-**Installed on live and verified — deletes deliberately paused, hourly cron NOT enabled.**
-
-State of `aaxtrlfpnoutziwhshlt` as of 2026-07-16:
+**Complete and live as of 2026-07-17.** Installed, drained, and the hourly cron is armed
+with the per-batch-commit procedure (`00044`).
 
 | Thing | State |
 |---|---|
-| `00042` (policies + functions) | **installed** — 13 policies |
-| `idx_disk_io_stats_retention` | **built** `CONCURRENTLY`, valid, 134 MB (68s, no blocking) |
-| `idx_process_snapshots_retention` | **built** `CONCURRENTLY`, valid, 394 MB |
-| Staged deletes | **61,000 rows** removed from `process_snapshots` (1k/10k/50k), then stopped |
-| Hourly cron `telemetry-retention-cleanup` | **unscheduled on purpose** — awaiting owner sign-off |
-| Remaining expired `process_snapshots` | **56.4M rows** (97% of the table) |
-| Database size | **42 GB** (was 41 GB at session start; +528 MB of that is the two new indexes) |
+| `00042` (policies + functions) | installed — 13 policies |
+| `00044` (per-batch-commit procedure) | installed; cron `CALL`s `cleanup_high_volume_telemetry_proc` at `17 * * * *` |
+| retention indexes | both built `CONCURRENTLY`, valid |
+| **Drain** | **~81.6M expired rows deleted** (56M process_snapshots + 11.3M disk_io + 10.2M net_conn + 3M service_health + ~647k others). 0 blocked sessions; agent lag ≤31s throughout |
+| `process_snapshots` | 58.7M → **1.64M live, 0 dead** (autovacuum reclaimed 57M dead tuples; plain VACUUM confirmed) |
+| DB size | still **43 GB** — expected: freed space is reusable inside the tables, not returned to the OS (would need `VACUUM FULL`/repack; not done). Growth is stopped, which was the goal |
+| pg_partman ~8.4 GB backlog | still open — separate problem, see below |
 
 Measured delete performance (why the cron is safe to enable when you want it):
 

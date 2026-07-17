@@ -113,11 +113,20 @@ Completed as of 2026-07-16:
 - `stop_grace_period: 90s` is present in both live NAS compose files as of
   2026-07-17.
 
+Done 2026-07-17:
+
+- **Retention drain complete.** ~81.6M expired rows deleted across process_snapshots
+  (56M), disk_io_stats (11.3M), net_connections (10.2M), service_health (3M),
+  container_io + scheduled_tasks (~647k). Zero blocked sessions throughout; both agents
+  stayed under ~31s lag. `process_snapshots`: 58.7M → 1.64M live, 0 dead after autovacuum.
+  A plain `VACUUM` confirmed dead tuples reclaimed (space reusable, not returned to OS —
+  DB still reports 43 GB, expected).
+- **Hourly cron armed.** Migration `00044` replaced the single-transaction function with
+  `cleanup_high_volume_telemetry_proc` (commits per batch); cron now `CALL`s it at
+  `17 * * * *`. A full manual `CALL` ran clean across all 13 policies — proven, not assumed.
+
 Still open:
 
-- Roughly 56.4 million expired `process_snapshots` rows remained at last measure.
-- The hourly retention cron is deliberately disabled because the current batching
-  function does not commit between batches.
 - pg_partman has failed since 2026-05-29 because cron uses `SELECT` on a procedure.
   Roughly 27 million rows / 8.4 GB were stranded in DEFAULT partitions at last
   measure.
