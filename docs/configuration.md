@@ -282,6 +282,29 @@ appear in both the definitions file and `tools-config.json` to be callable throu
 eagerly by `apps/nas-mcp/src/index.ts`, so they are directly callable even though
 they remain normal shared registry definitions.
 
+**Enabling a tool does not mean it can run.** A tool listed in `enabled_read_tools`
+still fails if the shell binary it calls is absent from the `nas-api` image
+(`apps/nas-api/Dockerfile`) or if the command needs a Linux capability the
+container is not granted. Before enabling any tool that shells out to a system
+binary, apply the four-point check: binary in the image? path/device on a mount?
+capabilities and identifiers resolve? proven by one real run? In 2026-07-17
+`strace_process` and `hdparm_device_info` were both enabled but dead — the caps
+(`SYS_PTRACE`, `SYS_RAWIO`) were granted, but neither binary was in the image.
+Adding `strace` and `hdparm` to the Dockerfile fixed both.
+
+**Verify capabilities against the live container, not the repo compose.**
+`deploy/synology/docker-compose.agent.yml` is drifted and understates what the NASes
+actually grant (see `docs/nas-config-drift.md`). Reasoning from it caused one session
+to wrongly conclude `hdparm` could never work and disable the tool; in reality
+`SYS_RAWIO` was already granted and `hdparm -I` works. Read the real set with
+`docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`. Known gap:
+`hdparm -t` throughput needs `IPC_LOCK`, which is not granted, so that one section
+returns no number while `hdparm -I` works normally.
+
+The loader (`apps/nas-mcp/src/index.ts`) reads only
+`enabled_read_tools`/`enabled_write_tools`; all `_`-prefixed keys (such as
+`_tool_descriptions` and `_write_tools_available_disabled`) are inert documentation.
+
 ---
 
 ## Custom metric schedules

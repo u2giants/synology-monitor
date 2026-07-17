@@ -125,8 +125,14 @@ services:
       # this mount (until then the /jobs/inventory endpoints return 503).
       - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
       - /var/run/docker.sock:/var/run/docker.sock
-      # Block devices (read-only) — required for hdparm -I (device identity/features) and
-      # hdparm -t (throughput test). Individual named mounts only — NOT the full /dev tree.
+      # Block devices (read-only) — required FIRST for smartctl (smartmontools), which
+      # reads per-device SMART attributes/identity from /dev/sdX and silently loses SMART
+      # if these regress; and second for hdparm -I (device identity), which also needs
+      # CAP_SYS_RAWIO. hdparm -t (throughput) additionally needs CAP_IPC_LOCK, which is
+      # NOT granted, so -t returns no number — see AGENTS.md. NOTE: this file is drifted
+      # from the live NASes (they also run cap_add SYS_RAWIO and use a `devices:` key);
+      # read live caps with `docker inspect synology-monitor-nas-api`, not this file.
+      # See docs/nas-config-drift.md. Individual named mounts only — NOT the full /dev tree.
       # Docker bind-mounts fail if the source device doesn't exist. Comment out empty bays.
       # Typical Synology layout: sda–sdh are drive bays; md0–md3 are RAID arrays.
       - /dev/sda:/dev/sda:ro

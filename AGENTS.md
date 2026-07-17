@@ -311,26 +311,39 @@ Do not change because:
 A tool that type-checks can still be dead-on-arrival at the NAS. Run any new built
 command through `IsHardBlocked`/`ClassifyTier` before trusting it.
 
-### Some enabled diagnostic tools have no binary in the image
+### `strace`/`hdparm` needed the binary, not the cap — and `-t` still needs `IPC_LOCK`
 
 Looks like:
-`hdparm_device_info` and `strace_process` are enabled, so they work.
+`hdparm_device_info` and `strace_process` are enabled, so they work; or (the previous
+note here) both are equally fixed by adding the apt package.
 
 Actually:
-Neither `hdparm` nor `strace` is installed in `apps/nas-api/Dockerfile`, so both tools
-only ever error (`command not found` / "hdparm not available") on both NASes — the same
-class as the removed `setfacl` tool. `SYS_PTRACE` is kept regardless (it is declared for
-`strace_process` by design); the fix is adding the binary, not dropping the cap. The
-repo's device-mount comments also wrongly credit those `/dev` mounts to hdparm when
-`smartctl` (smartmontools, which IS installed) is the real consumer.
+Both were enabled but dead because `strace` and `hdparm` were absent from
+`apps/nas-api/Dockerfile` — the same class as the removed `setfacl` tool. Both binaries
+are now installed and BOTH TOOLS ARE ENABLED. Proven on edgesynology1 2026-07-17 with
+disposable containers using the LIVE cap set (`SYS_ADMIN`, `SYS_PTRACE`, `SYS_RAWIO`,
+`privileged: false`): `strace -c` returns a real syscall-count summary, and `hdparm -I`
+returns full ATA identity (model/serial/firmware/transport). One partial limitation:
+`hdparm -t` (buffered-read throughput) prints `mlock() failed on timing buf` and NO
+number, because it needs `IPC_LOCK`, which is not granted. `hdparm -I` is unaffected.
 
 Why:
-Found while verifying the privilege hardening. Tracked as a follow-up task.
+`SYS_RAWIO` is what makes `hdparm -I` work, and it is ALREADY granted live (added by the
+privilege hardening). Do not reason about caps from
+`deploy/synology/docker-compose.agent.yml` — that file is DRIFTED and still lists only
+`SYS_ADMIN`/`SYS_PTRACE`, so it understates the live grant and led one session to wrongly
+conclude hdparm was unfixable and disable it. Read the live set with
+`docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`.
 
 Do not change because:
-Apply the §-quirks checklist before trusting any tool: binary in the Dockerfile? path on
-a writable/accessible mount? identifiers resolvable in the container? proven by one real
-run? `write: true` and "enabled" check none of these.
+Dropping either binary re-breaks a tool that is advertised as enabled. The `/dev` device
+mounts are for `smartctl` (smartmontools) FIRST — it is the consumer that would silently
+lose SMART if they regress — and hdparm second. To make `hdparm -t` produce a number, add
+`IPC_LOCK` to `cap_add`; that is a compose change (Watchtower ships images, not caps) and
+belongs to the drift-reconciliation task in `docs/nas-config-drift.md`, not to an image
+rebuild. Apply the four-point check before trusting any tool: binary in the Dockerfile?
+path/device on an accessible mount? caps and identifiers resolve in the container? proven
+by one real run? `write: true` and "enabled" check none of these.
 
 ### Watchtower cannot apply compose changes
 

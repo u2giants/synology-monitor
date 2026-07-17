@@ -193,6 +193,8 @@
     "check_agent_container": "Confirms the Synology Monitor agent container is running",
     "get_resource_snapshot": "Full picture: top processes, disk activity, network connections, memory, and recent errors — best starting point for any problem",
     "check_io_stalls": "Finds processes stuck waiting on disk, measures disk queue depth, and looks for hung task warnings in the kernel",
+    "strace_process": "Attaches strace to a running process for ~5 seconds and returns a syscall-count summary (count mode, no argument data) — shows what a D-state process is waiting on. Requires CAP_SYS_PTRACE (already granted) and the strace binary (added to apps/nas-api/Dockerfile 2026-07-17). Verified on edgesynology1 2026-07-17.",
+    "hdparm_device_info": "Disk identity and ATA features via hdparm -I (model, firmware, security state), plus /sys queue stats. Requires the hdparm binary (added to apps/nas-api/Dockerfile 2026-07-17) and CAP_SYS_RAWIO, which the live containers already grant. NOTE: the hdparm -t throughput section returns no number — it needs CAP_IPC_LOCK, which is not granted; hdparm -I is unaffected. Use check_smart_detail/smartctl for SMART health. Verified on edgesynology1 2026-07-17 with the live cap set.",
     "check_memory_detail": "Full meminfo, swap activity rates, dirty/writeback pages, OOM kill history",
     "check_network_health": "Interface errors/drops, routing table, DNS resolution, listening ports, NFS/SMB connections",
     "check_tailscale": "Tailscale VPN status — interface state, IP, and whether the daemon is reachable",

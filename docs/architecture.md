@@ -306,6 +306,31 @@ profile on container init), `SYS_ADMIN` (required for btrfs subvolume, scrub, an
 snapshot operations), `SYS_PTRACE` (enables `strace` for D-state process diagnosis;
 `gdb`/`lldb` are hard-blocked by the validator to prevent code injection).
 
+**A capability is necessary but not sufficient — the binary must also be in the
+image.** `strace_process` and `hdparm_device_info` were both enabled but dead:
+`SYS_PTRACE`/`SYS_RAWIO` were granted, but the `strace` and `hdparm` binaries were
+absent from `apps/nas-api/Dockerfile`, so every call returned "No such file or
+directory". Fixed 2026-07-17 by adding both to the apt list; they ship as an image
+update (Watchtower applies images, not compose caps). Verified on `edgesynology1`
+with disposable containers using the **live** cap set (`SYS_ADMIN`, `SYS_PTRACE`,
+`SYS_RAWIO`, `privileged: false`): `strace -c` returns a real syscall-count
+summary and `hdparm -I` returns full ATA identity. Both tools stay enabled.
+
+One partial limitation: `hdparm -t` (buffered-read throughput) prints
+`mlock() failed on timing buf` and no number, because it needs `IPC_LOCK`, which is
+not granted. `hdparm -I` is unaffected. Granting `IPC_LOCK` is a compose change and
+belongs to the drift work in `docs/nas-config-drift.md`, not an image rebuild.
+
+**Do not read the live capability set from
+`deploy/synology/docker-compose.agent.yml`** — that file is drifted and still lists
+only `SYS_ADMIN`/`SYS_PTRACE`, understating the live grant. Reasoning from it caused
+one session to wrongly conclude hdparm was unfixable and disable it; the live set is
+`docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`. The `/dev/sdX`
+mounts serve `smartctl` first (it silently loses SMART if they regress) and hdparm
+second. Before enabling any device/diagnostic tool, apply the four-point check:
+binary in the image? path/device on the mount? capabilities and identifiers resolve?
+proven by one real run?
+
 **Executor process group kill:** `executor.go` sets `Setpgid: true` and uses
 `syscall.Kill(-pid, SIGKILL)` with a `WaitDelay: 2s`. This kills the entire process
 group on timeout, not just the bash parent — preventing orphaned subprocesses

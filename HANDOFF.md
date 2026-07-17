@@ -543,9 +543,17 @@ Open follow-ups:
   base + two device fragments, CI-verified with `git diff --exit-code`, plus a FUNCTIONAL
   `/drift` endpoint (probe each device openable, caps present, privileged absent). Full
   spec: [docs/nas-config-drift.md §8](docs/nas-config-drift.md). NOT built yet.
-- **strace / hdparm missing from the image** — `strace_process` and
-  `hdparm_device_info` are enabled but their binaries are not in `apps/nas-api/Dockerfile`
-  (found while verifying PTRACE). Spawned as its own task; also fix the Dockerfile comment
-  that credits the `/dev` mounts to hdparm when smartctl is the real consumer.
+- ~~**strace / hdparm missing from the image**~~ — **DONE 2026-07-17.** `strace` and
+  `hdparm` added to `apps/nas-api/Dockerfile`; both tools stay enabled. Proven on
+  edgesynology1 with disposable containers using the LIVE cap set (`SYS_ADMIN`,
+  `SYS_PTRACE`, `SYS_RAWIO`): `strace -c` returns a syscall summary and `hdparm -I`
+  returns full ATA identity. The `/dev` mount comment now credits smartctl first.
+  Two carry-overs: (1) `hdparm -t` throughput still returns no number — it needs
+  `IPC_LOCK`, a compose change, so fold it into the drift reconciliation below rather
+  than an image rebuild; (2) reaching the NASes, this only takes effect once CI builds
+  the image and Watchtower pulls it. WATCH OUT: the repo compose understates the live
+  caps (it omits `SYS_RAWIO`); reasoning from it led to a wrong "hdparm can never work"
+  conclusion. Always read caps with
+  `docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`.
 - Per-NAS compose is hand-maintained and drifts; there is no sync mechanism. See
   [docs/nas-config-drift.md](docs/nas-config-drift.md).

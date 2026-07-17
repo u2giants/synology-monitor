@@ -34,11 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     e2fsprogs \
     findutils \
     grep \
+    hdparm \
     iproute2 \
     lsof \
     procps \
     smartmontools \
     sqlite3 \
+    strace \
     tzdata \
     util-linux \
     wget \
