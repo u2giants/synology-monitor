@@ -3320,7 +3320,12 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo "Current ownership: $current"`,
         `echo "Requested ownership: $owner:$group ($uid:$gid)"`,
         `echo '=== ACL MODE ==='`,
-        `LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING: ACL mode could not be read'`,
+        // Capture synoacltool's own exit status. A `... | head -8 || echo WARNING`
+        // pipeline reports head's status (0), so the warning could never fire and a
+        // failed ACL read passed silently — see the § 12 note. Assign-then-test so a
+        // failure is actually surfaced before the write.
+        `acl_out=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get "$path" 2>&1); acl_rc=$?`,
+        `if [ "$acl_rc" -eq 0 ]; then printf '%s\\n' "$acl_out" | head -8; else echo "WARNING: ACL mode could not be read (synoacltool exit $acl_rc): $acl_out"; fi`,
         `chown "$uid:$gid" ${qp} || { echo "FAILED: chown returned an error"; exit 1; }`,
         `actual=$(stat -c '%u:%g' "$path") || exit 1`,
         `[ "$actual" = "$uid:$gid" ] || { echo "FAILED: ownership is $actual after chown; expected $uid:$gid"; exit 1; }`,

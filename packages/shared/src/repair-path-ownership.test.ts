@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -67,10 +67,41 @@ describe("repair_path_ownership", () => {
     expect(result.code).toBe(0);
   });
 
-  it("rejects recursion, traversal, off-volume paths, and symlinks", () => {
+  it("rejects recursion, traversal, and off-volume paths at build time", () => {
     expect(() => build("recursive:scratchuser:scratchgroup", "/volume1/share/scratch.txt")).toThrow(/recursive.*disabled/);
     expect(() => build("scratchuser:scratchgroup", "/volume1/../etc/shadow")).toThrow();
     expect(() => build("scratchuser:scratchgroup", "/etc/shadow")).toThrow();
+  });
+
+  it("refuses a symlink target at run time without chowning it", () => {
+    // The symlink guard is a runtime `[ ! -L ]` shell check, not a build-time
+    // throw — so it can only be proven by executing the command against an actual
+    // symlink. The build succeeds; execution must abort before the chown.
+    const link = join(root, "btrfs", "volume1", "share", "link.txt");
+    symlinkSync(file, link);
+    const command = build("scratchuser:scratchgroup", "/volume1/share/link.txt");
+    const result = run(command);
+    expect(result.code).not.toBe(0);
+    expect(result.out).toContain("symbolic links are refused");
+    expect(result.out).not.toContain("VERIFIED");
+  });
+
+  it("warns (does not pass silently) when the ACL read fails", () => {
+    // Regression guard for the fail-open pipeline: `synoacltool ... | head || echo`
+    // reported head's exit status, so a failed ACL read was swallowed. The warning
+    // must now actually surface when synoacltool exits non-zero.
+    const acl = join(root, "host", "usr", "syno", "bin", "synoacltool");
+    writeFileSync(acl, "#!/bin/sh\necho 'boom' >&2\nexit 3\n");
+    chmodSync(acl, 0o755);
+    const result = run(build("scratchuser:scratchgroup", "/volume1/share/scratch.txt"));
+    expect(result.out).toContain("WARNING: ACL mode could not be read");
+    expect(result.out).toContain("synoacltool exit 3");
+  });
+
+  it("shows the ACL output and no warning when the ACL read succeeds", () => {
+    const result = run(build("scratchuser:scratchgroup", "/volume1/share/scratch.txt"));
+    expect(result.out).toContain("It's Linux mode");
+    expect(result.out).not.toContain("WARNING: ACL mode could not be read");
   });
 
   it("keeps hostile path text inert", () => {
