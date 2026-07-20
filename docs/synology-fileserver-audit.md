@@ -25,12 +25,14 @@ conflict folders you will destroy irreplaceable design assets silently.
 Start here:
 
 ```bash
-# 1. Snapshot the SHARE SUBVOLUME (not the volume root — see trap 3)
-sudo btrfs subvolume snapshot -r /btrfs/volume1/mac \
-  /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
-# 2. VERIFY the snapshot actually contains data
-find /btrfs/volume1/mac/@prechange_<stamp>/Decor -maxdepth 2 | head
-# 3. Report-only pass
+# 1. Check the recovery point you ALREADY have — DSM snapshots mac every ~4h.
+#    Verify one contains real data before trusting it (see §7).
+ls /volume1/mac/#snapshot | grep -v desktop.ini | sort | tail
+find "/volume1/mac/#snapshot/<stamp>/Decor/Character Licensed" -maxdepth 1 | head
+#    Only if you need a fresh point, snapshot the SHARE SUBVOLUME, never the
+#    volume root (trap 3) — and record it in HANDOFF.md so nobody deletes it:
+#    sudo btrfs subvolume snapshot -r /btrfs/volume1/mac /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
+# 2. Report-only pass
 ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=1 sudo -E bash resolve-drive-conflicts.sh
 ```
 
@@ -262,6 +264,29 @@ almost nothing — snapshots share extents and only accrue cost as the original
 diverges. Check `df` before/after; if free space did not move, it cost nothing.
 Delete with `btrfs subvolume delete`, never `rm -rf`.
 
+### Prefer DSM's own share snapshots over a hand-rolled `@prechange_*`
+
+`mac` already has **44 automatic share snapshots** under `/volume1/mac/#snapshot/`
+(range 2026-05-29 → 2026-07-20, roughly every 4 hours), created by Snapshot
+Replication. Check these **first**; you may not need to create anything.
+
+```bash
+ls /volume1/mac/#snapshot | grep -v desktop.ini | sort | tail
+# verify one holds what you expect before trusting it:
+find "/volume1/mac/#snapshot/<stamp>/Decor/…/<folder>" -type f \
+     -not -path '*@eaDir*' -not -name '.DS_Store' | wc -l
+```
+
+**Lesson learned the hard way (2026-07-17):** the manual
+`mac/@prechange_20260716_154247` created as the Dollar General recovery point was
+deleted by a *different* session that classified both stray `@prechange_*`
+subvolumes as accidental clutter. It was not wrong to delete — but a hand-made
+recovery point is an unlabelled artifact that another session may garbage-collect
+without knowing why it exists. If you do create one, record it in `HANDOFF.md`
+immediately, and prefer verifying an automatic share snapshot over minting a new
+subvolume. (No data was at risk here: the pre-merge state survives in the share
+snapshots above.)
+
 **Outstanding audit question:** how many other `@prechange_*` snapshots exist, and
 are any of them empty (i.e. someone else was protected by nothing)?
 
@@ -377,8 +402,8 @@ Never run a transferred script whose checksum does not match.
 
 | Item | Value |
 | --- | --- |
-| Recovery point for the Dollar General work | `/btrfs/volume1/mac/@prechange_20260716_154247` (verify before trusting) |
-| Merged-from folder, retained pending sign-off | `…/Dollar General Fall Winter 2026.merged` (~71 GB) |
+| Recovery point for the Dollar General work | **DSM share snapshots**: `/volume1/mac/#snapshot/GMT-04-2026.07.16-10.15.01` and `-14.15.01` — both verified to hold the exact pre-merge state (live 3,359 files, `.wrong` 2,592) |
+| Merged-from folder, retained pending sign-off | `…/Dollar General Fall Winter 2026.merged` (~71 GB, 2,592 files) |
 | Seafile library containing this share | `repo_id 177cf9de-3066-482e-956a-7ae8d8786c6d` |
 | Scripts + trap documentation | [`scripts/synology/README.md`](../scripts/synology/README.md) |
 | Tests | `bash scripts/synology/tests/run-tests.sh` — 55 assertions, no NAS needed |

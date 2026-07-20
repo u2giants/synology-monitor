@@ -31,13 +31,27 @@ variable is silently dropped (you get a dry run while believing you applied).
 
 ## Before running anything that writes
 
-Take a recovery point of the **share subvolume**:
+**First check the recovery point you already have.** DSM snapshots `mac` roughly
+every four hours via Snapshot Replication — 44 were present on 2026-07-20 covering
+2026-05-29 onward:
+
+```bash
+ls /volume1/mac/#snapshot | grep -v desktop.ini | sort | tail
+# ALWAYS verify one holds real data before trusting it:
+find "/volume1/mac/#snapshot/<stamp>/Decor/Character Licensed" -maxdepth 1 | head
+```
+
+Only mint your own if you need a point at an exact moment — and snapshot the
+**share subvolume**, never the volume root (see "Snapshots are not recursive"):
 
 ```bash
 btrfs subvolume snapshot -r /btrfs/volume1/mac /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
 ```
 
-Not the volume root. See "Snapshots are not recursive" below.
+If you do, **record it in `HANDOFF.md` immediately**. On 2026-07-17 a manual
+`@prechange_*` created as a live recovery point was deleted by a different session
+that read it as stray clutter — correctly, given it was unlabelled. Nothing was
+lost (the share snapshots covered it), but an unrecorded recovery point is not one.
 
 ---
 

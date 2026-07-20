@@ -266,6 +266,17 @@ Gate before applying anything: the dry run's `KEPT for review` must be `0`. If i
 is non-zero, those files are cases where a fork copy is newer than the live folder
 and a human must look first.
 
+**Recovery point — note the correction.** `mac/@prechange_20260716_154247` was
+created as this work's recovery point and then deleted on 2026-07-17 by the §3.E
+cleanup, which reasonably read both stray `@prechange_*` subvolumes as clutter.
+Nothing was at risk: the pre-merge state survives in DSM's automatic share
+snapshots, and two were verified on 2026-07-20 to hold it exactly —
+`/volume1/mac/#snapshot/GMT-04-2026.07.16-10.15.01` and `-14.15.01`
+(live folder 3,359 files, `.wrong` 2,592). `mac` carries 44 such snapshots
+(2026-05-29 → 2026-07-20, ~every 4h). **Lesson:** check `#snapshot` before minting
+a manual subvolume, and if you do mint one, record it here immediately — an
+unlabelled `@prechange_*` looks like litter to the next session.
+
 ## 4. Everything tried that did not work
 
 | Attempt | Why it seemed reasonable | How it failed / lesson |
