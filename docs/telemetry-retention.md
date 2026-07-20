@@ -156,6 +156,60 @@ during the 2026-05-29 repair, where `partition_data_proc` did the draining.
 across the ranges partman needs to create, a corrected `CALL` will just fail differently —
 or skip ranges — until the DEFAULT is drained. **Drain first, fix cron last.**
 
+### AGREED RECOVERY PLAN (Claude + Codex, 2026-07-20) — read before choosing an approach
+
+Two approaches were debated. The decision, and the fact that settles it:
+
+**A "minimal-move" shortcut was considered and REJECTED as the end state.** The idea: clear
+only the *current week* out of DEFAULT, create current+future partitions, fix the cron, and
+leave the ~30 days of older DEFAULT rows in place (legal — a DEFAULT partition may hold rows
+in ranges no bounded partition covers; `ATTACH` validates only the *new* partition's bounds,
+not the whole DEFAULT — verified against the PG17 `ALTER TABLE` docs).
+
+**Why it was rejected:** attaching a new partition makes Postgres **scan the entire DEFAULT
+partition** to prove no row falls in the new range, and it does so holding an **`ACCESS
+EXCLUSIVE` lock on DEFAULT**. With 8.8 GB parked there, *every future weekly partition
+creation* would pay a full 8.8 GB exclusive-locked scan — weekly, forever, on a 1 GB Micro
+with two agents writing continuously. The shortcut trades a one-time cost for a recurring
+one. pg_partman's own docs warn that excessive default rows "greatly affect partition
+maintenance performance".
+
+Secondary reasons: queries over the 2026-06-13→now gap hit one 28M-row partition instead of
+weekly children; planner estimates degrade; and the cleanup debt is not one dated `DELETE`
+but a **months-long, repeated** process (37 days of data across tables with 84d and 180d
+retention, aging out gradually), which pg_partman retention will never do for you.
+
+**Also rejected: detach-the-DEFAULT-wholesale-and-archive.** Mechanically clean and it does
+stop the write race, but the detached rows **vanish from queries against the parent tables**.
+"Preserved in a side table" is not "preserved in `metrics`". It would need union views or app
+changes. Only viable if an audit first proves nothing queries that 37-day window.
+
+**The agreed plan is a staged hybrid — containment first, then a throttled real repartition:**
+
+1. **Contain**: clear only the current interval from DEFAULT, atomically establish current +
+   `premake` future partitions, and fix the cron (`select` → `CALL`). New writes stop landing
+   in DEFAULT. This is *containment, not recovery* — do not stop here.
+2. **Drain**: migrate the historical DEFAULT rows interval-by-interval with
+   `partition_data_proc()`, throttled and health-gated, exactly like the 81.6M-row retention
+   drain (which proved this instance tolerates careful staged maintenance — though note
+   *moving* rows is more expensive than *deleting* them, so it is not a free read-across).
+3. **Finish**: verify row conservation per table and interval, confirm current+premake
+   coverage, restore the normal `ignore_default_data` setting, and only then re-enable the
+   recurring maintenance cron. pg_partman is not "recovered" until DEFAULT is drained.
+
+**Do this in a dedicated session, not as the tail of a long one** (both models, high
+confidence). Capture this evidence verbatim first, rather than re-deriving it — re-derivation
+is exactly how the 2026-06-22 wrong-project incident happened:
+project ref; server timezone + current UTC; every `pg_get_expr(relpartbound, oid)`; per-table
+DEFAULT min/max/count; the `part_config` rows (incl. `premake`, `infinite_time_partitions`,
+`retention_keep_*`, `ignore_default_data`); cron state; free disk/WAL headroom; and the
+health stop-conditions. Leave the broken partman cron **disabled** during preparation — the
+retention cron is separate and stays enabled.
+
+Open questions to answer before step 1: do all four DEFAULTs have usable partition-key
+indexes; what are the exact weekly boundaries in the partition timezone; and does anything in
+the app actually query the 2026-06-13→now interval.
+
 Sequence, when someone picks this up:
 1. Leave the broken job disabled/unfixed while recovering — you do not want the 07:00 cron
    firing mid-drain.
