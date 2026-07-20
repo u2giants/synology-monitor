@@ -284,6 +284,13 @@ from a move. Whether that set is stale is a separate open question (§ 9).
    scheduled task (`ask-designers-remove-prechange-snapshots`, fires 2026-07-24) surfaces
    this so it is not tracked only in an ephemeral place.
 
+9. **Shell injection in ~23 read tools (HIGHEST PRIORITY):** the fix is written and its 116 tests
+   pass, but it is **uncommitted** in worktree `recursing-volhard-7bd463` and the live `nas-mcp`
+   is still exposed. Read §3.G and run the command blocks there: commit → rebase onto `main` →
+   full test gate → push → confirm CI green → live-probe a read tool. Success means a payload in
+   a read-tool filter creates no file on the NAS. Then land `cd073d1` (declared tiers) and
+   `9346469` (preview escaping) the same way.
+
 ## 7. Constraints and gotchas
 
 - No large NAS crawl or recursive metadata write while SMB users are active.
@@ -363,6 +370,92 @@ has not been done (chown is tier 3, so the only chown surface is the tool itself
 and every deeper item above (symlinked parent, check-to-write race, hard links, ACL-override,
 MCP approval binding) remains untouched.
 
+### G. Shell injection is NOT limited to the two write tools — ~23 more found, fix written but UNCOMMITTED ⚠️
+
+This is the highest-priority unfinished item in this file. **The fix exists, its tests pass, and
+it has never been committed.** If nothing is done, it is lost when the worktree is cleaned.
+
+**Background.** On 2026-07-16 a proven root RCE was fixed in the two tier-3 write tools
+`rename_file_to_old` and `remove_invalid_chars` (`da9bcf9`, hardened by `c763f49`). That fix is
+shipped, deployed, and live-verified — the attack path is dead and the success path was proven
+end-to-end on a throwaway file. **That part is DONE; do not redo it.**
+
+**What the follow-up audit then found.** The same injection exists in roughly **23 more tools**,
+and they are **worse** than the two that were fixed:
+
+- The vulnerable shape is a *label* line, e.g. `` echo '=== SEARCHING ALL LOGS FOR: ${f} ===' ``.
+  It *looks* quoted, but the quotes are in the TypeScript template, not around `${f}`. One
+  apostrophe in `f` closes the shell string and the rest executes as root.
+- Most of these are **read tools**. Read tools are tier 1 and **auto-execute with no approval
+  prompt at all** (only `write: true` tools preview and require `confirmed:true` —
+  `apps/nas-mcp/src/index.ts:170`). The two tools already fixed at least demanded a (misleading)
+  approval; these demand nothing.
+- Realistic path: a hostile *filename on the NAS* gets copied into a search filter by the AI
+  pipeline. No human is in the loop.
+
+**The live deployed `nas-mcp` still has all of these.** The audit's fix is not on `main`.
+
+**Where the fix is (uncommitted, 6 modified files, 0 commits):**
+`/worksp/monitor/app/.claude/worktrees/recursing-volhard-7bd463` (branch
+`claude/recursing-volhard-7bd463`). It adds an `echoMsg()` helper (`echo` + `quote()`), converts
+**28 call-sites**, adds **8** more `quote()` fixes plus PID validation on
+`check_process_io_detail`, and grows the safety suite from 49 to **116 passing tests**. The work
+looks complete and correct; it was simply never committed before the session stopped.
+
+**Caveat:** that worktree is based on a `main` from *before* `c763f49`, so it must be rebased
+onto current `main` before landing. The two efforts touched different tools, so conflicts should
+be limited to the helper region at the top of `nas-tools.ts` — verify, do not assume.
+
+**Exact steps to land it** (copy-paste one block at a time; stop if any command fails):
+
+```bash
+# 1. See what is uncommitted and confirm it is still there
+cd /worksp/monitor/app/.claude/worktrees/recursing-volhard-7bd463
+git status --short
+git diff --stat
+
+# 2. Prove the fix passes ITS tests before trusting it (expect: 116 passed)
+npx vitest run src/nas-tools.write-safety.test.ts --root packages/shared
+
+# 3. Commit it on its own branch
+git add -A
+git commit -m "nas-tools: stop read tools executing injected shell from label lines"
+
+# 4. Rebase onto current main and re-run the FULL gate after the rebase
+git fetch origin
+git rebase origin/main
+npx vitest run --root packages/shared
+(cd apps/nas-api && go vet ./... && go test ./...)
+
+# 5. Ship (this deploys: Actions -> GHCR -> Coolify redeploys nas-mcp)
+git push origin HEAD:main
+```
+
+**Verify it actually landed** — do not trust the tool's own output, check the filesystem/behavior:
+
+```bash
+# CI must be green BEFORE believing anything shipped
+gh run list --limit 3
+
+# Then probe a read tool live with a payload; expect NO marker file to appear.
+# Via the MCP: run_command on edgesynology1 with:
+#   ls -la /tmp/AUDIT_PROBE 2>&1     -> must say "No such file or directory"
+```
+
+**Also unmerged and ready** (both clean trees, both done, neither on `main`):
+
+| Branch | Commit | What it does |
+|---|---|---|
+| `claude/optimistic-gagarin-1df127` | `cd073d1` | nas-api enforces a declared minimum tier per named tool — removes the fragile lexical tier inference and makes the deliberate literal-path duplication in the rename tools deletable (see AGENTS.md §12) |
+| `claude/interesting-einstein-48a593` | `9346469` | nas-mcp escapes untrusted text in the write-approval preview, so a crafted filename cannot distort the approval message a human reads |
+
+Land each the same way: `cd` into its worktree, `git fetch origin && git rebase origin/main`, run
+the gate above, then `git push origin HEAD:main`.
+
+**Ordering recommendation:** land G first (it is the live exposure), then the tier branch, then
+the preview branch. After the tier branch lands, the duplicated literal path in the rename tools
+can be simplified — but only then, and only with the Go contract test still green.
+
 ## 9. Open questions and risks
 
 - Is `seafile-ignore.txt` installed on every affected library, and does seaf-cli
@@ -384,7 +477,22 @@ Passed 2026-07-17: a new senior engineer can identify the application, reproduce
 the current state, avoid documented dead ends, execute each next step with a
 verification gate, locate required access, and understand every active risk without
 the prior chat transcript.
+
+Re-audited 2026-07-20 after adding §3.G: a stranger can now find the uncommitted
+injection fix (exact worktree path and branch), prove it before trusting it (exact
+test command and expected count), land it (exact commit/rebase/push blocks), verify it
+actually shipped (CI check plus a live probe that does not trust the tool's own
+output), and knows the ordering and the rebase caveat. The two ready-but-unmerged
+branches are named with their commit SHAs and what each does.
+
 Risks / watchouts:
+- **§3.G is a live, unapproved root-RCE surface (~23 read tools, tier 1, no approval
+  prompt) and its fix exists only as uncommitted files in one worktree.** Losing that
+  worktree loses the work. This outranks every other item in this file.
+- Leftover test artifact on `edgesynology1`: `/volume1/mac/mcp-selftest/delete-me.txt.old`
+  (from the 2026-07-20 live proof that the fixed rename tool works end-to-end). Harmless;
+  delete the `mcp-selftest` directory whenever. No MCP tool renames it back — that reverse
+  tool deliberately does not exist (it would be new injection surface; use File Station).
 - `edgesynology1` is fixed and verified on `ff05281`. `edgesynology2` will come up on
   whatever image it last pulled, so **until Watchtower updates it after someone starts the
   container**, its `run_command` executes `btrfs`, `smartctl -t`/`-X` and
