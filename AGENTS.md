@@ -47,6 +47,7 @@ Then load additional docs only when relevant:
 | Continue unfinished work | `HANDOFF.md` plus only the docs it names | Completed historical plans |
 | Investigate an incident | Relevant file under `docs/*incident*`, `HANDOFF.md` if active, topic doc | Other incident files |
 | Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, `docs/archive-move-runbook.md` | AI pipeline details |
+| Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, AGENTS "Moving or merging files inside a share" | Web/AI docs |
 | Seafile/inotify work | `docs/seafile-sync-inotify.md` | Archive and web docs |
 | Telemetry retention or pg_partman | `docs/telemetry-retention.md`, `docs/supabase-virginia-migration-2026-06.md` | NAS filesystem docs |
 | Relay behavior or recovery | `apps/relay/README.md`, `apps/relay/OPERATIONS.md`, `docs/architecture.md` relay section | Unrelated NAS MCP internals |
@@ -72,6 +73,7 @@ current implementation guidance.
 | `deploy/synology/` | Canonical NAS compose and environment examples |
 | `.github/workflows/` | Image build/publish and deploy triggers |
 | `scripts/` | Operational checks and telemetry-retention runner |
+| `scripts/synology/` | Case-safe file-server tools that run **on the NAS** (merge, conflict resolver, collision scanner) + 55 tests needing no NAS |
 | `docs/` | Topic-specific durable documentation and incident records |
 | `evals/` | Agent evaluation fixtures; load only for evaluation work |
 
@@ -481,7 +483,72 @@ rollback, health checks, and compose exceptions are in `docs/deployment.md`.
   host answered but no service listens. Check DSM and `docker ps -a` before calling
   a NAS down.
 
+### Moving or merging files inside a share — four traps that have already caused damage
+
+Tooling: [`scripts/synology/`](scripts/synology/) (merge, conflict resolver, collision
+scanner, 55 tests that run without a NAS). Read its README before reusing any of it.
+Work order for the unfinished share-wide pass: [`docs/synology-fileserver-audit.md`](docs/synology-fileserver-audit.md).
+
+1. **The filesystem is case-sensitive; every client syncing it is not.** Btrfs holds
+   `PPS photos` and `PPS Photos` in one folder; macOS/Windows cannot. Synology Drive
+   resolves it by renaming one side to `*_Conflict` and pushing that to everyone.
+   Never build a destination path from a string — resolve each component against
+   what already exists (`nas_resolve_path`). A merge that compared paths
+   case-sensitively created 63 conflict artifacts in a single run.
+2. **`chmod --reference` silently destroys permissions on DSM.** DSM's `chmod` does
+   not support the flag; it parses `--reference=/path` as a *symbolic mode* whose
+   leading `-` removes bits, then **exits 0**. It made 66 directories `d---------`
+   while reporting success. Read the mode with `stat -c %a` and apply it literally.
+   Generalise: on DSM an unsupported flag may not fail — it may do something else
+   and claim success.
+3. **Btrfs snapshots do not recurse into nested subvolumes.** Each share is its own
+   subvolume and `/btrfs/volume1` is already `@syno`. `btrfs subvolume snapshot -r
+   /btrfs/volume1 …` produces a recovery point containing **none of your shares**.
+   Snapshot the share: `/btrfs/volume1/mac`. Always verify by counting files inside
+   the snapshot before trusting it. Delete with `btrfs subvolume delete`, never `rm -rf`.
+4. **A `*_Conflict` artifact is not necessarily junk.** It can be a divergent copy
+   holding the ONLY instance of real content. Resolving 21 artifacts in one folder
+   on 2026-07-17 *recovered* 81 files, including an October 2025 product photo shoot
+   whose live SKU folders were empty. Merge conflict directories; never bulk-delete them.
+
+Also: `/volume1/mac/Decor/Character Licensed` and `/volume1/mac/Art Library` are
+**seaf-cli worktree roots** — writes there sync to the Seafile server on Linode.
+Compare content before rewriting a file; an mtime-only merge would have rewritten
+284 byte-identical files (29.6 GB) for nothing. Never "hide" an already-synced folder
+via `seafile-ignore.txt` — ignoring a synced path can read as a deletion server-side.
+
 ## Critical incidents
+
+### 2026-07-16/17 — a folder merge created 63 sync conflicts and 66 unreadable directories
+
+What happened:
+Merging `Dollar General Fall Winter 2026.wrong` into its live sibling copied 39
+files that already existed under a different case, and created 66 directories with
+mode `000`.
+
+Impact:
+Synology Drive forked the case-colliding files into 63 `*_Conflict` artifacts and
+pushed them to every SeaDrive client; users could not enter the 66 directories.
+No data was lost.
+
+Root cause:
+Two defects in the merge script. It compared paths case-sensitively on a
+case-sensitive filesystem serving case-insensitive clients. And it mirrored
+directory permissions with `chmod --reference`, which DSM parses as a symbolic
+mode that strips all bits and returns success.
+
+Recovery:
+A repair pass restored the 66 directories to `777`, deleted 40 redundant/stale
+copies (each with a verified surviving counterpart), and moved 23 stranded files
+back. A later recursive pass resolved 21 pre-existing conflict artifacts, which
+*recovered* 81 files — including product photography that existed only inside the
+conflict forks. Recovery point: Btrfs snapshot of the `mac` subvolume.
+
+Rule added to prevent recurrence:
+See "Moving or merging files inside a share" above. Tooling and 55 regression tests
+live in `scripts/synology/`; both defects have named tests. The share still holds
+~470 unresolved conflict artifacts — work order in
+`docs/synology-fileserver-audit.md`.
 
 ### 2026-07-16 — anonymous SQL execution exposed the AI key
 

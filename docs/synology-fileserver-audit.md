@@ -1,174 +1,303 @@
 # Synology file-server audit — find these problems everywhere
 
-**Status:** open. Scoped 2026-07-16/17 from a single incident; never run share-wide.
-**Audience:** a fresh AI session with the `synology-monitor` MCP and SSH access to the NAS.
-**Tools:** [`scripts/synology/`](../scripts/synology/) — read its README first; it documents the traps.
+**Status:** OPEN. Scoped 2026-07-16/17 from a single folder; never run share-wide.
+**Audience:** a fresh AI session with the `synology-monitor` MCP and SSH to the NAS.
+**Tooling:** [`scripts/synology/`](../scripts/synology/) — read its README first; it
+documents the traps. Tests: `bash scripts/synology/tests/run-tests.sh` (55 assertions,
+no NAS required).
+**Prerequisite reading:** AGENTS.md → "Moving or merging files inside a share" and the
+2026-07-16/17 critical incident.
 
 ---
 
-## Why this exists
+## 0. TL;DR for whoever picks this up
 
-On 2026-07-16 we merged two folders on `edgesynology1`:
+One folder out of one share has been cleaned. The tools are written, tested, and
+proven on live data. What remains is running the same procedure over **~470
+remaining conflict artifacts** in `Character Licensed`, then over **every other
+share**, then over **edgesynology2, which has never been examined at all**.
+
+The single most important thing to understand before you start: **a `*_Conflict`
+folder is not junk.** On 2026-07-17, resolving 21 artifacts *recovered 81 files*,
+including a product photo shoot that existed nowhere else. If you bulk-delete
+conflict folders you will destroy irreplaceable design assets silently.
+
+Start here:
+
+```bash
+# 1. Snapshot the SHARE SUBVOLUME (not the volume root — see trap 3)
+sudo btrfs subvolume snapshot -r /btrfs/volume1/mac \
+  /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
+# 2. VERIFY the snapshot actually contains data
+find /btrfs/volume1/mac/@prechange_<stamp>/Decor -maxdepth 2 | head
+# 3. Report-only pass
+ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=1 sudo -E bash resolve-drive-conflicts.sh
+```
+
+---
+
+## 1. What happened, in full (why this document exists)
+
+On 2026-07-16 two sibling folders on `edgesynology1` were merged:
 
 ```
 /volume1/mac/Decor/Character Licensed/____New Structure/In Development/Customer Adopted/Dollar General/
-    Dollar General Fall Winter 2026          <- live, current
-    Dollar General Fall Winter 2026.wrong    <- a category-grouped reorg, frozen 2026-02-13
+    Dollar General Fall Winter 2026          <- live, current  (3,359 files)
+    Dollar General Fall Winter 2026.wrong    <- category-grouped reorg, frozen 2026-02-13 (2,592 files)
 ```
 
-The merge succeeded (3,359 → 4,314 files, no data lost) but exposed **five
-distinct problems**, four of which are almost certainly present elsewhere on the
-NAS and none of which have been checked outside that one folder.
+`.wrong` was not a redundant copy. It held 995 files the live folder lacked,
+including the only artwork for **25 SKU folders that existed in the live tree as
+empty skeletons** (`AAQ66*`, `NHN44*`, `NHP88*`, `NUN10*`, `HSR57MVSX01`,
+`HSR57SESR01`, `NHP80SESR01`, `NHP8ADYLS01`), plus entirely new SKU families
+(`AA114*`, `AA926*`, `FAM6XDYLS01`, `PCFTFMVSP02`) and 116 `_Working Files`.
 
-This document is the work order for checking. Each section below states what to
-look for, how to measure it, and what "done" means.
+The merge policy chosen by the operator: **flatten** `.wrong`'s category folders
+(`WALL CLOCK/`, `PLAIN CANVAS/` …) so SKUs land at top level; **re-anchor** SKUs
+that the live folder already keeps under a category (`NUN4V*` under
+`Nonwoven Collapsible Toy Chest`); **newest-wins** on conflicts; keep `.wrong`
+afterwards, renamed `.merged`.
+
+The merge moved all 995 files with no data loss — but shipped two defects to live
+data, and later exposed a third class of problem. Full detail in sections 2–3.
+
+**Final state of that folder (verified 2026-07-17):** 4,295 files, 0 conflict
+artifacts, 0 mode-000 directories, 0 root-owned directories, 0 files lost.
+
+*Bookkeeping note, recorded for honesty:* the running arithmetic predicted 4,296
+(4,314 before the conflict pass, minus 18 deletions). The tree reports 4,295,
+stable across repeated counts with no file modified in the surrounding 90 minutes.
+No content is missing — per-SKU gains reconcile exactly to the 81 moved files, and
+all 18 deletions were verified to have surviving counterparts. The one-file variance
+against the earlier total was never explained. If you re-derive these numbers, do
+not treat the mismatch as evidence of loss.
 
 ---
 
-## 1. Case-collisions between a case-sensitive NAS and case-insensitive clients
+## 2. Problem 1 — case-collisions (the root cause)
 
-**The problem.** Btrfs holds `PPS photos` and `PPS Photos` in one folder; macOS
-and Windows cannot. Synology Drive renames one side to
-`<base>_<device>_<date>_Conflict` and pushes it to every client.
+**The mechanism.** Btrfs is case-sensitive. macOS and Windows are not. Two entries
+in one folder differing only by case cannot both exist on a client, so Synology
+Drive renames one to `<base>_<device>_<date>_Conflict` and pushes it everywhere.
 
-**Known scope (2026-07-16), `Character Licensed` share only:**
+**Measured 2026-07-16/17, `Character Licensed` share only:**
 
 | Measure | Count |
 | --- | --- |
-| `*_Conflict` artifacts | ~492 |
-| `*_CaseConflict` artifacts | 49 |
-| Live case-collision pairs (not yet resolved by Drive) | 4 |
+| `*_Conflict` artifacts share-wide | ~492 |
+| `*_CaseConflict` artifacts share-wide | 49 |
 | Accrual rate | ~10–15/month since Aug 2025 |
+| Live case-collision pairs not yet forked by Drive | 4 |
+| Artifacts resolved so far (one folder) | 21 |
 
 **Never measured:** every other share — `files`, `styleguides`, `users`, `homes`,
 `Coldlion`, `Photography`, `freelancers`, `mgmt`, `oldStyleguides` — and
 `edgesynology2` entirely.
 
-**How to measure:**
+**The 4 live pairs** (conflicts that have not happened yet) are all in
+`Dollar General Kids Summer 2027`:
+
+- `NHP88DYLS01/TECHPACK/NHP88DYLS01_art.ai` vs `…_ART.ai`
+- `AA014DYFZ01/TECHPACK/AA014DYFZ01_art.ai` vs `…_ART.ai`
+- `NHP88DYCR01/TECHPACK/NHP88DYCR01_art.ai` vs `…_ART.ai`
+- `AAE26DYCR01/_old/AAE26DYCR01_mockup_LED on.png` vs `…_LED ON.png`
+
+These need a **human** to choose the surviving name — the scanner deliberately
+never writes, because picking the survivor is a judgement about content.
+
+**Measure:**
 ```bash
 ROOT=/volume1/<share> bash scripts/synology/scan-case-collisions.sh
 find /volume1/<share> -name '*Conflict*' -not -path '*@eaDir*' | wc -l
 ```
 
-**How to fix:** `scripts/synology/resolve-drive-conflicts.sh` (dry-run first).
-It deletes a conflict copy only when a surviving copy is proven identical or
-newer; anything newer or orphaned is kept and reported for a human.
+**Fix:** `resolve-drive-conflicts.sh`, dry-run first. Policy below in §5.
 
-**A conflict artifact is not necessarily junk — read this before bulk-deleting.**
-On 2026-07-17, resolving the 21 artifacts in `Dollar General Fall Winter 2026`
-recovered **81 files**, not zero. Eight of them were whole-SKU forks carrying
-nested subtrees, and three (`NCX04SESC01/SSSS01/MVSX01`) held **the only copies**
-of an October 2025 product photo shoot — 20–27 photos each — while the live SKU's
-`PPS photos/` folder was completely empty. Anyone who "cleaned up conflicts" by
-deleting `*_Conflict` folders would have destroyed that photography silently.
-Treat every conflict directory as a divergent copy to be merged, never as trash.
+**Done means:** every share scanned; artifact counts recorded in this file; live
+collision pairs consolidated to one canonical name each.
 
-**Result for that folder (2026-07-17):** 81 files moved back into their SKUs,
-18 redundant/stale copies deleted (every one with a verified surviving
-counterpart), 9 conflict directories removed, 0 requiring human review, 0 files
-lost. The rest of the share is untouched.
+### Prevention is UNSOLVED — do not claim otherwise
 
-**Done means:** every share scanned; artifact counts recorded here; live collision
-pairs consolidated to one canonical name each.
+The resolver is a mop, not a tap. The structural cause persists and generates
+10–15 new conflicts a month regardless of cleanup. Open questions nobody has
+answered:
 
-**Prevention is unsolved.** The resolver is a mop, not a tap. Open questions:
 - Can Synology Drive be configured to reject case-variant names at write time?
+  **Unverified — do not assert either way without testing.**
 - Should `scan-case-collisions.sh` run as a scheduled task that alerts on new pairs?
-- Is there a naming convention (all-lowercase folders?) the design team could adopt?
-Nobody has answered these. The 4 live pairs found in
-`Dollar General Kids Summer 2027` (`_art.ai` vs `_ART.ai`,
-`_mockup_LED on.png` vs `_mockup_LED ON.png`) are still there as of 2026-07-17.
+- Would a naming convention (e.g. all-lowercase folders) be accepted by the design team?
 
 ---
 
-## 2. Directories with mode 000
+## 3. Problem 2 — `*_Conflict` artifacts can hold the ONLY copy of real content
 
-**The problem.** `chmod --reference` on DSM does not fail — it parses
-`--reference=/path` as a symbolic mode (leading `-` = remove bits), strips every
-permission, and exits 0. Root ignores the result, so scripts appear to work while
-users are locked out.
+**This is the finding that most changes how you must work.**
 
-**Known scope:** 66 directories in the Dollar General FW2026 tree. Repaired.
+Resolving the 21 artifacts in `Dollar General Fall Winter 2026` did not delete 21
+things. It **recovered 81 files**:
 
-**Never measured:** everywhere else. Any script or tool that has ever used
+| SKU | files in the `_Conflict` fork | files in the live folder | outcome |
+| --- | --- | --- | --- |
+| `NCX04SESC01` | 31 (incl. 29 photos) | 7, `PPS photos/` **empty** | +31 moved in |
+| `NCX04SSSS01` | 27 | 7, `PPS photos/` **empty** | +27 moved in |
+| `NCX04MVSX01` | 20 | 11, `PPS photos/` **empty** | +20 moved in |
+| `HSR57DYLS05` | 3 | 7 | +3 moved in |
+| `HSR57DYNX01` | 3 | 31 | 3 deleted (dupes) |
+| `HSR57SSSS01` | 3 | 26 | 3 deleted (dupes) |
+| `MWB10DYLS01` | 0 | 11 | empty fork removed |
+| `HSR57MVSP01` | 0 | 8 | empty fork removed |
+
+The three `NCX04*` forks held an **October 2025 product photo shoot** — 20–27
+photos each — while the live SKU's `PPS photos/` folder was completely empty. Those
+photos existed nowhere else. They are the same SKUs the `.wrong` merge filled with
+design files; `.wrong` never had the photography.
+
+**Implication:** treat every conflict directory as a divergent copy to be *merged*.
+Never bulk-delete. The resolver's PASS 2 recurses and reconciles per file.
+
+---
+
+## 4. Problem 3 — directories with mode 000
+
+**Cause.** DSM's `chmod` does not support `--reference`. It parses
+`--reference=/path` as a symbolic mode whose leading `-` **removes** bits, and
+exits 0. Root ignores the result, so a script appears to work while users are
+locked out.
+
+**Known scope:** 66 directories in the Dollar General tree. **Repaired.**
+
+**Never measured:** everywhere else. Any script or tool that ever used
 `chmod --reference` on this NAS may have left these behind.
 
-**How to measure:**
+**Measure (as root — a 000 dir hides its children from an unprivileged `find`):**
 ```bash
 find /volume1/<share> -type d -perm 000 -not -path '*@eaDir*'
 ```
-Run as root — a mode-000 directory hides its own children from an unprivileged
-`find`, so an unprivileged scan under-reports.
 
-**How to fix:** `resolve-drive-conflicts.sh` repairs these as its Pass 0, looping
-until a pass finds nothing (each pass unlocks the next level).
+**Fix:** `resolve-drive-conflicts.sh` PASS 0 repairs these, looping until a pass
+finds nothing (each pass unlocks the next level). Mode `777` is the universal mode
+in this tree — verified: all 919 dirs in `.wrong` and all 772 pre-merge dirs in the
+live folder were `777`.
 
-**Done means:** count is 0 on both NASes, across all shares.
-
-**Also worth grepping:** the repo and any on-NAS scripts for `--reference`, which
-is unsafe on DSM in both `chmod` and (differently) `chown`.
+**Also grep** the repo and any on-NAS scripts for `--reference`; it is unsafe on
+DSM in both `chmod` and (differently) `chown`.
 
 ---
 
-## 3. Btrfs snapshots that protect nothing
+## 5. The resolution policy (what the tools actually do)
 
-**The problem.** Snapshots are not recursive into nested subvolumes. Each DSM
-share is its own subvolume; `/btrfs/volume1` is already `@syno` with `mac`,
-`files`, `homes` … nested inside. A snapshot of the volume root therefore
-contains **no share data at all** while looking like a valid recovery point.
+Encoded in `resolve-drive-conflicts.sh` and covered by tests. **Nothing is ever
+deleted unless a surviving copy is proven to exist.**
 
-**Known instance:** `/btrfs/volume1/@prechange_20260716_154207` — created by the
-MCP's `create_prechange_snapshot` against `/volume1`, empty, **still present**.
-Should be removed with `btrfs subvolume delete` (not `rm -rf`).
+For a conflict **file** `<base>_<device>_<date>_Conflict[.ext]`, find the entry it
+collided with (same name minus the suffix, matched case-insensitively):
 
-The correct one, `/btrfs/volume1/mac/@prechange_20260716_154247`, is the Dollar
-General recovery point and should be kept until the team signs off on deleting
-`Dollar General Fall Winter 2026.merged`.
+| Situation | Action |
+| --- | --- |
+| identical content | DELETE the conflict copy |
+| conflict copy OLDER | DELETE (newest-wins) |
+| conflict copy NEWER | **KEEP + report** — a human decides |
+| no counterpart at all | **KEEP + report** — it is the only copy |
 
-**Audit questions nobody has answered:**
-- How many other `@prechange_*` snapshots exist, and are any of them empty
-  (i.e. someone else was also protected by nothing)?
-- The MCP tool `create_prechange_snapshot` still accepts a volume root and will
-  cheerfully produce a useless snapshot. It should snapshot each nested share
-  subvolume, or refuse. Tracked in the chip filed 2026-07-16 alongside the
-  preview bug.
+For a conflict **directory**, every file *anywhere beneath it* is reconciled
+against the target case-aware:
 
-**How to measure:**
-```bash
-btrfs subvolume list /btrfs/volume1 | grep -i prechange
-# for each, verify it actually contains data:
-find /btrfs/volume1/<path>/@prechange_X -maxdepth 3 | head
+| Situation | Action |
+| --- | --- |
+| target has no such path | **MOVE it in** (unique content; would otherwise stay stranded) |
+| identical content | DELETE |
+| conflict copy NEWER | **KEEP + report** — target is authoritative; never auto-overwrite from an old fork |
+| otherwise (older/same) | DELETE (stale) |
+
+Empty subdirectories are then removed bottom-up; the conflict dir itself only if it
+ends up completely empty, otherwise retained and flagged.
+
+`KEPT for review: 0` in the summary is the signal that a run needed no human
+judgement. **If it is non-zero, stop and look at those files before applying.**
+
+---
+
+## 6. Conflict-name formats (all observed on this NAS)
+
+The matcher must handle all of these. Two of them broke earlier versions:
+
+```
+<base>_<device>_<Mon-DD-HHMMSS-YYYY>_Conflict[.ext]
+<base>_<device>_<Mon-DD-HHMMSS-YYYY>_CaseConflict[.ext]
+<base>_<device>_<Mon-DD-HHMM-YYYY>_DownloadCaseConflict[.ext]     (Seafile; 4-digit time)
 ```
 
+Real examples, each of which broke something:
+
+- `HSR57DYLS05_Elizabeths-MacBook-Pro.local_Jan-19-140821-2026_Conflict` — a
+  **directory**, and the device contains dots. A `${name%.*}` "strip the extension"
+  step lopped it at `.local` and silently skipped 8 real conflict directories.
+  **Match the full name; make the extension optional in the pattern.**
+- `UP00ADYLS12_MOCKUP_DESKTOP-HKGCSV3_Jan-15-123319-2026_Conflict.psd` — the BASE
+  itself contains underscores. A greedy `_*_Conflict` strip yields `UP00ADYLS12`
+  and loses `_MOCKUP`. **Anchor on the device+timestamp shape.**
+- `NUN10DYNX01_art_DiskStation_Nov-18-1047-2025_DownloadCaseConflict.ai` — 4-digit
+  time and a `Download` prefix; an `HHMMSS`-only pattern misses it entirely.
+
+All three have named regression tests in `tests/run-tests.sh`.
+
 ---
 
-## 4. Parked duplicate folders
+## 7. Problem 4 — Btrfs snapshots that protect nothing
 
-**The problem.** `…2026.wrong` was a full reorganised duplicate parked beside the
-live folder. It held 995 files the live folder did not — including the only
-copies of artwork for 25 SKUs whose folders in the live tree were empty
-skeletons. Nobody knew.
+Snapshots are **not recursive into nested subvolumes**. Each DSM share is its own
+subvolume; `/btrfs/volume1` is already `@syno` with `mac`, `files`, `homes` … nested
+inside.
+
+```bash
+btrfs subvolume snapshot -r /btrfs/volume1     …   # EMPTY — protects nothing
+btrfs subvolume snapshot -r /btrfs/volume1/mac …   # correct
+```
+
+A "prechange snapshot" of the volume root looks like a successful recovery point
+and contains none of your shares. **Always verify by counting files inside it.**
+
+Also: `du` reports a snapshot's full logical size (e.g. 15 TB) while it consumes
+almost nothing — snapshots share extents and only accrue cost as the original
+diverges. Check `df` before/after; if free space did not move, it cost nothing.
+Delete with `btrfs subvolume delete`, never `rm -rf`.
+
+**Outstanding audit question:** how many other `@prechange_*` snapshots exist, and
+are any of them empty (i.e. someone else was protected by nothing)?
+
+```bash
+btrfs subvolume list /btrfs/volume1 | grep -i prechange
+find /btrfs/volume1/<path>/@prechange_X -maxdepth 3 | head    # must show real data
+```
+
+The MCP tool `create_prechange_snapshot` still accepts a volume root and will
+cheerfully produce a useless snapshot. Filed as a chip on 2026-07-16 alongside the
+preview bug; verify before relying on it.
+
+---
+
+## 8. Problem 5 — parked duplicate folders
+
+`…2026.wrong` was a full reorganised duplicate parked beside the live folder,
+holding the only copies of artwork for 25 SKUs. Nobody knew.
 
 **Measured 2026-07-17 (`Character Licensed` only):** zero other `.wrong` folders.
-47 `_OLD`/`_old` folders, which appear to be normal per-SKU version parking, not
-the same pattern.
+47 `_OLD`/`_old` folders, which look like normal per-SKU version parking, not the
+same pattern.
 
-**Never measured:** other shares. Look for reorganised duplicates parked under any
-suffix (`.wrong`, `.old`, `.bak`, `copy`, `-new`, ` 2`), especially any that are
-*large* and *sibling to a live folder of a similar name*.
+**Never measured:** other shares. Look for reorganised duplicates under any suffix
+(`.wrong`, `.old`, `.bak`, `copy`, `-new`, ` 2`), especially any that are *large*
+and *sibling to a live folder of a similar name*.
 
-**How to measure:**
 ```bash
 find /volume1/<share> -maxdepth 6 -type d \
   \( -iname '*.wrong' -o -iname '*.bak' -o -iname '*copy*' -o -iname '* 2' \) \
   -not -path '*@eaDir*' -printf '%TY-%Tm-%Td  %p\n' | sort
 ```
 
-**Done means:** each one triaged — is it a duplicate holding unique content, or
-disposable? `merge-folders.sh` handles the merge case.
+**Related signal — empty SKU skeletons.** A folder tree with subfolders but zero
+files means its content lives somewhere else:
 
-**Also worth checking:** empty SKU skeleton folders generally — a folder tree with
-subfolders but zero files is a signal that its content lives somewhere else.
 ```bash
 find /volume1/<share> -type d -not -path '*@eaDir*' | while IFS= read -r d; do
   n=$(find "$d" -type f -not -path '*/@eaDir/*' -not -name '.DS_Store' 2>/dev/null | wc -l)
@@ -176,48 +305,89 @@ find /volume1/<share> -type d -not -path '*@eaDir*' | while IFS= read -r d; do
 done
 ```
 
+Merge such a duplicate with `merge-folders.sh` (case-safe, newest-wins,
+`FLATTEN`/`REANCHOR` options documented in its header).
+
 ---
 
-## 5. edgesynology2 — completely unexamined
+## 9. Problem 6 — edgesynology2 is completely unexamined
 
 Everything above was measured on **edgesynology1 only**. edgesynology2 was
-unreachable for part of 2026-07-16 (later reported restored; SSH on port 1904).
+unreachable for part of 2026-07-16 (later reported restored; SSH on port **1904**).
 
-Every check in this document should be repeated against `edgesynology2`, and the
-two compared — if the `mac` share replicates between them, a problem on one is a
-problem on both, and a fix on one may be undone by the other.
+Repeat every check there and compare. **First question, never answered:** does the
+`mac` share replicate to edgesynology2, by what mechanism (Snapshot Replication?
+ShareSync? seaf-cli?), and in which direction? The container has no `synopkg` and
+cannot see host processes, so this must be answered over SSH. If it does replicate,
+a problem on one is a problem on both, and a fix on one may be undone by the other.
 
-**First questions:** does `mac` replicate to edgesynology2, by what mechanism
-(Snapshot Replication? ShareSync? seaf-cli?), and in which direction?
-This was never established — the container has no `synopkg` and could not see
-host processes, so the question was left open.
+Note the `edgesynology2` device name already appears in conflict artifacts
+(`SNMH7DYLS01_ART_edgesynology2_…_CaseConflict.ai`), which is itself evidence of
+cross-NAS sync activity.
 
 ---
 
-## Ground rules for whoever picks this up
+## 10. Ground rules — read before touching anything
 
-1. **Dry-run everything.** Every script here defaults to `DRY_RUN=1`. Read the
-   report before applying. The counts should match your own independent
-   measurement; if they do not, find out why before writing.
-2. **Snapshot the share subvolume first**, and verify the snapshot contains files.
-   See trap 3.
-3. **`run_command` in the MCP is read-only** and its validator greps the command
-   text — the words `mkdir`/`chmod` inside an `echo` string are enough to get the
-   whole command blocked. Write work happens over SSH as root.
-4. **Do not trust a "preview".** As of 2026-07-16 the MCP executed
-   `create_prechange_snapshot` despite `confirmed: false`. A fix was reported;
-   verify it before relying on it.
-5. **Quote everything.** These paths contain spaces, and an unquoted `$(find …)`
-   in a `for` loop silently word-splits — it produced a wrong "0 files" reading
-   mid-incident and nearly led to the wrong conclusion.
-6. **This share is synced.** `Character Licensed` and `Art Library` are seaf-cli
-   worktree roots; writes propagate to users' SeaDrive clients and to the Seafile
-   server on Linode. Prefer to work when someone can watch, and prefer not to
-   rewrite files whose content has not changed.
+1. **Dry-run everything.** All writing scripts default to `DRY_RUN=1`. The counts in
+   the report must match your own independent measurement; if they do not, find out
+   why before applying. This caught three separate bugs.
+2. **Snapshot the share subvolume first, and verify it contains files.** See §7.
+3. **`sudo` resets the environment.** `VAR=x sudo bash …` silently drops the
+   variable — you get a dry run while believing you applied. Use `sudo VAR=x bash …`
+   or `sudo -E`. DSM Task Scheduler user-defined scripts already run as root.
+4. **`run_command` in the MCP is read-only**, and its validator greps the command
+   *text* — the words `mkdir`/`chmod` inside an `echo` string are enough to get the
+   whole command blocked, and `-o` in a `find` has tripped it too. Write work happens
+   over SSH as root.
+5. **Do not trust a "preview".** On 2026-07-16 the MCP executed
+   `create_prechange_snapshot` despite `confirmed: false`. A fix was reported by a
+   parallel session; verify before relying on it.
+6. **Quote everything.** These paths contain spaces. An unquoted `$(find …)` in a
+   `for` loop word-splits and silently produced a wrong "0 files" reading mid-incident,
+   which nearly led to the wrong conclusion.
+7. **This share is synced.** `Character Licensed` and `Art Library` are seaf-cli
+   worktree roots (`repo_id 177cf9de-3066-482e-956a-7ae8d8786c6d`); writes propagate
+   to SeaDrive clients and the Seafile server on Linode. Moves *within* a library are
+   cheap (renames, no re-upload). Rewriting unchanged files is not — compare content
+   first. Work when someone can watch.
+8. **Verify the tree, not the summary.** Every bug in this effort was caught by
+   checking the filesystem after a run, never by reading the script's own totals.
 
-## Reference
+## 11. Transferring scripts to the NAS
 
-- Recovery point for the Dollar General merge: `/btrfs/volume1/mac/@prechange_20260716_154247`
-- The merged-from folder, retained pending team sign-off: `…/Dollar General Fall Winter 2026.merged`
-- Scripts + traps: [`scripts/synology/README.md`](../scripts/synology/README.md)
-- Tests: `bash scripts/synology/tests/run-tests.sh` (38 assertions, no NAS required)
+`scp`/sftp is disabled on the NASes. The terminal also truncates long heredoc
+pastes at roughly **6 KB** — a truncated script that still parses is the dangerous
+failure mode. The reliable path is base64 in chunks with a checksum gate:
+
+```bash
+# locally
+base64 -w 76 script.sh > s.b64 && split -l 54 -d s.b64 chunk_
+md5sum script.sh chunk_*
+# on the NAS: paste each chunk into `cat > ~/cN.b64 <<'EOF' … EOF`, verify each md5,
+cat ~/c1.b64 ~/c2.b64 > ~/s.b64 && base64 -d ~/s.b64 > ~/script.sh
+md5sum ~/script.sh     # MUST match the local md5 before running
+```
+
+Never run a transferred script whose checksum does not match.
+
+---
+
+## 12. Reference
+
+| Item | Value |
+| --- | --- |
+| Recovery point for the Dollar General work | `/btrfs/volume1/mac/@prechange_20260716_154247` (verify before trusting) |
+| Merged-from folder, retained pending sign-off | `…/Dollar General Fall Winter 2026.merged` (~71 GB) |
+| Seafile library containing this share | `repo_id 177cf9de-3066-482e-956a-7ae8d8786c6d` |
+| Scripts + trap documentation | [`scripts/synology/README.md`](../scripts/synology/README.md) |
+| Tests | `bash scripts/synology/tests/run-tests.sh` — 55 assertions, no NAS needed |
+| Incident record | AGENTS.md → Critical incidents → 2026-07-16/17 |
+
+A one-time Claude scheduled task (`ask-team-delete-dg-merged`, fires **Monday
+2026-07-20 15:00 America/New_York**) surfaces the question of whether `.merged` can
+be deleted, so it is not tracked only in an ephemeral place. Scheduled tasks fire
+only while the app is open; a missed one runs at next launch. Deleting it should *reduce* Seafile/
+Linode storage (blocks unique to it get GC'd); blocks shared with the live folder
+stay referenced. Do **not** add `.merged` to `seafile-ignore.txt` as a shortcut —
+ignoring an already-synced path can read as a deletion server-side.

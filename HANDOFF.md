@@ -222,6 +222,50 @@ from a move. Whether that set is stale is a separate open question (§ 9).
 
 </details>
 
+### H. Share-wide `*_Conflict` cleanup — one folder done, ~470 artifacts remain
+
+**Deferred to a fresh session by operator request, 2026-07-17.** The tooling is
+written, tested (55 assertions), and proven on live data. What remains is running
+the same procedure at wider scope.
+
+**Read [`docs/synology-fileserver-audit.md`](docs/synology-fileserver-audit.md)
+first — it is the full work order** (scope, measurements, policy, ground rules,
+conflict-name formats, script-transfer procedure). Tooling:
+[`scripts/synology/`](scripts/synology/).
+
+Completed 2026-07-16/17 on `…/Customer Adopted/Dollar General/`:
+
+- Merged `Dollar General Fall Winter 2026.wrong` into the live sibling: 995 files,
+  no data loss. Live folder 3,359 → 4,295 files. `.wrong` renamed `.merged` (~71 GB),
+  retained pending design-team sign-off.
+- Repaired the merge's own two defects: 63 case-collision conflict artifacts and 66
+  mode-000 directories (both defects now have named regression tests).
+- Resolved the 21 pre-existing conflict artifacts in that folder, which **recovered
+  81 files** — including an Oct 2025 product photo shoot that existed only inside the
+  `NCX04*` conflict forks while the live `PPS photos/` folders were empty.
+- Verified after: 0 conflict artifacts, 0 mode-000 dirs, 0 root-owned dirs, 0 lost.
+
+Remaining, in priority order:
+
+1. **~470 conflict artifacts across the rest of `Character Licensed`.** Same tool,
+   much larger blast radius. Needs its own snapshot and its own careful dry-run
+   review. **Never bulk-delete a `_Conflict` folder** — see audit §3.
+2. **4 live case-collision pairs** in `Dollar General Kids Summer 2027` (`_art.ai`
+   vs `_ART.ai` ×3, `_mockup_LED on.png` vs `_LED ON.png`). Conflicts that have not
+   happened yet; a human must choose the surviving name. Listed in audit §2.
+3. **Every other share** — `files`, `styleguides`, `users`, `homes`, `Coldlion`,
+   `Photography`, `freelancers`, `mgmt`, `oldStyleguides` — never measured.
+4. **edgesynology2 — never examined at all.** Also unanswered: does `mac` replicate
+   there, by what mechanism, in which direction? Audit §9.
+5. **Prevention is unsolved.** The scanner detects collisions before Drive forks
+   them, but the structural cause (case-sensitive NAS, case-insensitive clients)
+   still yields 10–15/month. Open questions in audit §2 — do not claim a fix without
+   testing it.
+
+Gate before applying anything: the dry run's `KEPT for review` must be `0`. If it
+is non-zero, those files are cases where a fork copy is newer than the live folder
+and a human must look first.
+
 ## 4. Everything tried that did not work
 
 | Attempt | Why it seemed reasonable | How it failed / lesson |
@@ -234,6 +278,14 @@ from a move. Whether that set is stale is a separate open question (§ 9).
 | Fix pg_partman cron immediately | The syntax defect is only `SELECT` versus `CALL` | First success must process a huge backlog on a small instance; observe manually first |
 | Set `ignore_default_data=true` to skip backlog | It sounds like a way to bypass DEFAULT rows | PostgreSQL must validate DEFAULT on attach; this causes partition creation to fail |
 | Assume repository compose changes reach NASes | Watchtower updates the related services | Watchtower updates images only; compose is a manual, NAS-specific copy |
+| Merge folders comparing paths case-sensitively | The filesystem is case-sensitive, so exact comparison looked correct | The *clients* are not; 39 files already present under another case were copied and Drive forked 63 `_Conflict` artifacts. Resolve each path component against what exists |
+| Mirror directory permissions with `chmod --reference` | It is the obvious GNU idiom and returned exit 0 | DSM has no such flag; it read `--reference=/path` as a symbolic mode whose `-` strips bits, making 66 dirs `d---------` **while reporting success**. Read the mode with `stat -c %a` |
+| Decide a merge by mtime alone | "Newest wins" was the agreed policy | 284 byte-identical files (29.6 GB) would have been rewritten for nothing, pushing needless work into Seafile. Compare content before writing |
+| `btrfs subvolume snapshot -r /btrfs/volume1` as a recovery point | It is the volume root, so it should cover everything | Snapshots do not recurse into nested subvolumes; each share is its own. The snapshot was **empty** and protected nothing. Snapshot `/btrfs/volume1/mac` |
+| Strip an "extension" with `${name%.*}` before matching conflict names | Conflict files have extensions | Conflict *directories* do not, and device names contain dots (`…MacBook-Pro.local`); it lopped the name and silently skipped 8 real conflict dirs holding 81 files |
+| Resolve a conflict directory by its top-level files | Flat conflict copies behave that way | Conflict dirs are divergent *subtrees*; the files sat in `PPS photos/`, `_SAMPLE/`. A non-recursive pass found zero and would have stranded all 81 |
+| Trust a script's own summary counts | The counters are simple and the totals looked plausible | Every bug in this effort was found by inspecting the filesystem afterwards, never by reading the summary. Verify the tree |
+| `VAR=x sudo bash script.sh` | Reads naturally as setting a variable for the run | `sudo` resets the environment and drops it silently — you get a dry run believing you applied. Use `sudo VAR=x bash …` or `sudo -E` |
 
 ## 5. Root causes and key findings
 
@@ -250,6 +302,18 @@ from a move. Whether that set is stale is a separate open question (§ 9).
   documented `PGOPTIONS` override through a 1Password-backed command.
 - NAS compose is local state. The repo version is canonical intent, but deployment
   must merge NAS-specific differences rather than copy blindly.
+- The NAS filesystem is case-sensitive while every client syncing it is not. This is
+  the root cause of ~492 `*_Conflict` + 49 `*_CaseConflict` artifacts in the
+  `Character Licensed` share, accruing ~10–15/month since Aug 2025. Cleanup is now
+  tooled; **prevention is unsolved**.
+- A `*_Conflict` artifact can hold the **only** copy of real content. Resolving 21 of
+  them recovered 81 files, including product photography whose live folders were
+  empty. Merge them; never bulk-delete.
+- On DSM an unsupported flag may not fail — it may do something else and return 0
+  (`chmod --reference`). Prefer explicit values read via `stat` over clever flags.
+- Parked duplicate folders (`.wrong`) can hold the only artwork for SKUs whose live
+  folders are empty skeletons. A folder tree with subfolders but zero files is a
+  signal its content lives elsewhere.
 
 ## 6. Exact next steps
 
@@ -284,7 +348,27 @@ from a move. Whether that set is stale is a separate open question (§ 9).
    scheduled task (`ask-designers-remove-prechange-snapshots`, fires 2026-07-24) surfaces
    this so it is not tracked only in an ephemeral place.
 
-9. **Shell injection in ~23 read tools (HIGHEST PRIORITY):** the fix is written and its 116 tests
+9. **Share-wide `*_Conflict` cleanup (fresh session; see §3.H):** read
+   `docs/synology-fileserver-audit.md` end to end first. Then, on `edgesynology1`:
+   snapshot the **share subvolume** (`/btrfs/volume1/mac`, not the volume root) and
+   verify the snapshot contains files; transfer `resolve-drive-conflicts.sh` via the
+   base64+md5 procedure in audit §11 (never run a script whose checksum does not
+   match); run report-only over one subtree at a time, widening scope gradually:
+
+   ```bash
+   ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=1 sudo -E bash ~/resolve-drive-conflicts.sh
+   ```
+
+   **Gate: `KEPT for review` must be `0` before applying.** Non-zero means a fork copy
+   is newer than the live folder and a human must inspect those files. Apply with
+   `DRY_RUN=0`, then verify the *filesystem* (not the summary): artifact count 0,
+   mode-000 count 0, root-owned dirs 0, and per-folder file counts moving by exactly
+   the reported moved/deleted amounts. Success means artifacts resolved with every
+   deletion having a proven surviving counterpart and every unique file relocated into
+   its live folder. Separately, have a human resolve the 4 live case-collision pairs
+   listed in audit §2, then repeat the whole procedure for the other shares and for
+   `edgesynology2` (never examined).
+10. **Shell injection in ~23 read tools (HIGHEST PRIORITY):** the fix is written and its 116 tests
    pass, but it is **uncommitted** in worktree `recursing-volhard-7bd463` and the live `nas-mcp`
    is still exposed. Read §3.G and run the command blocks there: commit → rebase onto `main` →
    full test gate → push → confirm CI green → live-probe a read tool. Success means a payload in
