@@ -54,6 +54,20 @@ find /volume1/<share> -name '*Conflict*' -not -path '*@eaDir*' | wc -l
 It deletes a conflict copy only when a surviving copy is proven identical or
 newer; anything newer or orphaned is kept and reported for a human.
 
+**A conflict artifact is not necessarily junk — read this before bulk-deleting.**
+On 2026-07-17, resolving the 21 artifacts in `Dollar General Fall Winter 2026`
+recovered **81 files**, not zero. Eight of them were whole-SKU forks carrying
+nested subtrees, and three (`NCX04SESC01/SSSS01/MVSX01`) held **the only copies**
+of an October 2025 product photo shoot — 20–27 photos each — while the live SKU's
+`PPS photos/` folder was completely empty. Anyone who "cleaned up conflicts" by
+deleting `*_Conflict` folders would have destroyed that photography silently.
+Treat every conflict directory as a divergent copy to be merged, never as trash.
+
+**Result for that folder (2026-07-17):** 81 files moved back into their SKUs,
+18 redundant/stale copies deleted (every one with a verified surviving
+counterpart), 9 conflict directories removed, 0 requiring human review, 0 files
+lost. The rest of the share is untouched.
+
 **Done means:** every share scanned; artifact counts recorded here; live collision
 pairs consolidated to one canonical name each.
 
