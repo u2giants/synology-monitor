@@ -260,6 +260,31 @@ The two NASes can expose different ACL modes for equivalent paths.
 Do not change because:
 An ACL writer is a new, separately designed capability—not a command substitution.
 
+### Domain users must be resolved through DSM, not container-local `id`
+
+Looks like:
+`id 'DOMAIN\user'` inside nas-api should prove whether a DSM domain account exists.
+
+Actually:
+The nas-api container has its own NSS database. It cannot see DSM's live domain
+users, so the old `inspect_effective_permissions` implementation falsely reported
+active accounts such as `IML\mzabo` as missing on both NASes.
+
+Why:
+DSM's SMBService/winbind daemon is the authoritative identity source. The nas-api
+entrypoint exposes its host socket through the existing read-only `/host/proc`
+bind. The tool uses `wbinfo` for the UID and complete group list, then `setpriv`
+plus `synoacltool -check` to measure actual path permissions under those numeric
+credentials. Local DSM accounts retain a read-only `/host/etc/pass??` and
+`/host/etc/group` fallback.
+
+Do not change because:
+Returning to container-local `id`, `getent`, or name-based `synoacltool -get-perm`
+recreates the false “user not found” result. If winbind is unavailable, report an
+identity-service failure loudly; never infer that the DSM account does not exist.
+Regression coverage is in
+`packages/shared/src/inspect-effective-permissions.test.ts`.
+
 ### Block devices need `devices:`, not `volumes:` — and SMART needs `SYS_RAWIO`
 
 Looks like:

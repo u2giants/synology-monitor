@@ -221,7 +221,7 @@ The lists below describe what's in `ALL_TOOL_DEFS` for discovery purposes. All r
 |---|---|
 | `inspect_path_metadata` | POSIX metadata: owner, group, mode, size, inode, timestamps |
 | `inspect_path_acl` | POSIX + Synology ACL entries (`getfacl` + `synoacltool`) |
-| `inspect_effective_permissions` | Effective access on a path with per-user + share-level check |
+| `inspect_effective_permissions` | Effective path access for local or DSM domain users, including read/write/traverse/create/delete checks |
 | `find_recent_path_changes` | Files modified within lookback hours under a path, sorted by mtime |
 | `find_path_versions_and_snapshots` | Btrfs snapshots, recycle bin, Drive version hints for a path |
 | `search_file_access_audit` | DSM file-access audit log (grep-based, raw log files) |
@@ -274,7 +274,12 @@ There is deliberately no ACL-write tool. `repair_path_acl` was removed on
 2026-07-16: it shelled out to `setfacl`, which is not installed in the nas-api
 image or on the host, so it could only ever fail. POSIX ACLs are also not the
 model DSM enforces on these volumes. Reading ACLs is unaffected —
-`inspect_path_acl` and `inspect_effective_permissions` use `synoacltool -get`.
+`inspect_path_acl` uses `synoacltool -get`. `inspect_effective_permissions` also
+resolves DSM domain identities through the host winbind service, switches to the
+user's numeric UID and complete group list with `setpriv`, and calls
+`synoacltool -check` for each relevant permission. Do not replace this lookup
+with container-local `id`: the container's NSS database does not contain active
+DSM domain users and will falsely report them as missing.
 See the note in `packages/shared/src/nas-tools.ts` before adding one back.
 
 ### Group `write_tasks` (5)
