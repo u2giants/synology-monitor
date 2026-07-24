@@ -9,6 +9,10 @@ ln -sfn /host/packages          /var/packages       2>/dev/null || true
 ln -sfn /host/etc/synoinfo.conf /etc/synoinfo.conf  2>/dev/null || true
 ln -sfn /host/etc.defaults      /etc.defaults       2>/dev/null || true
 
+# Domain accounts are served by DSM's host winbind daemon. The existing
+# read-only host /proc bind exposes its Unix socket without another mount.
+ln -sfn /host/proc/1/root/run/samba /run/samba 2>/dev/null || true
+
 # Package start-stop-status scripts dereference target/ → /volume1/@appstore.
 # That path isn't mounted directly; expose it via the btrfs full-volume mount.
 ln -sfn /btrfs/volume1/@appstore /volume1/@appstore 2>/dev/null || true
