@@ -353,8 +353,8 @@ Changes:
 - Add concise instructions stating that NAS MCP has no per-session call limit. A blocked command is permanently and statelessly refused because of its pattern; retrying or starting another session cannot change it; change the command.
 - Put the same four ideas in both NAS `run_command` descriptions and the web issue-agent system prompt. Keep the response-time `BlockExplanation()` as the authority rather than duplicating its detailed examples everywhere.
 - Mark the old 10-to-15-call schema-bloat and socket-pool symptoms as fixed, with their fixes named. Preserve incident history and dates.
-- Route future work from `AGENTS.md` to this file and tell readers to start at its STATUS table. Remove the old plan from the active router if it is present.
-- Add a controlled behavior evaluation using a fresh supported client and safe blocked preview. Run the reproduction as the first tool call and again after at least ten harmless calls. In both cases verify the server returns the permanent/stateless explanation and the AI selects a bounded alternative instead of claiming degradation, retrying identically, or asking for a new session. Record client name/version, protocol revision, source SHA, deployed image SHA, prompts, tool results, and pass/fail without secrets.
+- Verify that `AGENTS.md` still routes future MCP work to this file and tells readers to start at its STATUS table. Update it only if stale; do not add a duplicate row. Remove the old plan from the active router only if it reappears.
+- Add a controlled behavior evaluation using a fresh supported client and safe blocked preview. Run the reproduction as the first tool call and again after at least ten harmless calls. In both cases verify the server returns the permanent/stateless explanation and the AI selects a bounded alternative instead of claiming degradation, retrying identically, or asking for a new session. Allow at most three fresh-session attempts per case and record every transcript. If all three fail, mark the evaluation failed and require human review; never silently rerun until it passes. Record client name/version, protocol revision, source SHA, deployed image SHA, prompts, tool results, and pass/fail without secrets.
 - Ship the web and NAS MCP images through their normal GitHub Actions paths. Verify each live service reports or embeds the exact pushed commit SHA. Then execute the read-only behavior evaluation against the deployed services.
 
 Dependencies: Steps 0A and 0B.
@@ -375,11 +375,12 @@ Changes:
 - In Synology Monitor, update this plan's Current State with the fetched SHA and create a small machine-readable test fixture under `apps/nas-mcp/test/fixtures/current-contract.json` containing only public protocol expectations, never tokens.
 - In DevOps MCP, create the equivalent `tests/fixtures/current-contract.json`.
 - Capture `/mcp` behavior for `server/discover`, a normal old-era request, missing auth, invalid auth, a bogus `Mcp-Session-Id`, unsupported protocol version, `tools/list`, and one harmless tool call.
+- Label every captured case either `legacy-parity` or `intentional-cutover-change`. Only legacy-parity behavior is replayed as an unchanged migration gate. Current failures for July 28-only features are historical baseline evidence, not expected post-migration results.
 - Record whether ContextForge calls DevOps MCP and whether any supported client still calls `/sse`.
 
 Dependencies: none.
 
-Verification gate: a checked-in fixture exists in each repository, contains no secret, identifies the exact source SHA and image digest, and a reviewer can reproduce every recorded response with the new integration-test harness introduced in Steps 4 through 6.
+Verification gate: a checked-in fixture exists in each repository, contains no secret, identifies the exact source SHA and image digest, and labels every response by replay policy. The Step 4 through 6 harness can reproduce the recorded legacy-parity cases. Cases 003, 006 through 008, 014, 015, 020, and the legacy halves of 016 and 019 are candidates for parity replay; cases 001, 002, 004, 005, 009, 010, 018, and the July 28 half of 019 are intentionally asserted only against the new contract. Resolve any case not listed here explicitly before coding rather than guessing.
 
 ### Step 2. Make NAS MCP dependency installation deterministic
 
@@ -407,7 +408,7 @@ Changes:
 
 Dependencies: Step 1.
 
-Verification gate: two clean Docker builds from the same commit report identical dependency versions; changing a manifest without refreshing `pnpm-lock.yaml` makes CI and Docker fail; `git grep` finds no active build instruction using `npm install` or `--no-frozen-lockfile` for NAS MCP; workflow dependency inspection proves the image job cannot run until the current baseline test job succeeds. The intentional failing-protocol-test publish proof is deferred to Step 5 after the 21-case suite exists.
+Verification gate: perform one documented clean-build reproducibility confirmation; changing a manifest without refreshing `pnpm-lock.yaml` makes CI and Docker fail; `git grep` finds no active build instruction using `npm install` or `--no-frozen-lockfile` for NAS MCP; workflow dependency inspection proves the image job cannot run until the current baseline test job succeeds. The frozen-lockfile failure checks are the permanent gate. The intentional failing-protocol-test publish proof is deferred to Step 5 after the 21-case suite exists.
 
 ### Step 3. Make DevOps MCP dependency installation deterministic
 
@@ -431,7 +432,7 @@ Changes:
 
 Dependencies: Step 1.
 
-Verification gate: two clean images resolve identical package versions; an unlocked install is absent from Docker and CI; changing a declared dependency without refreshing the lock fails.
+Verification gate: perform one documented clean-image reproducibility confirmation; an unlocked install is absent from Docker and CI; changing a declared dependency without refreshing the lock fails. The locked-install failure checks are the permanent gate.
 
 ### Phase B: build the safety net before changing the protocol shell
 
@@ -444,7 +445,7 @@ Repositories: both, with the canonical prose stored in this plan and executable 
 Required cases:
 
 1. authenticated `server/discover` returns the supported revisions, identity, and capabilities;
-2. a valid July 28 request includes required per-request protocol and client metadata and succeeds;
+2. a valid July 28 request includes the required per-request protocol version metadata and succeeds; optional `clientInfo` and `clientCapabilities` metadata is accepted and validated when present but its absence is not rejected;
 3. a supported 2025-era client completes its required `initialize` / `notifications/initialized` flow and then succeeds through official backward compatibility;
 4. an unsupported revision returns the official unsupported-version error;
 5. no request requires `initialize` or `notifications/initialized` for July 28;
@@ -463,11 +464,11 @@ Required cases:
 18. every Streamable HTTP POST carries and validates the required `Mcp-Method` and `Mcp-Name` headers for the July 28 wire revision;
 19. `subscriptions/listen` is tested for July 28 clients, while supported older clients' GET/notification behavior is tested separately and cannot enter an initialization hang;
 20. the May `Bad Request: Server not initialized` reproduction sends the historical GET/request sequence and must return or fail clearly within five seconds, never wait four minutes;
-21. executable contract fixtures in both repositories carry the same `contractVersion`, stable case IDs, and content digest, with CI rejecting drift.
+21. executable contract fixtures in both repositories carry the same `contractVersion`, stable case IDs, and content digest; local CI rejects accidental changes against its recorded digest, while coordinated cross-repository review owns coherence between the two copies.
 
 Changes:
 
-- Store the same versioned, language-neutral contract manifest in both repositories because each must remain executable when cloned alone. Give it a `contractVersion`, stable case IDs, and expected digest. A deliberate contract update changes both copies in coordinated commits; CI rejects an unexpected mismatch against the recorded digest.
+- Store the same versioned, language-neutral contract manifest in both repositories because each must remain executable when cloned alone. Give it a `contractVersion`, stable case IDs, and expected digest. A deliberate contract update changes both copies in coordinated commits. Each repository's CI can prove only that its local copy matches its recorded digest; the coordinated pull requests and Step 13 matrix prove cross-repository agreement. Do not claim one isolated CI run can inspect the other repository's unmerged state.
 - Generate language-specific requests and assertions from that local manifest. Do not duplicate business-tool fixtures when only the protocol expectation is identical.
 - Do not make exact error prose part of the contract unless a human or client depends on it. Assert status, error type/code, required fields, cancellation, and bounded timing.
 
@@ -611,16 +612,16 @@ Repository: DevOps MCP, with NAS regression verification.
 
 Changes:
 
-- Set the default and hard maximum for ordinary synchronous MCP operations to 45 seconds.
+- **Step 9A, preparation only:** add cancellation/deadline plumbing, typed results, policy configuration, and tests, but leave the current production timeout behavior unchanged. Do not deploy rejection text that tells callers to use long-operation tools before those tools exist.
 - Separate subprocess policy timeout from MCP request deadline. The shorter remaining request budget wins.
 - Thread cancellation/deadline context into subprocess, bounded filesystem, Docker, and systemd operations.
 - Return a typed deadline result only after cancellable work is stopped or explicitly transferred to a durable job.
-- Reject a caller's attempt to request a longer synchronous timeout with a clear instruction to use the long-operation tools.
+- **Step 9B, activation after Step 10:** only after the durable operations exist, are enabled, and pass their candidate tests, set the default and hard maximum for ordinary synchronous MCP operations to 45 seconds. Then reject a caller's attempt to request a longer synchronous timeout with a clear instruction to use the working long-operation registry.
 - Keep NAS's 25-second command cap and 45-second outer deadline unless measured evidence justifies a smaller safe value.
 
-Dependencies: Steps 6 and 8.
+Dependencies: Step 9A depends on Steps 6 and 8. Step 10 depends on Step 9A's cancellation primitives but not on activating the shorter limit. Step 9B depends on Step 10 and executes after Step 10's verification gate. The STATUS row for Step 9 remains partial until 9B passes.
 
-Verification gate: no supported synchronous request remains active after 45 seconds plus a small shutdown margin; Roo's 60-second client does not time out first; audit records distinguish completed, cancelled, deadline, and transferred-to-job outcomes.
+Verification gate: Step 9A proves cancellation and error shapes without changing the live ceiling. After Step 10 passes, Step 9B proves no supported synchronous request remains active after 45 seconds plus a small shutdown margin; Roo's 60-second client does not time out first; the long-operation instructions point to enabled tools; audit records distinguish completed, cancelled, deadline, and transferred-to-job outcomes.
 
 ### Step 10. Implement durable long-operation handles
 
@@ -661,7 +662,7 @@ Optional official Tasks-extension adapter:
 - Map the common operation state to the official Tasks extension only after client matrix tests pass.
 - Keep the four hidden registry operations through `invoke_tool` as the compatibility path.
 
-Dependencies: Steps 8 and 9.
+Dependencies: Step 8 and Step 9A only. Step 10 must finish before Step 9B activates the 45-second DevOps ceiling.
 
 Verification gate: start a test operation, disconnect the MCP client, restart the MCP server, reconnect, retrieve the same status/result, then cancel a second operation and prove its process/job stopped. All tests run against fake or isolated work, never production data.
 
@@ -700,7 +701,7 @@ Expected rewrite size:
 
 Dependencies: Steps 2, 4, 5, 8, 9, and 10.
 
-Verification gate: all NAS tests pass against both the pre-migration fixture and July 28 contract; dependency inspection contains no third-party FastMCP or `mcp-proxy`; the seven-tool surface and all enabled hidden operations match the recorded baseline.
+Verification gate: all NAS legacy-parity tests pass against the pre-migration fixture, and all intentionally changed behavior passes the July 28 contract. Never require a July 28-only method both to reproduce its old method-not-found result and succeed. Dependency inspection contains no third-party FastMCP or `mcp-proxy`; the seven-tool surface and all enabled hidden operations match the recorded baseline.
 
 ### Step 12. Migrate DevOps MCP to the official Python v2 SDK
 
@@ -745,9 +746,10 @@ Changes and environment:
 - Give each candidate a dedicated temporary bearer stored as a clearly named candidate field/item in the `vibe_coding` vault or generated for the isolated test run and kept only in protected runtime environment. Never reuse a production bearer, NAS approval key, audit volume, or DevOps job volume.
 - Give DevOps candidate an isolated temporary audit directory and durable-operation volume. Keep `MCP_LONG_OPERATIONS_ENABLED=false` until its isolated storage tests pass.
 - Do not replace the production `/mcp` routes yet.
-- Test Claude.ai, Claude Desktop, Claude Code, Codex, Roo Code, Windsurf, ContextForge, direct official clients, and `mcp-remote` where required.
+- Before opening tunnels, record for Claude.ai, Claude Desktop, Claude Code, Codex, Roo Code, Windsurf, and ContextForge whether the tested version can attach a static `Authorization: Bearer` header directly. Use a pinned `mcp-remote` bridge for clients that cannot, and record the bridge version and configuration shape without tokens.
+- Test every listed client either directly or through that recorded pinned bridge, plus direct official clients.
 - For each client, test discovery, tools list, harmless call, invalid auth, restart between calls, bogus legacy session header, unsupported revision, 45-second deadline, disconnect, and durable job reconnect.
-- Test one instance and two load-balanced instances to prove no hidden process-local session state.
+- Test one instance and two load-balanced instances to prove no hidden process-local session state. Put a disposable loopback reverse proxy, such as an unprivileged Caddy or nginx container with no host mounts, in front of the two candidate container ports; point the Quick Tunnel at that one proxy port. Record and remove its exact container/image/config with the other candidate resources.
 - Inject an upstream NAS timeout, NAS API restart, DevOps subprocess tree timeout, MCP container restart, Cloudflare disconnect, and malformed request.
 - Record client version, transport, bridge version, protocol selected, and result in a checked-in compatibility matrix. Do not record tokens.
 
@@ -794,7 +796,7 @@ The following named behaviors are mandatory. The implementing session may choose
 - `REFUSAL-009-fresh-client-call-one-changes-command`
 - `REFUSAL-010-fresh-client-after-ten-calls-changes-command`
 
-Cases 001 through 008 are automated CI gates. Cases 009 and 010 are controlled deployed-behavior evaluations recorded as versioned, secret-free evidence until a deterministic model-evaluation harness exists. A pass requires the assistant to choose a bounded alternative and forbids an identical retry, a degradation claim, or a request to start a fresh session.
+Cases 001 through 008 are automated CI gates. Cases 009 and 010 are controlled deployed-behavior evaluations recorded as versioned, secret-free evidence until a deterministic model-evaluation harness exists. A pass requires the assistant to choose a bounded alternative and forbids an identical retry, a degradation claim, or a request to start a fresh session. Each case permits at most three fully recorded fresh-session attempts. Three failures require human review and remain a failed gate; silent retries are forbidden.
 
 ### Shared protocol cases
 
@@ -1001,3 +1003,13 @@ Grok reviewed and approved the original foundation and v2 migration portion. It 
 The reviewed migration portion moves the full publish-failure proof to Step 5, uses isolated Docker candidates with non-persistent Quick Tunnel URLs instead of creating Coolify resources, and limits asynchronous work to code-reviewed allowlists with NAS initially restricted to existing inventory/archive-move native jobs. Grok's final verdict on that portion was: **APPROVE. No concrete implementation blocker remains.**
 
 Phase 0 came from `plan_mcp-degradation-myth.md`, which records its own GLM 5.2 and Grok review history. The 2026-08-05 merge resolved the four concrete gaps found in the later Codex audit: mandatory tests for both web paths, a real fresh-client behavior evaluation, exact deployed-SHA proof, and `AGENTS.md` discovery. No review verdict is represented as covering edits made after that reviewer saw the source plan.
+
+### Kimi K3 review and debate
+
+Review date: 2026-08-05 (America/New_York)
+
+Kimi K3 session: `session_3bf019cb-36b5-495e-b337-a4e7283b8386`
+
+Kimi independently checked the plan against both repositories and the official July 28 protocol and SDK v2 documentation. It found two blockers: the first sequencing would have activated the 45-second DevOps limit before durable operation tools existed, and the baseline fixture gate required intentionally changed July 28 behavior both to fail as before and succeed after migration. It also found six smaller ambiguities in optional client metadata, existing AGENTS routing, cross-repository digest claims, load-balancer setup, model-evaluation retry limits, and duplicate reproducibility builds.
+
+The debate ended with agreement after the plan split deadline work into 9A preparation, Step 10 durable operations, and 9B activation; divided fixture cases into legacy parity versus intentional cutover changes; and incorporated all six smaller corrections. Kimi re-read the amended diff, traced the dependency graph through cutover, challenged the result for new defects, and returned **APPROVE** with no remaining blocker. Its final non-blocking consistency note about the DevOps dual-build check was also incorporated.
