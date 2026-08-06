@@ -1,4 +1,4 @@
-# MCP `2026-07-28` Foundations and Official SDK v2 Migration Plan
+# MCP Reliability Foundations, Degradation-Myth Fix, and `2026-07-28` Official SDK v2 Migration Plan
 
 Updated: 2026-08-05 (America/New_York)
 
@@ -8,6 +8,9 @@ This file is the cross-repository source of truth for the work. Whoever complete
 
 | Step | Repository | Status | Last updated | Evidence / next action |
 |---:|---|---|---|---|
+| 0A | synology-monitor | ☐ open | 2026-08-05 | Preserve the tested NAS refusal explanation and add mandatory shared formatter tests |
+| 0B | synology-monitor | ☐ open | 2026-08-05 | Relay the NAS refusal explanation through both web issue-agent paths |
+| 0C | synology-monitor | ☐ open | 2026-08-05 | Add MCP guidance, correct historical docs, deploy, and prove model behavior |
 | 1 | both | ☐ open | 2026-08-05 | Capture exact current dependency and production build baselines |
 | 2 | synology-monitor | ☐ open | 2026-08-05 | Make npm/pnpm and lockfile use deterministic |
 | 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
@@ -29,6 +32,8 @@ Fresh sessions start at the first open row. Re-read all later phases before star
 
 POP Creations needs NAS MCP and DevOps MCP to connect reliably from Claude, Codex, Roo Code, Windsurf, and other approved clients without stale sessions, initialization loops, unexplained multi-minute hangs, or successful server work being reported as a client failure.
 
+It also needs every AI consumer to distinguish a permanent command-specific NAS safety refusal from a broken or exhausted MCP session. A refusal must cause the AI to change the command. It must not cause the AI to invent a nonexistent call limit, retry the identical command, abandon the investigation, or start a fresh session.
+
 When this plan is complete:
 
 - both servers speak the stable MCP wire revision `2026-07-28` through exact-pinned official SDK v2 packages;
@@ -39,6 +44,8 @@ When this plan is complete:
 - dependency builds are repeatable;
 - authentication, cancellation, restarts, stale headers, client disconnects, and proxy behavior are covered by automated tests;
 - the production build SHA and protocol behavior are independently verified after deployment.
+- both MCP clients and the separate web issue-agent preserve the NAS validator's permanent, stateless refusal explanation;
+- a controlled fresh-session evaluation proves that a blocked command causes the AI to choose a safer command instead of claiming that the server has degraded.
 
 If a step conflicts with this goal, the goal wins. Stop and flag the conflict instead of following a stale instruction mechanically.
 
@@ -101,6 +108,8 @@ The request follows repeated connection and timeout failures across the two serv
 - DevOps MCP allows synchronous commands for 120 seconds by default and up to 600 seconds, so valid server work can continue after Roo has already declared failure.
 - DevOps MCP previously hung because child processes retained stdout pipes, large files were materialized, recursive directory results were fully sorted, and audit logs were loaded wholesale. Those four code-level causes were repaired, but there is still no universal request deadline or cancellation contract.
 
+A second, related failure was repeatedly reported as "NAS MCP degrades after roughly 10 to 15 calls." That number once described two real historical problems: loading all 132 tool schemas consumed about 50,000 context tokens, and timed-out keep-alive requests exhausted the HTTP socket pool. Both are already fixed by the seven-tool lazy registry and `Connection: close`. The remaining reproduction is different: the NAS API permanently blocks a dangerous command pattern, but one consumer discards the detailed explanation and the AI invents a session-level failure. The safe reproduction is a recursive grep against a Synology Drive internal store. It is blocked before execution on call 1 exactly as it is on call 100.
+
 The stable `2026-07-28` MCP wire revision removes protocol-level sessions, `Mcp-Session-Id`, and the `initialize` / `notifications/initialized` handshake for July 28 requests. It adds per-request protocol metadata and mandatory `server/discover`. Supported older wire revisions still use their earlier initialization rules through official SDK backward compatibility. This directly removes the protocol concepts behind several historical failures for July 28 clients, but it does not make long shell or filesystem work finish within a client timeout.
 
 Reproduction cases that the new automated suite must preserve are listed in Sections 9 and 10. Do not rely on manual recollection of the incidents.
@@ -119,6 +128,9 @@ Reproduction cases that the new automated suite must preserve are listed in Sect
 - direct use of the official Python SDK v2 in DevOps MCP;
 - backward-compatibility tests for the real supported clients;
 - side-by-side deployment, production cutover, rollback, and documentation.
+- preservation and consistent relay of command-specific NAS safety refusals;
+- wording that tells MCP clients there is no per-session call limit;
+- regression and fresh-session behavior tests that prove a refusal changes the command instead of ending the investigation.
 
 ### Not in this plan
 
@@ -133,6 +145,9 @@ Reproduction cases that the new automated suite must preserve are listed in Sect
 - changing unrelated production VPS, NAS, Coolify, Cloudflare, or ContextForge infrastructure;
 - adopting the optional Tasks extension as a hard requirement before supported clients prove compatibility;
 - changing client software's own timeout settings as the primary fix.
+- loosening the NAS validator's dangerous-command patterns;
+- treating documentation alone as the fix for clients that cannot read the repository;
+- moving DevOps MCP into the Synology Monitor repository. The repositories have different ownership, blast radius, deployment, secrets, and rollback boundaries. They share a protocol contract through mirrored versioned fixtures, not a release unit.
 
 ## 5. Current state of the code
 
@@ -150,6 +165,9 @@ Reproduction cases that the new automated suite must preserve are listed in Sect
 - Calls targeting both NAS units run in parallel, not serially.
 - No meaningful NAS MCP unit or HTTP protocol suite currently gates CI.
 - The seven-tool facade and hidden 132-operation catalog are intentional and working. Preserve them.
+- `apps/nas-api/internal/validator/validator.go:426` already provides `BlockExplanation()`. Its shared footer says a safety block is permanent and stateless, not a rate limit or session-degradation symptom. `apps/nas-api/cmd/server/main.go:206` wires it into preview responses, and NAS MCP relays `preview.summary` at the current `apps/nas-mcp/src/index.ts` invoke and `run_command` paths. This behavior is deployed and must not be rewritten.
+- The separate web issue-agent calls NAS API directly and does not pass through NAS MCP. In `apps/web/src/lib/server/ai/stage2-reasoning.ts`, both the free-form `run_command` refusal path and the predefined-operation refusal path discard `preview.summary`, substitute terse text, and can render the nonsensical `tier--1`. Those are the live product defects fixed in Phase 0.
+- Active architecture and incident documentation still contains historical 10-to-15-call symptoms without consistently marking them fixed. Repository-reading AI sessions can therefore relearn an obsolete diagnosis.
 
 ### DevOps MCP
 
@@ -168,7 +186,7 @@ Reproduction cases that the new automated suite must preserve are listed in Sect
 
 ### Git and deployment state
 
-At plan creation on 2026-08-05, Synology Monitor `main` was at commit `00ea0d1` before this plan was added and was synchronized with `origin/main`. The checkout already contained unrelated untracked `.ai/` and `PLAN-degradation-myth.md`; do not stage or alter them as part of this work.
+At initial plan creation on 2026-08-05, Synology Monitor `main` was at commit `00ea0d1` and synchronized with `origin/main`. On 2026-08-05 the tracked degradation-myth plan was merged into this plan as Phase 0; no product implementation had begun. Every implementing session must refresh the SHA, branch state, deployed-image evidence, and this paragraph before editing.
 
 The DevOps MCP planning audit read `main` commit `cfdd6a66dc364a4351d8c35bc364583d605bbc0d` from a temporary clone. The implementing session must fetch current `origin/main`, reconcile any changes made after that SHA, and update this section before editing.
 
@@ -186,6 +204,8 @@ No application migration described here has been implemented, committed, pushed,
 8. **Protocol tests are the largest missing safety net.** Neither service currently proves behavior across auth, discovery, version metadata, bogus legacy headers, disconnects, restarts, and proxies.
 9. **The wrappers are not deeply embedded in tool logic.** Removing them changes server construction, tool registration, schema adapters, auth context, middleware, HTTP mounting, result types, and lifecycle hooks. NAS HTTP clients do require real cancellation plumbing, but NAS command builders, DevOps host commands, file streaming, process-group termination, Docker operations, systemd operations, and audit entry formatting should remain behaviorally intact.
 10. **DevOps MCP is security-sensitive.** It has root-equivalent access. A whole-language rewrite creates more risk than a contained protocol-shell migration.
+11. **The degradation myth combines repaired history with one current message-relay bug.** Tool-schema bloat and socket exhaustion were real but are fixed. The validator is a stateless pattern check with no call counter. The web issue-agent's discarded `preview.summary` is the current defect; MCP instructions and corrected documentation are supporting defenses.
+12. **The two repositories should remain separate.** Synology Monitor contains a dashboard, NAS agents, NAS API, shared schemas, and NAS MCP. DevOps MCP is a small root-equivalent VPS control plane with independent secrets and rollback. Combining them would increase release coupling and security blast radius without reducing protocol code, because each language still needs its own official SDK adapter and tests.
 
 ## 7. Approaches considered and rejected
 
@@ -225,6 +245,18 @@ Rejected. SSE is deprecated and the July 28 core uses stateless Streamable HTTP.
 
 Rejected. URLs are routinely logged. Supported clients can send authorization headers.
 
+### Remove or weaken the NAS recursive-command block
+
+Rejected permanently. A recursive grep against the Synology Drive store previously ran for four days and eleven hours. The command must remain blocked. The client must receive the reason and choose a bounded alternative.
+
+### Fix the degradation myth in repository documentation only
+
+Rejected. MCP-only clients never read this checkout, and the web issue-agent has its own tool definitions and direct NAS API path. The refusal-time result is the strongest behavior signal and must be preserved in both consumers.
+
+### Merge DevOps MCP into the Synology Monitor repository
+
+Rejected for this work. A monorepo would not unify TypeScript and Python SDK code or deployment behavior. It would couple a root-equivalent VPS tool to routine dashboard and NAS releases. Reconsider only if measured maintenance costs later exceed the security and release-isolation benefit, with its own migration plan.
+
 ## 8. Design decisions
 
 Decisions recorded 2026-08-05.
@@ -243,6 +275,9 @@ Decisions recorded 2026-08-05.
 10. Use durable job handles for work that can exceed the shortest supported client deadline.
 11. Do not make the optional Tasks extension a requirement until client compatibility is proven.
 12. Deploy side by side before replacing either production endpoint.
+13. Keep `u2giants/devops-mcp` as a separate repository. Standardize through the official SDK family, the versioned protocol contract, health fields, errors, and compatibility tests.
+14. Preserve the NAS validator's block rules and `BlockExplanation()` as the source of truth. Both NAS consumers must relay it instead of paraphrasing it.
+15. Phase 0 lands before dependency and SDK work so the current user-facing failure is fixed and protected independently of the larger migration.
 
 ### Open implementation decisions with criteria
 
@@ -255,6 +290,76 @@ Decisions recorded 2026-08-05.
 7. **Tasks extension.** Enable only as an optional adapter after Claude, Codex, Roo, Windsurf, and ContextForge tests establish behavior. Core job tools remain supported regardless.
 
 ## 9. Numbered implementation plan
+
+### Phase 0: fix the current refusal-message defect before changing foundations
+
+This is a small, independently deployable product fix. Complete and verify it before Phase A. Do not wait for the SDK migration. Natural context cut after Step 0C: update STATUS and current-state evidence, commit and push the Synology Monitor changes, verify the deployed SHAs, and begin Phase A in a fresh session if needed.
+
+### Step 0A. Lock the permanent NAS refusal contract with tests
+
+Repository: Synology Monitor.
+
+Files:
+
+- `apps/nas-api/internal/validator/validator.go`, existing `BlockExplanation()` near line 426, behavior preserved rather than redesigned;
+- `apps/nas-api/internal/validator/validator_test.go`, especially the existing `TestBlockExplanationIsActionableAndStateless` regression test;
+- a new small pure formatter under `packages/shared/src/` for web refusal results;
+- the matching `packages/shared` Vitest file.
+
+Changes:
+
+- Preserve and run the existing Go regression test proving a known dangerous recursive Synology Drive grep is blocked and its explanation is actionable, permanent, stateless, and not a call/session limit. Strengthen that test only if one of those required ideas is not asserted after the current branch is refreshed. Do not rewrite working validator behavior merely to create new code.
+- Add a shared TypeScript formatter that accepts the NAS preview shape and requested operation label. For `preview.blocked === true` with a non-empty summary, return that summary verbatim with a short operation prefix and `isError: true`. If the summary is unexpectedly empty, return a loud fallback that still says the refusal is permanent and command-specific. Never emit `tier--1`.
+- For `preview.blocked === false && preview.tier !== 1`, preserve today's approval-tier message and `isError: true`.
+- Make extraction into tested shared code mandatory. Do not choose the old plan's inline, no-test option.
+
+Dependencies: none.
+
+Verification gate: the focused Go validator tests and `packages/shared` Vitest suite pass; tests fail if the summary is dropped, `isError` becomes false, the fallback becomes silent, or `tier--1` reappears.
+
+### Step 0B. Relay the refusal through both web issue-agent paths
+
+Repository: Synology Monitor.
+
+File: `apps/web/src/lib/server/ai/stage2-reasoning.ts`.
+
+Changes:
+
+- Replace the hand-built blocked response in the free-form `run_command` path, currently around lines 350 through 356, with the tested shared formatter from Step 0A.
+- Replace the separate hand-built blocked response in the predefined NAS-operation path, currently around lines 411 through 419, with the same formatter.
+- Keep `isError: true` for blocked and privileged previews because provider adapters use it to mark tool failures correctly.
+- Do not change the actual validator, approval tiers, write confirmation, operation builders, or the non-blocked tier-2/tier-3 remediation flow.
+- Add or extend the web AI guard test so CI statically proves both call sites use the shared formatter. This complements the formatter unit tests and prevents one path from drifting back to a local paraphrase.
+
+Dependencies: Step 0A.
+
+Verification gate: `pnpm --filter @synology-monitor/web type-check` and `pnpm --filter @synology-monitor/web guard:ai` pass; a fixture for each of the two paths returns the exact NAS summary and never `tier--1`.
+
+### Step 0C. Give MCP clients the same truth, correct history, and prove behavior live
+
+Repository: Synology Monitor.
+
+Files:
+
+- `apps/nas-mcp/src/index.ts`, the server instructions and `run_command` description;
+- `apps/web/src/lib/server/ai/stage2-reasoning.ts`, the web system prompt and its `run_command` description;
+- `docs/architecture.md` historical degradation entries;
+- `docs/synology-incident-2026-06.md`, annotate rather than rewrite incident history;
+- `AGENTS.md`, this plan's routing row and the intentional-quirks section;
+- `plan_mcp-degradation-myth.md`, mark superseded by this canonical merged plan without deleting its historical review record.
+
+Changes:
+
+- Add concise instructions stating that NAS MCP has no per-session call limit. A blocked command is permanently and statelessly refused because of its pattern; retrying or starting another session cannot change it; change the command.
+- Put the same four ideas in both NAS `run_command` descriptions and the web issue-agent system prompt. Keep the response-time `BlockExplanation()` as the authority rather than duplicating its detailed examples everywhere.
+- Mark the old 10-to-15-call schema-bloat and socket-pool symptoms as fixed, with their fixes named. Preserve incident history and dates.
+- Route future work from `AGENTS.md` to this file and tell readers to start at its STATUS table. Remove the old plan from the active router if it is present.
+- Add a controlled behavior evaluation using a fresh supported client and safe blocked preview. Run the reproduction as the first tool call and again after at least ten harmless calls. In both cases verify the server returns the permanent/stateless explanation and the AI selects a bounded alternative instead of claiming degradation, retrying identically, or asking for a new session. Record client name/version, protocol revision, source SHA, deployed image SHA, prompts, tool results, and pass/fail without secrets.
+- Ship the web and NAS MCP images through their normal GitHub Actions paths. Verify each live service reports or embeds the exact pushed commit SHA. Then execute the read-only behavior evaluation against the deployed services.
+
+Dependencies: Steps 0A and 0B.
+
+Verification gate: focused tests, lint, typecheck, build, and affected existing suites are green; GitHub Actions is green; live NAS MCP and web report the exact pushed SHA; the fresh-session evaluation passes at call 1 and after at least ten harmless calls; the checked-in evaluation record contains no secret; this plan's STATUS and Current State are updated before the session ends.
 
 ### Phase A: freeze the baseline and make builds repeatable
 
@@ -676,6 +781,21 @@ Verification gate: both production health endpoints report the intended SHA, exa
 
 The following named behaviors are mandatory. The implementing session may choose framework-specific filenames but must preserve the stable case IDs.
 
+### Degradation-myth and refusal-relay cases
+
+- `REFUSAL-001-validator-block-is-permanent-stateless-and-actionable`
+- `REFUSAL-002-shared-formatter-preserves-nonempty-summary-verbatim`
+- `REFUSAL-003-shared-formatter-empty-summary-fails-loudly`
+- `REFUSAL-004-shared-formatter-never-emits-negative-tier-label`
+- `REFUSAL-005-freeform-web-path-uses-shared-formatter`
+- `REFUSAL-006-predefined-web-path-uses-shared-formatter`
+- `REFUSAL-007-nonblocked-privileged-preview-keeps-approval-guidance`
+- `REFUSAL-008-mcp-instructions-and-tool-description-state-no-call-limit`
+- `REFUSAL-009-fresh-client-call-one-changes-command`
+- `REFUSAL-010-fresh-client-after-ten-calls-changes-command`
+
+Cases 001 through 008 are automated CI gates. Cases 009 and 010 are controlled deployed-behavior evaluations recorded as versioned, secret-free evidence until a deterministic model-evaluation harness exists. A pass requires the assistant to choose a bounded alternative and forbids an identical retry, a degradation claim, or a request to start a fresh session.
+
 ### Shared protocol cases
 
 - `MCP20260728-001-discover-supported-revisions`
@@ -743,7 +863,7 @@ No test may contact, mutate, scan, or load the production VPS, NAS units, Supaba
 - GitHub is the source of truth. No production source edits.
 - Both repositories use `main` only.
 - Before the first commit in each repo, `git var GIT_COMMITTER_IDENT` must show `Albert Hazan <u2giants@users.noreply.github.com>`.
-- Preserve unrelated work. In the current Synology checkout, `.ai/` and `PLAN-degradation-myth.md` are unrelated untracked files.
+- Preserve unrelated work. Never assume the checkout is clean from this historical plan text; inspect current status and stage only named files belonging to the active step.
 - No shared database change is expected. If one becomes necessary, stop and use the shared-db migration and PR process.
 - Production and shared infrastructure remain read-only by default. A future implementation request may authorize normal application deployment, but it does not authorize Terraform, Cloud Build trigger mutation, or unrelated infrastructure changes.
 - Never expose or commit bearer tokens, NAS HMAC keys, Cloudflare tokens, Coolify tokens, or 1Password values.
@@ -804,7 +924,9 @@ Production identifiers and URLs:
 
 ### Definition of done
 
-- [ ] All 14 STATUS rows are complete with dates and evidence.
+- [ ] All 17 STATUS rows, including 0A through 0C, are complete with dates and evidence.
+- [ ] Both NAS consumers preserve the validator's permanent, stateless refusal explanation and all eight automated refusal tests pass.
+- [ ] The deployed fresh-client behavior evaluation passes on call 1 and after at least ten harmless calls, with the exact web and NAS MCP SHAs recorded.
 - [ ] Both dependency installations are locked and reproducible.
 - [ ] Both CI pipelines run unit, protocol, auth, cancellation, deadline, and container smoke tests before deployment.
 - [ ] Both servers use exact stable official SDK v2 packages directly and report wire revision `2026-07-28` separately.
@@ -856,24 +978,26 @@ Production identifiers and URLs:
 
 ### 1. Could a brand-new AI session execute this perfectly without asking Albert anything?
 
-Yes. Sections 1 through 8 explain the business goal, both applications, the triggering failures, exact scope, current state, root causes, rejected paths, and locked decisions. Section 9 names ordered repository files, behavior, dependencies, context cut points, and verification gates. Sections 10 through 13 provide named tests, constraints, access, definition of done, rollback, and bounded decision criteria.
+Yes. Sections 1 through 8 explain the business goal, both applications, the historical degradation myth, the current refusal-relay defect, the protocol failures, exact scope, current state, root causes, rejected paths, repository-boundary decision, and locked decisions. Section 9 begins with the independently deployable Phase 0 behavior fix, then names every foundation and migration step with repository files, behavior, dependencies, context cut points, and verification gates. Sections 10 through 13 provide named automated and deployed-behavior tests, constraints, access, definition of done, rollback, and bounded decision criteria.
 
 ### 2. Does the plan carry the full background, nuance, and rejected reasoning?
 
-Yes. Sections 3, 5, and 6 preserve the session, initialization, four-minute hang, 25/45/60/120-second timeout chain, dependency drift, stateless current design, hidden-tool facades, and repaired DevOps hang patterns. Section 7 records why language unification, raw protocol implementation, timeout increases, synchronous progress, mandatory Tasks, permanent SSE, and URL tokens were rejected.
+Yes. Sections 3, 5, and 6 preserve the session, initialization, four-minute hang, 25/45/60/120-second timeout chain, dependency drift, stateless current design, hidden-tool facades, both repaired historical 10-to-15-call causes, the live web refusal-relay defect, and repaired DevOps hang patterns. Section 7 records why language unification, repository unification, raw protocol implementation, validator weakening, documentation-only mitigation, timeout increases, synchronous progress, mandatory Tasks, permanent SSE, and URL tokens were rejected.
 
 ### 3. Is the ultimate goal clear enough for a correct judgment call if a step is wrong?
 
 Yes. Section 1 defines the user-visible outcome and explicitly says the goal wins over a conflicting step. Section 8 separates locked architecture from open choices and gives criteria. Section 13 defines measurable completion, risks, rollback, and the remaining evidence-based gates.
 
-Self-audit result: PASS. All 13 required sections are present, all implementation steps name concrete targets and verification gates, tests are named, scope and rejected approaches are explicit, secrets are referenced only by vault item name, and completion includes commit, push, CI, deploy, and production SHA verification.
+Self-audit result: PASS. All 13 required sections are present. Phase 0 incorporates the full degradation-myth diagnosis and fixes the missing proof points: both web paths have mandatory regression coverage, the safe validator behavior is locked by test, the fresh-client behavior is evaluated at call 1 and after ten calls, the plan is routed from `AGENTS.md`, and completion requires exact deployed SHA verification. All later migration steps name concrete targets and verification gates; scope, repository boundaries, and rejected approaches are explicit; secrets are referenced only by vault item name; and completion includes commit, push, CI, deploy, rollback, and production SHA proof.
 
-## Independent Grok 4.5 review
+## Independent review history
 
 Review date: 2026-08-05 (America/New_York)
 
 Grok session: `019fd4ad-8b7c-7623-976b-3efb4167e239`
 
-Grok first agreed with the architecture but required 12 corrections covering wire-versus-SDK terminology, missing protocol cases, fail-closed auth, cancellation, deadline result shape, durable-job placement, exact SDK cutover gates, candidate isolation, build identity, CI ordering, documentation gates, and cross-repository contract ownership. After those changes, Grok found three remaining mechanics: Step 2 depended prematurely on the Step 5 suite, candidate Coolify creation lacked authority, and the NAS asynchronous allowlist was not narrow enough.
+Grok reviewed and approved the original foundation and v2 migration portion. It first required 12 corrections covering wire-versus-SDK terminology, missing protocol cases, fail-closed auth, cancellation, deadline result shape, durable-job placement, exact SDK cutover gates, candidate isolation, build identity, CI ordering, documentation gates, and cross-repository contract ownership. After those changes, Grok found three remaining mechanics: Step 2 depended prematurely on the Step 5 suite, candidate Coolify creation lacked authority, and the NAS asynchronous allowlist was not narrow enough.
 
-The final plan moves the full publish-failure proof to Step 5, uses isolated Docker candidates with non-persistent Quick Tunnel URLs instead of creating Coolify resources, and limits asynchronous work to code-reviewed allowlists with NAS initially restricted to existing inventory/archive-move native jobs. Grok's final verdict was: **APPROVE. No concrete implementation blocker remains.**
+The reviewed migration portion moves the full publish-failure proof to Step 5, uses isolated Docker candidates with non-persistent Quick Tunnel URLs instead of creating Coolify resources, and limits asynchronous work to code-reviewed allowlists with NAS initially restricted to existing inventory/archive-move native jobs. Grok's final verdict on that portion was: **APPROVE. No concrete implementation blocker remains.**
+
+Phase 0 came from `plan_mcp-degradation-myth.md`, which records its own GLM 5.2 and Grok review history. The 2026-08-05 merge resolved the four concrete gaps found in the later Codex audit: mandatory tests for both web paths, a real fresh-client behavior evaluation, exact deployed-SHA proof, and `AGENTS.md` discovery. No review verdict is represented as covering edits made after that reviewer saw the source plan.

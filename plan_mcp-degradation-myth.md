@@ -1,4 +1,10 @@
-# Implementation plan — kill the phantom "MCP degrades after ~10–15 tool calls"
+# SUPERSEDED: implementation plan for the phantom "MCP degrades after ~10–15 tool calls"
+
+> **Do not implement from this file.** On 2026-08-05 this work was merged into
+> `plan_mcp-v2-foundations-and-migration.md` as Phase 0 of the canonical MCP
+> reliability and v2 migration plan. Read that file's STATUS table first. This
+> older file remains only to preserve its investigation history and independent
+> review record.
 
 Repo: `u2giants/synology-monitor` · working copy `/worksp/monitor/app` · branch `main`
 Written 2026-08-05 · Reviewed by GLM 5.2 (`.ai/reviews/glm-mcp-myth-plan-review-2-20260806T010719Z.md`)
