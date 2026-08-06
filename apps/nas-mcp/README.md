@@ -299,6 +299,13 @@ Standard CI/CD path (see [AGENTS.md](../../AGENTS.md) and
 - `.github/workflows/nas-mcp-image.yml` builds and pushes `ghcr.io/u2giants/synology-monitor-nas-mcp:latest`
 - Coolify auto-deploys (app UUID `efl17f5iocnz94840pexre9d`, project Synology Monitor → production)
 
+Dependencies are installed from the repository root with pnpm `9.15.4` and the
+committed root `pnpm-lock.yaml`. CI and Docker both use
+`pnpm install --frozen-lockfile`, so a manifest/lock mismatch blocks the image.
+An app-local `package-lock.json` is forbidden and checked in CI. Dependency
+upgrades must update the manifest and root lock together, then pass the shared
+catalog tests, NAS MCP TypeScript build, and Docker build.
+
 ## Environment variables (set in Coolify)
 
 | Variable | Purpose |

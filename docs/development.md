@@ -98,6 +98,7 @@ curl http://localhost:7734/health
 ### NAS MCP server (Node.js + FastMCP)
 
 ```sh
+pnpm install --frozen-lockfile
 cd apps/nas-mcp
 
 export MCP_BEARER_TOKEN=devToken
@@ -111,6 +112,13 @@ export NAS_EDGE2_API_SIGNING_KEY=...
 pnpm build            # compile TypeScript to dist/
 pnpm start            # runs dist/index.js on port 3001
 ```
+
+NAS MCP uses the root pnpm workspace and `pnpm-lock.yaml` in local development,
+CI, and Docker. Its dependency versions are exact-pinned. Do not create an
+`apps/nas-mcp/package-lock.json`, use `npm install`, or bypass the frozen lock.
+To upgrade a dependency, change `apps/nas-mcp/package.json`, run `pnpm install`
+at the repository root to refresh the lock deliberately, then run the shared
+tests, NAS MCP build, and container build before committing both files.
 
 The MCP server uses TypeScript FastMCP with stateless HTTP Stream transport. Do
 not add persistent MCP session state. The always-on tool list should stay small:

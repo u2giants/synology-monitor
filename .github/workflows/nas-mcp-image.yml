@@ -16,11 +16,10 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/synology-monitor-nas-mcp
 
 jobs:
-  build-and-push:
+  verify:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - name: Check out repository
@@ -44,10 +43,27 @@ jobs:
         run: npm install -g pnpm@9
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Reject app-local npm lockfile
+        run: test ! -e apps/nas-mcp/package-lock.json
 
       - name: Test shared tool catalog
         run: pnpm --filter @synology-monitor/shared run test
+
+      - name: Build NAS MCP
+        run: pnpm --filter @synology-monitor/nas-mcp run build
+
+  build-and-push:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

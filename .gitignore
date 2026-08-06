@@ -44,7 +44,7 @@ apps/agent/data/
 .claude/**
 !.claude/settings.json
 package-lock.json
-pnpm-lock.yaml
+!apps/nas-mcp/package-lock.json
 
 # MCP client config — holds the nas-mcp bearer token in plaintext. It was only
 # ever covered by .git/info/exclude, which is local to one clone and does not
