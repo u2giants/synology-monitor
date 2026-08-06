@@ -11,7 +11,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 | 0A | synology-monitor | ✅ done | 2026-08-05 | Shared formatter and four focused cases shipped in `bbfaf149`; validator regression and 69 shared tests pass |
 | 0B | synology-monitor | ✅ done | 2026-08-05 | Both web paths use the shared formatter; web typecheck and `guard:ai` pass in `bbfaf149` |
 | 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
-| 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `8ce45af`, DevOps MCP `cfdd6a6`; exact production digests and runtime dependency versions recorded |
+| 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `10644bf`, DevOps MCP `fc56271`; exact production digests and runtime dependency versions recorded |
 | 2 | synology-monitor | ✅ done | 2026-08-06 | Exact-pinned manifest plus committed root lock; frozen pnpm in CI/Docker; prerequisite verification job and local-lock guard; CI run `31116338234`; live OCI revision `d700f1d` |
 | 3 | devops-mcp | ◐ implemented | 2026-08-06 | Exact uv lock and prerequisite test job landed in `58cfdbb`; local lock, 7 tests, image, and stale-lock proofs pass; production gate awaits GitHub Actions incident recovery |
 | 4 | both | ◐ implemented | 2026-08-06 | Byte-identical 21-case contract `1.0.0`, digest `df610a2`, landed in `5bb9d99` and `24f4cb6`; local verification passes; CI/deploy gate queued during Actions outage |
@@ -26,7 +26,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 | 13 | both | ☐ open | 2026-08-05 | Run side-by-side compatibility and failure-injection tests |
 | 14 | both | ☐ open | 2026-08-05 | Cut over, verify production, remove old paths, update docs |
 
-Fresh sessions start at the first open row. Re-read all later phases before starting a phase so that earlier discoveries do not make downstream instructions stale.
+Fresh sessions resume at Step 7's evidence gate, not Step 8. Wait for commit `614f1a6` to deploy, prove `/audit/mcp-transport-access.log` survives replacement, then collect seven full days before deciding whether SSE and query-token auth can be removed. Steps 8 through 14 remain blocked on that gate. Re-read all later phases before starting a phase so that earlier discoveries do not make downstream instructions stale.
 
 ## 1. The ultimate goal
 
