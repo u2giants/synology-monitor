@@ -31,6 +31,7 @@ import {
 } from "@/lib/server/issue-store";
 import { type NasTarget } from "@/lib/server/tools";
 import { ALL_TOOL_DEFS, findToolByName, toInputSchema } from "@synology-monitor/shared/nas-tools";
+import { formatNasPreviewRefusal } from "@synology-monitor/shared";
 import { nasApiExec, nasApiPreview, resolveNasApiConfig } from "@/lib/server/nas-api-client";
 import { parseJsonObject } from "@/lib/server/model-json";
 import { callModel } from "./call-model";
@@ -65,7 +66,10 @@ Tool inventory (all auto-execute, tier-1 read-only):
 - run_command: free-form read-only shell command on a NAS (cat, tail, head, grep,
   cat /proc/mdstat, cat /sys/block/md*/inflight, tail -n 200 /path/to/log.log, etc.).
   Use this when a predefined tool does not cover the file or command you need.
-  Write commands are hard-blocked by the NAS validator.
+  Write commands are hard-blocked by the NAS validator. NAS tools have no
+  per-session call limit. A blocked command is permanently and statelessly
+  refused because of its pattern; retrying it or starting a new session cannot
+  change the result. Change the command instead.
 - Predefined diagnostic tools: 100+ curated NAS read-only commands covering SMART,
   BTRFS, ShareSync, Docker, process/network/storage diagnostics. Prefer these over
   run_command when they cover the query.
@@ -289,7 +293,10 @@ export function buildStage2Tools(): ToolSchema[] {
         "Run any read-only shell command on a Synology NAS for deep diagnosis. " +
         "Use for raw log files (tail -n N /path/to/log), /proc virtual files (cat /proc/mdstat), " +
         "/sys gauges (cat /sys/block/md5/inflight), and diagnostic utilities not covered by " +
-        "the predefined tools. Write commands are hard-blocked by the NAS validator.",
+        "the predefined tools. Write commands are hard-blocked by the NAS validator. " +
+        "There is no per-session call limit: a blocked command is permanently and statelessly " +
+        "refused because of its pattern. Retrying it or starting a new session cannot change " +
+        "the result; change the command instead.",
       input_schema: {
         type: "object",
         properties: {
@@ -348,12 +355,7 @@ function makeToolExecutor(
           return { content: `NAS ${target} is unreachable (${preview.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
         }
         if (preview.blocked || preview.tier !== 1) {
-          return {
-            content:
-              `run_command: "${command}" requires tier-${preview.tier}${preview.blocked ? " (hard-blocked by the NAS validator)" : ""}. ` +
-              `Read-only investigation is tier-1 only. If a privileged action is warranted, propose it as a remediation.`,
-            isError: true,
-          };
+          return formatNasPreviewRefusal(preview, `run_command: "${command}"`);
         }
 
         const exec = await withNasReachability(target, () => nasApiExec(config, command, 1, undefined, 30_000));
@@ -409,14 +411,7 @@ function makeToolExecutor(
         return { content: `NAS ${target} is unreachable (${preview.detail}). Diagnose from stored evidence via fetch_evidence.`, isError: true };
       }
       if (preview.blocked || preview.tier !== 1) {
-        return {
-          content:
-            `"${call.name}" resolved to a tier-${preview.tier} command${preview.blocked ? " (blocked by the NAS validator)" : ""}, ` +
-            `which is not auto-executable. Read-only investigation is tier-1 only. If a change — or a ` +
-            `privileged read of a user-data path — is warranted, propose it as a remediation ` +
-            `(decision=propose_remediation) so the operator can approve it. Command: ${command}`,
-          isError: true,
-        };
+        return formatNasPreviewRefusal(preview, `"${call.name}" (command: ${command})`);
       }
 
       const exec = await withNasReachability(target, () => nasApiExec(config, command, 1, undefined, 30_000));

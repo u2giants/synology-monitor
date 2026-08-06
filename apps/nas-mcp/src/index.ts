@@ -54,6 +54,11 @@ target "edgesynology1", "edgesynology2", or "both".
 Write tools require a preview first. To execute after reviewing the preview,
 call invoke_tool again with confirmed: true inside args. Do not invent or expose
 bearer tokens.
+
+This server has no per-session call limit. A command blocked by the NAS validator
+is permanently and statelessly refused because of its command pattern. Retrying
+the same command or starting a new session cannot change that result. Change the
+command and use a bounded diagnostic alternative instead.
 `.trim();
 
 const TOOL_SEARCH_DESCRIPTION = [
@@ -632,7 +637,7 @@ server.addTool({
 if (enabledRead.has("run_command")) {
   server.addTool({
     name: "run_command",
-    description: "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution. For named capabilities, prefer tool_search followed by invoke_tool.",
+    description: "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution. There is no per-session call limit: a blocked command is permanently and statelessly refused because of its pattern, so retrying it or starting a new session cannot change the result; change the command instead. For named capabilities, prefer tool_search followed by invoke_tool.",
     parameters: z.object({
       target: z
         .enum(["edgesynology1", "edgesynology2", "both"])

@@ -395,7 +395,11 @@ for them — `eperestrelo` appears in `/volume1/@synologydrive/log/cloud-workerd
 - The earlier diagnosis's specific internals (`styleguides = ViewId 18`; `eperestrelo` has
   `view_id = 51`; ViewId 18 membership = only the `@styleguides` service account) **could not be
   verified**: there is no `psql`/sqlite client on the NAS to read the Drive membership DB, and the
-  MCP session degraded before deeper log inspection completed.
+  MCP session appeared to degrade before deeper log inspection completed. This
+  was historical incident wording, not evidence of a current call limit. The two
+  known 10-to-15-call causes were later fixed by the lazy seven-tool MCP surface
+  and `Connection: close` on NAS API requests. Current validator refusals are
+  permanent, stateless, and command-specific.
 
 ### Proposed (unverified) fix
 Add `IML\eperestrelo` as a member of the `styleguides` Team Folder in Drive Admin Console →

@@ -364,8 +364,10 @@ Seven small tools are registered eagerly on every request:
 The full 132-definition registry is in `packages/shared/src/nas-tools.ts` (the
 `ALL_TOOL_DEFS` array). Clients browse with `list_capabilities`, inspect one
 operation with `get_capability_details`, search with `tool_search`, and execute
-with `invoke_tool`. The registry is never loaded eagerly — loading all 132 schemas
-put ~50k tokens into every session and degraded it after ~10–15 tool calls.
+with `invoke_tool`. The registry is never loaded eagerly. Before the lazy registry
+shipped, loading all 132 schemas put about 50k tokens into every session and
+produced degradation after roughly 10 to 15 tool calls. That historical cause is
+fixed; it is not a current call limit.
 FastMCP session-level instructions tell clients to browse/search/detail before
 most NAS tasks and then call `invoke_tool` with the exact returned operation name.
 
@@ -779,9 +781,10 @@ stateful transport behavior.
 
 ### NAS MCP exposes 7 small tools but has a 132-definition registry
 
-Pre-loading 132 schemas puts ~50k tokens into every session and degrades it after
-~10–15 calls. Lazy-load via catalog/search/detail + `invoke_tool` keeps the
-always-on surface compact. `notifications/tools/list_changed` is not used because
+Pre-loading 132 schemas formerly put about 50k tokens into every session and
+caused degradation after roughly 10 to 15 calls. The lazy catalog/search/detail
+plus `invoke_tool` design fixed that historical symptom and keeps the always-on
+surface compact. There is no current per-session call limit. `notifications/tools/list_changed` is not used because
 Claude clients cache the initial `tools/list` and do not re-fetch on the
 notification.
 
@@ -834,9 +837,12 @@ may cost more tokens, but must not change behavior.
 
 ### `connection: close` on all NAS API HTTP calls
 
-Undici's keep-alive pool exhausts after ~10–15 calls when timed-out requests do
-not return their socket. NAS API is reached over Tailscale (sub-ms RTT), making
-re-handshake cost negligible.
+Undici's keep-alive pool previously exhausted after roughly 10 to 15 calls when
+timed-out requests did not return their socket. `Connection: close` fixed that
+historical failure. NAS API is reached over Tailscale (sub-ms RTT), making
+re-handshake cost negligible. A current validator refusal is permanent,
+stateless, and specific to the command pattern; it is not renewed by retrying or
+starting a new session.
 
 ### Executor kills the process group
 

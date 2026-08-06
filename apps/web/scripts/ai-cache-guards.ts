@@ -14,6 +14,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { block, compileContext, ContextOrderingError } from "../src/lib/server/ai/context-compiler";
 import { buildAnthropicMessages } from "../src/lib/server/ai/providers/anthropic";
 import { buildOpenAIMessages } from "../src/lib/server/ai/providers/openai-compatible";
@@ -175,6 +176,19 @@ for (const provider of EXPECTED_PROVIDERS) {
     assert.ok(u.cachedInputTokens <= u.inputTokens, `${provider}: cached must be <= total input`);
   });
 }
+
+// ---- Guard 4: both NAS refusal paths use the shared formatter ----------------
+console.log("Guard 4 — NAS refusal explanations stay authoritative");
+
+check("REFUSAL-005/006 both Stage 2 paths use the shared formatter", () => {
+  const stage2Source = readFileSync(
+    new URL("../src/lib/server/ai/stage2-reasoning.ts", import.meta.url),
+    "utf8",
+  );
+  const calls = stage2Source.match(/return formatNasPreviewRefusal\(preview,/g) ?? [];
+  assert.equal(calls.length, 2, "both preview refusal paths must call formatNasPreviewRefusal");
+  assert.ok(!stage2Source.includes("tier-${preview.tier}"), "do not rebuild tier labels at either call site");
+});
 
 // ---- Summary ----------------------------------------------------------------
 if (failures > 0) {

@@ -193,6 +193,29 @@ Eagerly loading every schema consumed roughly 50k tokens per client session.
 Do not change because:
 Registering every definition eagerly recreates the context and reliability problem.
 
+### A NAS command refusal is not MCP session degradation
+
+Looks like:
+A command works early in a session but a later blocked command means NAS MCP has
+degraded or reached a 10-to-15-call limit.
+
+Actually:
+The two historical 10-to-15-call failures were fixed by the seven-tool lazy
+surface and `Connection: close`. The NAS validator is stateless. A command it
+blocks is permanently refused because of that command pattern, regardless of
+call count or session.
+
+Why:
+The safety validator deliberately blocks dangerous or overly broad commands and
+returns an actionable explanation. Retrying the same text or starting a new
+session cannot change its classification.
+
+Do not change because:
+Do not weaken the validator, raise timeouts, or retry the same command. Preserve
+the NAS API summary and choose the bounded alternative it recommends. For active
+MCP foundation work, start at the STATUS table in
+`plan_mcp-v2-foundations-and-migration.md`.
+
 ### Write approval and NAS API classification are separate gates
 
 Looks like:
