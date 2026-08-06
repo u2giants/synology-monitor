@@ -1,0 +1,114 @@
+{
+  "contractVersion": "1.0.0",
+  "wireRevision": "2026-07-28",
+  "digestAlgorithm": "sha256",
+  "digestScope": "canonical JSON of contractVersion, wireRevision, and cases with recursively sorted object keys",
+  "expectedDigest": "df610a230ae38c1cbbd2baa65d5ec483efd5b75594e8372be793f871ca2cfafd",
+  "cases": [
+    {
+      "id": "MCP20260728-001-discover-supported-revisions",
+      "summary": "Authenticated discovery reports supported revisions, server identity, and capabilities.",
+      "assertions": ["authenticated", "server/discover succeeds", "supported revisions present", "server identity present", "capabilities present"]
+    },
+    {
+      "id": "MCP20260728-002-july-request-with-per-request-meta",
+      "summary": "A July 28 request succeeds with required per-request metadata.",
+      "assertions": ["protocol version metadata required", "optional clientInfo accepted", "optional clientCapabilities accepted", "optional client metadata validated when present"]
+    },
+    {
+      "id": "MCP20260728-003-supported-legacy-client-initializes",
+      "summary": "A supported 2025-era client completes its initialization flow and then succeeds.",
+      "assertions": ["initialize succeeds", "notifications/initialized accepted", "subsequent request succeeds", "official backward compatibility used"]
+    },
+    {
+      "id": "MCP20260728-004-unsupported-version-error",
+      "summary": "An unsupported revision returns the official unsupported-version error.",
+      "assertions": ["request fails", "official unsupported-version error", "no success-shaped fallback"]
+    },
+    {
+      "id": "MCP20260728-005-july-client-needs-no-initialize",
+      "summary": "A July 28 client can make an independent request without initialization.",
+      "assertions": ["no initialize required", "no notifications/initialized required", "request succeeds"]
+    },
+    {
+      "id": "MCP20260728-006-missing-static-bearer-challenge",
+      "summary": "Missing static bearer authentication is rejected without OAuth discovery.",
+      "assertions": ["HTTP 401", "WWW-Authenticate is Bearer realm service", "no OAuth discovery", "request not executed"]
+    },
+    {
+      "id": "MCP20260728-007-invalid-static-bearer-challenge",
+      "summary": "Invalid static bearer authentication is rejected with invalid_token.",
+      "assertions": ["HTTP 401", "WWW-Authenticate includes invalid_token", "request not executed", "HTTP 403 reserved for authenticated policy denial"]
+    },
+    {
+      "id": "MCP20260728-008-bogus-session-header-is-harmless",
+      "summary": "A bogus legacy session header cannot restore, bind, or stall work.",
+      "assertions": ["Mcp-Session-Id ignored or clearly rejected", "no cross-client state", "no revived state", "bounded response"]
+    },
+    {
+      "id": "MCP20260728-009-deterministic-cacheable-tools-list",
+      "summary": "Tool listing is deterministic and carries July 28 cache metadata.",
+      "assertions": ["tools/list succeeds", "deterministic order", "ttlMs present", "cacheScope present"]
+    },
+    {
+      "id": "MCP20260728-010-result-type-and-server-info",
+      "summary": "Tool calls return complete typed results with server identity.",
+      "assertions": ["tools/call succeeds", "complete result", "resultType present", "server identity metadata present"]
+    },
+    {
+      "id": "MCP20260728-011-disconnect-stops-or-transfers-work",
+      "summary": "Client disconnect stops safe request-scoped work or transfers it durably.",
+      "assertions": ["disconnect detected", "work cancelled when safe or durably transferred", "no false success", "outcome recorded"]
+    },
+    {
+      "id": "MCP20260728-012-restart-between-independent-calls",
+      "summary": "A server restart does not create a reconnection-state requirement.",
+      "assertions": ["first independent call succeeds", "server restarts", "second independent call succeeds", "no session restoration required"]
+    },
+    {
+      "id": "MCP20260728-013-deadline-error-and-work-stopped",
+      "summary": "Work beyond the synchronous ceiling ends loudly and safely.",
+      "assertions": ["deadline at 45 seconds or less", "deadline_exceeded error shape", "no success-shaped text", "work stopped or durably transferred"]
+    },
+    {
+      "id": "MCP20260728-014-health-redacts-sensitive-data",
+      "summary": "Health is public but contains no sensitive request or credential data.",
+      "assertions": ["no MCP auth required", "health succeeds", "no tokens", "no command arguments", "no host secrets", "no client identities"]
+    },
+    {
+      "id": "MCP20260728-015-host-origin-validation",
+      "summary": "Host and Origin validation use explicit configuration allowlists.",
+      "assertions": ["configured production host allowed", "configured candidate host allowed", "loopback allowed only for tests", "unlisted Host rejected", "missing Origin allowed", "present unlisted Origin rejected"]
+    },
+    {
+      "id": "MCP20260728-016-legacy-sse-transition",
+      "summary": "Legacy SSE is deliberately supported or clearly reported as removed.",
+      "assertions": ["transition policy explicit", "supported path works or removed path fails clearly", "no hang"]
+    },
+    {
+      "id": "MCP20260728-017-proxy-and-bridge-compatibility",
+      "summary": "Proxy and bridge paths preserve protocol behavior without production mutation.",
+      "assertions": ["Cloudflare behavior covered", "Coolify behavior covered", "mcp-remote behavior covered", "isolated test target"]
+    },
+    {
+      "id": "MCP20260728-018-required-method-and-name-headers",
+      "summary": "Every July 28 Streamable HTTP POST validates method and name headers.",
+      "assertions": ["Mcp-Method required", "Mcp-Name required", "valid headers accepted", "missing or invalid headers rejected"]
+    },
+    {
+      "id": "MCP20260728-019-subscriptions-listen-and-legacy-get",
+      "summary": "July 28 subscriptions and supported older GET behavior are tested separately.",
+      "assertions": ["subscriptions/listen covered for July 28", "legacy GET and notification behavior covered separately", "no initialization hang"]
+    },
+    {
+      "id": "MCP20260728-020-may-server-not-initialized-hang-regression",
+      "summary": "The historical Server not initialized sequence never hangs.",
+      "assertions": ["historical GET/request sequence replayed", "success or clear failure", "response within five seconds", "never waits four minutes"]
+    },
+    {
+      "id": "MCP20260728-021-cross-repo-contract-digest",
+      "summary": "Both repositories carry the same versioned contract and digest.",
+      "assertions": ["contractVersion present", "exactly 21 stable case IDs", "case IDs unique", "local digest matches expectedDigest", "cross-repository equality reviewed in coordinated changes"]
+    }
+  ]
+}

@@ -51,6 +51,9 @@ jobs:
       - name: Test shared tool catalog
         run: pnpm --filter @synology-monitor/shared run test
 
+      - name: Verify protocol contract
+        run: pnpm --filter @synology-monitor/nas-mcp run test:protocol-contract
+
       - name: Build NAS MCP
         run: pnpm --filter @synology-monitor/nas-mcp run build
 
