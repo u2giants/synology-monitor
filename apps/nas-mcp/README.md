@@ -312,6 +312,9 @@ catalog tests, NAS MCP TypeScript build, and Docker build.
 |---|---|
 | `MCP_PORT` | Port the server listens on (default `3001`) |
 | `MCP_BEARER_TOKEN` | Auth token required by all MCP clients |
+| `MCP_ALLOWED_HOSTS` | Comma-separated public MCP hostnames. Defaults to `nas-mcp.designflow.app`; add a temporary candidate hostname explicitly during isolated testing. Does not restrict the redacted `/health` probe. |
+| `MCP_ALLOWED_ORIGINS` | Comma-separated browser origins. Missing Origin is accepted for non-browser MCP clients; a present Origin must be listed. |
+| `MCP_TEST_MODE` | Tests only. Set to `1` only in isolated test processes to permit fake configuration and loopback Host values. Never set in Coolify. |
 | `NAS_EDGE1_NAME` | Logical name for NAS 1 (default `edgesynology1`) |
 | `NAS_EDGE1_API_URL` | HTTP URL of NAS 1 API (`http://100.107.131.35:7734`) |
 | `NAS_EDGE1_API_SECRET` | Bearer secret for NAS 1 API |

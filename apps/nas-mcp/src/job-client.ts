@@ -6,7 +6,7 @@
 // docs/synology-archive-implementation.md).
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { type NasConfig, buildApprovalToken } from "./nas-client.js";
+import { type NasConfig, type NasRequest, buildApprovalToken } from "./nas-client.js";
 import { type McpToolDef, type JobOp } from "./nas-tools.js";
 
 const JOB_TIMEOUT_MS = 15_000;
@@ -36,10 +36,7 @@ function canonYears(years: number[]): string {
 export function canonicalOpString(op: JobOp, nas: string, jobId: string, p?: InventoryParams): string {
   if (op === "cancel") return `inventory.cancel|nas=${nas}|job_id=${jobId}`;
   const params = p!;
-  const base =
-    `inventory.${op}|nas=${nas}|shares=${canonShares(params.shares)}` +
-    `|cutoff=${canonYears(params.cutoffYears)}|overlay=${params.overlayEffective ? "true" : "false"}` +
-    `|protect=${params.protect}`;
+  const base = `inventory.${op}|nas=${nas}|shares=${canonShares(params.shares)}` + `|cutoff=${canonYears(params.cutoffYears)}|overlay=${params.overlayEffective ? "true" : "false"}` + `|protect=${params.protect}`;
   if (op === "schedule") return `${base}|scheduled_for=${params.scheduledFor}`;
   return base;
 }
@@ -48,7 +45,11 @@ export function canonicalOpString(op: JobOp, nas: string, jobId: string, p?: Inv
 
 function toStringArray(v: unknown): string[] {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
-  if (typeof v === "string") return v.split(",").map((s) => s.trim()).filter(Boolean);
+  if (typeof v === "string")
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   return [];
 }
 
@@ -93,17 +94,14 @@ function startBody(p: InventoryParams, includeSchedule: boolean): Record<string,
 interface JobHttpOptions {
   body?: Record<string, unknown>;
   approvalToken?: string;
+  signal?: AbortSignal;
+  request?: NasRequest;
 }
 
-async function jobHttp(
-  config: NasConfig,
-  method: "GET" | "POST",
-  path: string,
-  opts: JobHttpOptions = {},
-): Promise<unknown> {
+export async function jobHttp(config: NasConfig, method: "GET" | "POST", path: string, opts: JobHttpOptions = {}): Promise<unknown> {
   const url = new URL(path, config.url);
   const payload = opts.body ? JSON.stringify(opts.body) : undefined;
-  const requestImpl = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const requestImpl = opts.request ?? (url.protocol === "https:" ? httpsRequest : httpRequest);
   const headers: Record<string, string> = {
     Authorization: `Bearer ${config.apiSecret}`,
     Connection: "close",
@@ -141,8 +139,15 @@ async function jobHttp(
       });
       res.on("error", reject);
     });
+    const abort = () => req.destroy(new Error("Request aborted"));
+    if (opts.signal?.aborted) {
+      abort();
+      return;
+    }
+    opts.signal?.addEventListener("abort", abort, { once: true });
     req.setTimeout(JOB_TIMEOUT_MS, () => req.destroy(new Error(`request timed out after ${JOB_TIMEOUT_MS}ms`)));
     req.on("error", reject);
+    req.on("close", () => opts.signal?.removeEventListener("abort", abort));
     if (payload) req.write(payload);
     req.end();
   });
@@ -155,24 +160,23 @@ async function jobHttp(
  * endpoint directly; write ops (start/schedule/cancel) require a tier-2 approval
  * token and gate on confirmed:true with a preview, mirroring the shell-tool flow.
  */
-export async function runJobTool(
-  tool: McpToolDef,
-  input: Record<string, unknown>,
-  config: NasConfig,
-): Promise<string> {
+export async function runJobTool(tool: McpToolDef, input: Record<string, unknown>, config: NasConfig, options: Pick<JobHttpOptions, "signal" | "request"> = {}): Promise<string> {
   const op = tool.job!.op;
   const jobId = String(input.job_id ?? "").trim();
   const tag = `[${config.name}]`;
+  const request = (method: "GET" | "POST", path: string, opts: JobHttpOptions = {}) => jobHttp(config, method, path, { ...opts, ...options });
 
   if (op.startsWith("move_")) {
-    return runMoveTool(op, input, config, tag);
+    return runMoveTool(op, input, config, tag, options);
   }
 
   try {
     switch (op) {
       case "status": {
-        if (jobId) return `${tag} ${formatJob(await jobHttp(config, "GET", `/jobs/inventory/${encodeURIComponent(jobId)}`))}`;
-        const list = (await jobHttp(config, "GET", "/jobs/inventory")) as { jobs?: unknown[] };
+        if (jobId) return `${tag} ${formatJob(await request("GET", `/jobs/inventory/${encodeURIComponent(jobId)}`))}`;
+        const list = (await request("GET", "/jobs/inventory")) as {
+          jobs?: unknown[];
+        };
         return `${tag} ${formatList(list.jobs ?? [])}`;
       }
       case "result": {
@@ -181,7 +185,7 @@ export async function runJobTool(
         const q = new URLSearchParams({ result: kind });
         if (input.limit !== undefined) q.set("limit", String(input.limit));
         if (input.cursor !== undefined) q.set("cursor", String(input.cursor));
-        const r = await jobHttp(config, "GET", `/jobs/inventory/${encodeURIComponent(jobId)}/result?${q.toString()}`);
+        const r = await request("GET", `/jobs/inventory/${encodeURIComponent(jobId)}/result?${q.toString()}`);
         return `${tag} ${formatResult(kind, r)}`;
       }
       case "cancel": {
@@ -191,7 +195,7 @@ export async function runJobTool(
         }
         const canonical = canonicalOpString("cancel", config.name, jobId);
         const token = buildApprovalToken(config, canonical, 2);
-        await jobHttp(config, "POST", `/jobs/inventory/${encodeURIComponent(jobId)}/cancel`, { approvalToken: token });
+        await request("POST", `/jobs/inventory/${encodeURIComponent(jobId)}/cancel`, { approvalToken: token });
         return `${tag} Cancellation requested for job ${jobId}.`;
       }
       case "start":
@@ -212,7 +216,10 @@ export async function runJobTool(
         const canonical = canonicalOpString(op, config.name, "", p);
         const token = buildApprovalToken(config, canonical, 2);
         const path = op === "schedule" ? "/jobs/inventory/schedule" : "/jobs/inventory";
-        const job = await jobHttp(config, "POST", path, { body: startBody(p, op === "schedule"), approvalToken: token });
+        const job = await request("POST", path, {
+          body: startBody(p, op === "schedule"),
+          approvalToken: token,
+        });
         return `${tag} ${op === "schedule" ? "Scheduled" : "Started"} inventory job.\n${formatJob(job)}`;
       }
       default:
@@ -227,10 +234,7 @@ export async function runJobTool(
 
 function formatJob(j: unknown): string {
   const job = j as Record<string, unknown>;
-  const lines = [
-    `job ${job.id} — ${job.status}`,
-    `shares: ${(job.target_shares as string[] | undefined)?.join(", ") ?? "—"}`,
-  ];
+  const lines = [`job ${job.id} — ${job.status}`, `shares: ${(job.target_shares as string[] | undefined)?.join(", ") ?? "—"}`];
   if (job.scheduled_for) lines.push(`scheduled_for: ${job.scheduled_for}`);
   if (job.files_scanned !== undefined) lines.push(`progress: ${job.files_scanned} files, ${job.bytes_scanned} bytes (${job.current_share ?? "—"})`);
   if (job.result_available) lines.push(`results: ready (fetch with fetch_file_inventory_result)`);
@@ -250,7 +254,12 @@ function formatList(jobs: unknown[]): string {
 }
 
 function formatResult(kind: string, r: unknown): string {
-  const res = r as { header?: string; rows?: string[]; total_rows?: number; next_cursor?: number };
+  const res = r as {
+    header?: string;
+    rows?: string[];
+    total_rows?: number;
+    next_cursor?: number;
+  };
   const lines = [`${kind} result (${res.total_rows ?? 0} rows)`];
   if (res.header) lines.push(res.header);
   if (res.rows) lines.push(...res.rows);
@@ -278,7 +287,9 @@ interface MovePlanParams {
 // Mirrors nas-api jobs.MovePlanRequest.Normalize so the signed canonical and the
 // request body never drift.
 function parseMovePlan(input: Record<string, unknown>): MovePlanParams {
-  const roots = toStringArray(input.roots).map((r) => r.replace(/^\/+|\/+$/g, "")).filter(Boolean);
+  const roots = toStringArray(input.roots)
+    .map((r) => r.replace(/^\/+|\/+$/g, ""))
+    .filter(Boolean);
   return {
     share: String(input.share ?? "").trim(),
     mode: String(input.mode ?? "move") || "move",
@@ -305,7 +316,11 @@ function moveCanonical(op: string, nas: string, jobId: string, p?: MovePlanParam
       `|prune=${params.prune ? "true" : "false"}|rmpre=${params.removePreexisting ? "true" : "false"}`
     );
   }
-  const goOp = { move_execute: "move.execute", move_cancel: "move.cancel", move_rollback: "move.rollback" }[op];
+  const goOp = {
+    move_execute: "move.execute",
+    move_cancel: "move.cancel",
+    move_rollback: "move.rollback",
+  }[op];
   return `${goOp}|nas=${nas}|job_id=${jobId}`;
 }
 
@@ -328,18 +343,16 @@ function moveBody(p: MovePlanParams): Record<string, unknown> {
   };
 }
 
-async function runMoveTool(
-  op: string,
-  input: Record<string, unknown>,
-  config: NasConfig,
-  tag: string,
-): Promise<string> {
+async function runMoveTool(op: string, input: Record<string, unknown>, config: NasConfig, tag: string, options: Pick<JobHttpOptions, "signal" | "request"> = {}): Promise<string> {
   const jobId = String(input.job_id ?? "").trim();
+  const request = (method: "GET" | "POST", path: string, opts: JobHttpOptions = {}) => jobHttp(config, method, path, { ...opts, ...options });
   try {
     switch (op) {
       case "move_status": {
-        if (jobId) return `${tag} ${formatMoveJob(await jobHttp(config, "GET", `/jobs/archive-move/${encodeURIComponent(jobId)}`))}`;
-        const list = (await jobHttp(config, "GET", "/jobs/archive-move")) as { jobs?: unknown[] };
+        if (jobId) return `${tag} ${formatMoveJob(await request("GET", `/jobs/archive-move/${encodeURIComponent(jobId)}`))}`;
+        const list = (await request("GET", "/jobs/archive-move")) as {
+          jobs?: unknown[];
+        };
         return `${tag} ${formatMoveList(list.jobs ?? [])}`;
       }
       case "move_manifest": {
@@ -347,7 +360,7 @@ async function runMoveTool(
         const q = new URLSearchParams();
         if (input.limit !== undefined) q.set("limit", String(input.limit));
         if (input.cursor !== undefined) q.set("cursor", String(input.cursor));
-        const r = (await jobHttp(config, "GET", `/jobs/archive-move/${encodeURIComponent(jobId)}/manifest?${q.toString()}`)) as {
+        const r = (await request("GET", `/jobs/archive-move/${encodeURIComponent(jobId)}/manifest?${q.toString()}`)) as {
           lines?: string[];
           total_rows?: number;
           next_cursor?: number;
@@ -358,7 +371,7 @@ async function runMoveTool(
       }
       case "move_verify": {
         if (!jobId) return `${tag} job_id is required.`;
-        const r = (await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/verify`)) as { verify_report?: string };
+        const r = (await request("POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/verify`)) as { verify_report?: string };
         return `${tag} re-verify:\n${r.verify_report ?? "(no report)"}`;
       }
       case "move_plan": {
@@ -369,20 +382,27 @@ async function runMoveTool(
         if (!input.confirmed) {
           return [
             `${tag} This will create a DRY-RUN archive-move plan on ${config.name} for share '${p.share}' (mode: ${p.mode}).`,
-            p.mode === "move" ? (p.forceArchive ? `Files under the selected roots would be relocated into ${p.share}/Archive regardless of modified year.` : `Files last modified before ${Math.max(...p.cutoffYears)} would be relocated into ${p.share}/Archive.`) : `Empty folders under the scope would be listed for removal.`,
+            p.mode === "move"
+              ? p.forceArchive
+                ? `Files under the selected roots would be relocated into ${p.share}/Archive regardless of modified year.`
+                : `Files last modified before ${Math.max(...p.cutoffYears)} would be relocated into ${p.share}/Archive.`
+              : `Empty folders under the scope would be listed for removal.`,
             `Nothing is moved or deleted by planning. Call again with confirmed: true to create the plan, then review it with fetch_archive_move_manifest.`,
           ].join("\n");
         }
         const canonical = moveCanonical("move_plan", config.name, "", p);
         const token = buildApprovalToken(config, canonical, 2);
-        const job = await jobHttp(config, "POST", "/jobs/archive-move/plan", { body: moveBody(p), approvalToken: token });
+        const job = await request("POST", "/jobs/archive-move/plan", {
+          body: moveBody(p),
+          approvalToken: token,
+        });
         return `${tag} Plan created.\n${formatMoveJob(job)}`;
       }
       case "move_cancel": {
         if (!jobId) return `${tag} job_id is required.`;
         if (!input.confirmed) return `${tag} This will cancel archive-move ${jobId}. Call again with confirmed: true.`;
         const token = buildApprovalToken(config, moveCanonical("move_cancel", config.name, jobId), 2);
-        await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/cancel`, { approvalToken: token });
+        await request("POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/cancel`, { approvalToken: token });
         return `${tag} Cancellation requested for ${jobId}.`;
       }
       case "move_execute":
@@ -398,7 +418,7 @@ async function runMoveTool(
         }
         const path = op === "move_execute" ? "execute" : "rollback";
         const token = buildApprovalToken(config, moveCanonical(op, config.name, jobId), 3);
-        const job = await jobHttp(config, "POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/${path}`, { approvalToken: token });
+        const job = await request("POST", `/jobs/archive-move/${encodeURIComponent(jobId)}/${path}`, { approvalToken: token });
         return `${tag} ${op === "move_execute" ? "Execute" : "Rollback"} started.\n${formatMoveJob(job)}`;
       }
       default:
@@ -411,10 +431,7 @@ async function runMoveTool(
 
 function formatMoveJob(j: unknown): string {
   const job = j as Record<string, unknown>;
-  const lines = [
-    `move ${job.id} — ${job.status}  (share: ${job.share}, mode: ${job.mode})`,
-    `planned=${job.planned} moved=${job.moved} verified=${job.verified} skipped=${job.skipped} failed=${job.failed} dirs_pruned=${job.dirs_pruned}`,
-  ];
+  const lines = [`move ${job.id} — ${job.status}  (share: ${job.share}, mode: ${job.mode})`, `planned=${job.planned} moved=${job.moved} verified=${job.verified} skipped=${job.skipped} failed=${job.failed} dirs_pruned=${job.dirs_pruned}`];
   if (job.current_path) lines.push(`current: ${job.current_path}`);
   if (job.snapshot_id) lines.push(`snapshot: ${job.snapshot_id} (${job.snapshot_path})`);
   if (job.preflight_note) lines.push(`preflight: ${job.preflight_note}`);

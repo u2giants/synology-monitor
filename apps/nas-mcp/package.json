@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "test": "node --test --import tsx test/*.test.ts",
     "test:protocol-contract": "node test/verify-protocol-contract.mjs",
     "start": "node dist/index.js"
   },
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "22.19.15",
+    "tsx": "4.20.6",
     "typescript": "5.9.3"
   }
 }

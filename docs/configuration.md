@@ -153,6 +153,9 @@ gating.
 |---|---|---|---|
 | `MCP_BEARER_TOKEN` | Yes | — | Auth token for all MCP client connections |
 | `MCP_PORT` | No | `3001` | Port the server listens on |
+| `MCP_ALLOWED_HOSTS` | No | `nas-mcp.designflow.app` | Comma-separated public MCP hosts. Candidate hosts must be added explicitly. The redacted `/health` route remains available to internal Coolify probes. |
+| `MCP_ALLOWED_ORIGINS` | Browser clients | empty | Comma-separated accepted browser origins. A missing Origin is allowed for non-browser clients. |
+| `MCP_TEST_MODE` | Tests only | unset | `1` permits fake credentials and loopback hosts in isolated tests. Never enable in production. |
 | `NAS_EDGE1_NAME` | No | `edgesynology1` | Logical name for `target` parameter in tool calls |
 | `NAS_EDGE1_API_URL` | Yes | — | NAS 1 API base URL |
 | `NAS_EDGE1_API_SECRET` | Yes | — | Bearer secret for NAS 1 API |

@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import type { RequestOptions } from "node:http";
 
 export interface NasConfig {
   name: string;
@@ -27,6 +28,13 @@ const MAX_EXEC_TIMEOUT_MS = 25_000;
 const PREVIEW_TIMEOUT_MS = 8_000;
 const MAX_RESPONSE_BYTES = 512 * 1024;
 
+export type NasRequest = typeof httpRequest;
+
+export interface NasClientOptions {
+  signal?: AbortSignal;
+  request?: NasRequest;
+}
+
 function normalizeRequestError(err: unknown, label: string, timeoutMs: number): Error {
   if (err instanceof Error) {
     if (err.message.includes("__NAS_TIMEOUT__")) {
@@ -37,16 +45,10 @@ function normalizeRequestError(err: unknown, label: string, timeoutMs: number): 
   return new Error(`${label} failed: ${String(err)}`);
 }
 
-async function requestJson<T>(
-  config: NasConfig,
-  path: string,
-  body: Record<string, unknown>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
+async function requestJson<T>(config: NasConfig, path: string, body: Record<string, unknown>, timeoutMs: number, label: string, options: NasClientOptions = {}): Promise<T> {
   const url = new URL(path, config.url);
   const payload = JSON.stringify(body);
-  const requestImpl = url.protocol === "https:" ? httpsRequest : httpRequest;
+  const requestImpl = options.request ?? (url.protocol === "https:" ? httpsRequest : httpRequest);
 
   return new Promise<T>((resolve, reject) => {
     const req = requestImpl(
@@ -60,7 +62,7 @@ async function requestJson<T>(
           Authorization: `Bearer ${config.apiSecret}`,
           Connection: "close",
         },
-      },
+      } satisfies RequestOptions,
       (res) => {
         res.setEncoding("utf8");
 
@@ -87,10 +89,18 @@ async function requestJson<T>(
       },
     );
 
+    const abort = () => req.destroy(new Error("Request aborted"));
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
+
     req.setTimeout(timeoutMs, () => {
       req.destroy(new Error("__NAS_TIMEOUT__"));
     });
     req.on("error", reject);
+    req.on("close", () => options.signal?.removeEventListener("abort", abort));
     req.write(payload);
     req.end();
   }).catch((err) => {
@@ -102,18 +112,8 @@ async function requestJson<T>(
 export function getNasConfigs(target: string): NasConfig[] {
   const configs: NasConfig[] = [];
 
-  const nas1 = buildConfig(
-    process.env.NAS_EDGE1_NAME ?? "edgesynology1",
-    process.env.NAS_EDGE1_API_URL,
-    process.env.NAS_EDGE1_API_SECRET,
-    process.env.NAS_EDGE1_API_SIGNING_KEY,
-  );
-  const nas2 = buildConfig(
-    process.env.NAS_EDGE2_NAME ?? "edgesynology2",
-    process.env.NAS_EDGE2_API_URL,
-    process.env.NAS_EDGE2_API_SECRET,
-    process.env.NAS_EDGE2_API_SIGNING_KEY,
-  );
+  const nas1 = buildConfig(process.env.NAS_EDGE1_NAME ?? "edgesynology1", process.env.NAS_EDGE1_API_URL, process.env.NAS_EDGE1_API_SECRET, process.env.NAS_EDGE1_API_SIGNING_KEY);
+  const nas2 = buildConfig(process.env.NAS_EDGE2_NAME ?? "edgesynology2", process.env.NAS_EDGE2_API_URL, process.env.NAS_EDGE2_API_SECRET, process.env.NAS_EDGE2_API_SIGNING_KEY);
 
   if (nas1) configs.push(nas1);
   if (nas2) configs.push(nas2);
@@ -123,12 +123,7 @@ export function getNasConfigs(target: string): NasConfig[] {
   return match ? [match] : [];
 }
 
-function buildConfig(
-  name: string,
-  url: string | undefined,
-  apiSecret: string | undefined,
-  approvalSigningKey: string | undefined,
-): NasConfig | null {
+function buildConfig(name: string, url: string | undefined, apiSecret: string | undefined, approvalSigningKey: string | undefined): NasConfig | null {
   if (!url || !apiSecret || !approvalSigningKey) return null;
   return { name, url, apiSecret, approvalSigningKey };
 }
@@ -139,38 +134,32 @@ function buildConfig(
  */
 export function buildApprovalToken(config: NasConfig, command: string, tier: number): string {
   const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
-  const signature = createHmac("sha256", config.approvalSigningKey)
-    .update(`${command}\n${expiresAt}`)
-    .digest("hex");
-  return Buffer.from(
-    JSON.stringify({ command, tier, expires_at: expiresAt, signature }),
-  ).toString("base64url");
+  const signature = createHmac("sha256", config.approvalSigningKey).update(`${command}\n${expiresAt}`).digest("hex");
+  return Buffer.from(JSON.stringify({ command, tier, expires_at: expiresAt, signature })).toString("base64url");
 }
 
 /** Asks the NAS API to classify a command's tier without running it. */
-export async function nasPreview(config: NasConfig, command: string): Promise<NasPreviewResult> {
-  return requestJson<NasPreviewResult>(
-    config,
-    "/preview",
-    { command },
-    PREVIEW_TIMEOUT_MS,
-    "NAS preview",
-  );
+export async function nasPreview(config: NasConfig, command: string, options: NasClientOptions = {}): Promise<NasPreviewResult> {
+  return requestJson<NasPreviewResult>(config, "/preview", { command }, PREVIEW_TIMEOUT_MS, "NAS preview", options);
 }
 
 /**
  * Executes a command on the NAS via the NAS API.
  * `timeoutMs` controls how long nas-api is given to run the command (capped at MAX_EXEC_TIMEOUT_MS).
  */
-export async function nasExec(
-  config: NasConfig,
-  command: string,
-  tier: number,
-  approvalToken?: string,
-  timeoutMs = MAX_EXEC_TIMEOUT_MS,
-): Promise<NasExecResult> {
+export async function nasExec(config: NasConfig, command: string, tier: number, approvalToken?: string, timeoutMs = MAX_EXEC_TIMEOUT_MS, options: NasClientOptions = {}): Promise<NasExecResult> {
   const clampedTimeout = Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS);
-  const body: Record<string, unknown> = { command, tier, timeout_ms: clampedTimeout };
+  const body: Record<string, unknown> = {
+    command,
+    tier,
+    timeout_ms: clampedTimeout,
+  };
   if (approvalToken) body.approval_token = approvalToken;
-  return requestJson<NasExecResult>(config, "/exec", body, clampedTimeout + 5_000, "NAS exec");
+  return requestJson<NasExecResult>(config, "/exec", body, clampedTimeout + 5_000, "NAS exec", options);
 }
+
+export const NAS_CLIENT_LIMITS = Object.freeze({
+  maxExecTimeoutMs: MAX_EXEC_TIMEOUT_MS,
+  previewTimeoutMs: PREVIEW_TIMEOUT_MS,
+  httpBufferMs: 5_000,
+});

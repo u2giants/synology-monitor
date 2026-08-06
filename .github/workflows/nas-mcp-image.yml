@@ -54,6 +54,9 @@ jobs:
       - name: Verify protocol contract
         run: pnpm --filter @synology-monitor/nas-mcp run test:protocol-contract
 
+      - name: Test NAS MCP
+        run: pnpm --filter @synology-monitor/nas-mcp test
+
       - name: Build NAS MCP
         run: pnpm --filter @synology-monitor/nas-mcp run build
 

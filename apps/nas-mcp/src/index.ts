@@ -5,20 +5,11 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
 import { runJobTool } from "./job-client.js";
-import {
-  ALL_TOOL_DEFS,
-  type McpToolDef,
-  searchTools,
-  formatToolForSearch,
-  findToolByName,
-  getGroup,
-  listUntaggedTools,
-} from "./nas-tools.js";
+import { ALL_TOOL_DEFS, type McpToolDef, searchTools, formatToolForSearch, findToolByName, getGroup, listUntaggedTools } from "./nas-tools.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.MCP_PORT ?? "3001", 10);
-const BEARER_TOKEN = process.env.MCP_BEARER_TOKEN ?? "";
 
 /**
  * Hard ceiling on any single tool invocation. Fires an MCP error rather than
@@ -103,46 +94,50 @@ const allEnabled = new Set<string>([...enabledRead, ...enabledWrite]);
 {
   const untagged = listUntaggedTools().filter((n) => allEnabled.has(n));
   if (untagged.length) {
-    console.warn(
-      `[nas-mcp] ${untagged.length} enabled tool(s) untagged in TOOL_GROUPS (assigned group="misc"): ${untagged.join(", ")}`,
-    );
+    console.warn(`[nas-mcp] ${untagged.length} enabled tool(s) untagged in TOOL_GROUPS (assigned group="misc"): ${untagged.join(", ")}`);
   }
 }
 
 // ─── Tool deadline wrapper ────────────────────────────────────────────────────
 
-type ToolResult = { content: { type: "text"; text: string }[] };
+export type ToolResult = {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+};
 
-async function withToolDeadline(toolName: string, fn: () => Promise<ToolResult>): Promise<ToolResult> {
+export async function withToolDeadline(toolName: string, fn: (signal: AbortSignal) => Promise<ToolResult>, timeoutMs = TOOL_DEADLINE_MS): Promise<ToolResult> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout>;
   const deadline = new Promise<ToolResult>((resolve) => {
     timer = setTimeout(() => {
-      console.warn(`[nas-mcp] Tool "${toolName}" deadline reached after ${TOOL_DEADLINE_MS}ms`);
+      controller.abort();
+      console.warn(`[nas-mcp] Tool "${toolName}" deadline reached after ${timeoutMs}ms`);
       resolve({
-        content: [{
-          type: "text" as const,
-          text: `Tool "${toolName}" timed out after ${TOOL_DEADLINE_MS / 1000}s. The NAS may be under heavy load or unreachable. Try again in a moment, or target a single NAS instead of "both".`,
-        }],
+        isError: true,
+        _meta: { category: "deadline_exceeded" },
+        content: [
+          {
+            type: "text" as const,
+            text: `Tool "${toolName}" timed out after ${timeoutMs / 1000}s. The underlying request was cancelled.`,
+          },
+        ],
       });
-    }, TOOL_DEADLINE_MS);
+    }, timeoutMs);
   });
   try {
-    return await Promise.race([fn(), deadline]);
+    return await Promise.race([fn(controller.signal), deadline]);
   } finally {
     clearTimeout(timer!);
   }
 }
 
-async function executePredefinedToolOnNas(
-  tool: McpToolDef,
-  input: Record<string, unknown>,
-  config: ReturnType<typeof getNasConfigs>[number],
-): Promise<string> {
+export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record<string, unknown>, config: ReturnType<typeof getNasConfigs>[number], signal?: AbortSignal): Promise<string> {
   // Native job tools (file inventory) dispatch to nas-api /jobs endpoints
   // instead of building and executing a shell command.
   if (tool.job) {
     try {
-      return await runJobTool(tool, input, config);
+      return await runJobTool(tool, input, config, { signal });
     } catch (err) {
       return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -161,12 +156,14 @@ async function executePredefinedToolOnNas(
 
   try {
     if (!tool.write) {
-      const result = await nasExec(config, command, 1);
+      const result = await nasExec(config, command, 1, undefined, undefined, {
+        signal,
+      });
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
       return `[${config.name}]\n${output || "(no output)"}`;
     }
 
-    const preview = await nasPreview(config, command);
+    const preview = await nasPreview(config, command, { signal });
 
     if (preview.blocked) {
       return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
@@ -194,7 +191,7 @@ async function executePredefinedToolOnNas(
       approvalToken = buildApprovalToken(config, command, preview.tier);
     }
 
-    const result = await nasExec(config, command, preview.tier, approvalToken);
+    const result = await nasExec(config, command, preview.tier, approvalToken, undefined, { signal });
     const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
     return `[${config.name}]\n${output || "(no output)"}`;
   } catch (err) {
@@ -206,18 +203,20 @@ async function executePredefinedToolOnNas(
  * Runs a predefined tool against the requested target NAS(es), returning the
  * combined text result. Shared between eager registration and invoke_tool.
  */
-async function runPredefinedTool(
-  tool: McpToolDef,
-  input: Record<string, unknown>,
-): Promise<ToolResult> {
+export async function runPredefinedTool(tool: McpToolDef, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
   const target = (input.target as string) ?? "both";
   const configs = getNasConfigs(target);
   if (configs.length === 0) {
     return {
-      content: [{ type: "text" as const, text: `No NAS configured for target "${target}". Valid targets: edgesynology1, edgesynology2, both.` }],
+      content: [
+        {
+          type: "text" as const,
+          text: `No NAS configured for target "${target}". Valid targets: edgesynology1, edgesynology2, both.`,
+        },
+      ],
     };
   }
-  const results = await Promise.all(configs.map((config) => executePredefinedToolOnNas(tool, input, config)));
+  const results = await Promise.all(configs.map((config) => executePredefinedToolOnNas(tool, input, config, signal)));
   return {
     content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
   };
@@ -227,12 +226,7 @@ function formatToolForSearchWithInvocation(tool: McpToolDef): string {
   const base = formatToolForSearch(tool);
   const safety = tool.write ? "write-preview-required" : "read-only";
   const invocation = `invoke_tool({ name: "${tool.name}", target: "edgesynology1|edgesynology2|both", args: { ... } })`;
-  return [
-    base,
-    `Safety: ${safety}`,
-    `Group: ${getGroup(tool.name)}`,
-    `Invoke: ${invocation}`,
-  ].join("\n");
+  return [base, `Safety: ${safety}`, `Group: ${getGroup(tool.name)}`, `Invoke: ${invocation}`].join("\n");
 }
 
 type CapabilityParam = {
@@ -242,12 +236,24 @@ type CapabilityParam = {
   default?: unknown;
 };
 
-function unwrapZod(schema: z.ZodTypeAny): { inner: z.ZodTypeAny; optional: boolean; defaultVal: unknown } {
+function unwrapZod(schema: z.ZodTypeAny): {
+  inner: z.ZodTypeAny;
+  optional: boolean;
+  defaultVal: unknown;
+} {
   let inner: z.ZodTypeAny = schema;
   let optional = false;
   let defaultVal: unknown;
   for (let i = 0; i < 8; i += 1) {
-    const def = (inner as unknown as { _def?: { typeName?: string; innerType?: z.ZodTypeAny; defaultValue?: () => unknown } })._def;
+    const def = (
+      inner as unknown as {
+        _def?: {
+          typeName?: string;
+          innerType?: z.ZodTypeAny;
+          defaultValue?: () => unknown;
+        };
+      }
+    )._def;
     if (!def) break;
     if (def.typeName === "ZodOptional" || def.typeName === "ZodNullable") {
       optional = true;
@@ -290,7 +296,10 @@ function describeParam(name: string, schema: z.ZodTypeAny): CapabilityParam & { 
   return param;
 }
 
-function capabilityParams(tool: McpToolDef): { required: CapabilityParam[]; optional: CapabilityParam[] } {
+function capabilityParams(tool: McpToolDef): {
+  required: CapabilityParam[];
+  optional: CapabilityParam[];
+} {
   const required: CapabilityParam[] = [];
   const optional: CapabilityParam[] = [];
   for (const [name, schema] of Object.entries(tool.params)) {
@@ -364,8 +373,7 @@ function capabilityContract(tool: McpToolDef, includeRelated = false): Record<st
     ],
   };
   if (includeRelated) {
-    contract.related_tools = ALL_TOOL_DEFS
-      .filter((candidate) => candidate.name !== tool.name && allEnabled.has(candidate.name) && getGroup(candidate.name) === getGroup(tool.name))
+    contract.related_tools = ALL_TOOL_DEFS.filter((candidate) => candidate.name !== tool.name && allEnabled.has(candidate.name) && getGroup(candidate.name) === getGroup(tool.name))
       .slice(0, 10)
       .map((candidate) => candidate.name);
   }
@@ -393,16 +401,15 @@ function jsonToolResult(value: unknown): ToolResult {
 
 function closestToolNames(name: string): string[] {
   const wanted = name.toLowerCase();
-  return ALL_TOOL_DEFS
-    .map((tool) => {
-      const candidate = tool.name.toLowerCase();
-      let score = 0;
-      if (candidate.includes(wanted) || wanted.includes(candidate)) score += 10;
-      for (const part of wanted.split(/[_\W]+/).filter(Boolean)) {
-        if (candidate.includes(part)) score += 2;
-      }
-      return { name: tool.name, score };
-    })
+  return ALL_TOOL_DEFS.map((tool) => {
+    const candidate = tool.name.toLowerCase();
+    let score = 0;
+    if (candidate.includes(wanted) || wanted.includes(candidate)) score += 10;
+    for (const part of wanted.split(/[_\W]+/).filter(Boolean)) {
+      if (candidate.includes(part)) score += 2;
+    }
+    return { name: tool.name, score };
+  })
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
     .slice(0, 6)
@@ -419,6 +426,14 @@ function validationSchemaForTool(tool: McpToolDef): z.ZodObject<Record<string, z
   return z.object(params);
 }
 
+export function isToolEnabled(tool: McpToolDef): boolean {
+  return tool.write ? enabledWrite.has(tool.name) : enabledRead.has(tool.name);
+}
+
+export function alwaysOnToolNames(): string[] {
+  return ["list_capabilities", "get_capability_details", "tool_search", "invoke_tool", "run_command", ...EAGER_TOOLS];
+}
+
 /**
  * Registers a single predefined tool directly with the MCP server. Used only
  * for the small set of eagerly-loaded tools; everything else flows through
@@ -428,13 +443,7 @@ function registerToolDef(server: FastMCP, tool: McpToolDef): void {
   const params = tool.write
     ? {
         ...tool.params,
-        confirmed: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe(
-            "Set to true to execute after reviewing the command preview. Omit or set false to see what will happen first.",
-          ),
+        confirmed: z.boolean().optional().default(false).describe("Set to true to execute after reviewing the command preview. Omit or set false to see what will happen first."),
       }
     : tool.params;
 
@@ -443,263 +452,341 @@ function registerToolDef(server: FastMCP, tool: McpToolDef): void {
     description: tool.description,
     parameters: z.object(params),
     timeoutMs: TOOL_DEADLINE_MS,
-    execute: async (input) => withToolDeadline(tool.name, () => runPredefinedTool(tool, input as Record<string, unknown>)),
+    execute: async (input) => withToolDeadline(tool.name, (signal) => runPredefinedTool(tool, input as Record<string, unknown>, signal)),
   });
 }
 
 // ─── FastMCP server ───────────────────────────────────────────────────────────
 
-const server = new FastMCP({
-  name: "synology-nas",
-  version: "1.0.0",
-  instructions: MCP_INSTRUCTIONS,
-  health: { enabled: false },
-  authenticate: async (req) => {
-    if (!BEARER_TOKEN) return {};
-    if (req.headers.authorization === `Bearer ${BEARER_TOKEN}`) return {};
-    throw new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  },
-});
+export interface NasMcpFactoryOptions {
+  bearerToken?: string;
+  testMode?: boolean;
+}
 
-server.getApp().get("/health", (c) => {
-  return c.json({
-    status: "ok",
-    service: "nas-mcp",
-    framework: "fastmcp",
-    read_tools: enabledRead.size,
-    write_tools: enabledWrite.size,
-    registry_tools: ALL_TOOL_DEFS.length,
-    always_on: ["list_capabilities", "get_capability_details", "tool_search", "invoke_tool", "run_command", ...EAGER_TOOLS],
-  });
-});
+export function validateRuntimeConfig(options: NasMcpFactoryOptions = {}): {
+  bearerToken: string;
+  testMode: boolean;
+} {
+  const testMode = options.testMode ?? process.env.MCP_TEST_MODE === "1";
+  const bearerToken = options.bearerToken ?? process.env.MCP_BEARER_TOKEN ?? "";
+  if (!testMode) {
+    const missing = [
+      ["MCP_BEARER_TOKEN", bearerToken],
+      ["NAS_EDGE1_API_URL", process.env.NAS_EDGE1_API_URL],
+      ["NAS_EDGE1_API_SECRET", process.env.NAS_EDGE1_API_SECRET],
+      ["NAS_EDGE1_API_SIGNING_KEY", process.env.NAS_EDGE1_API_SIGNING_KEY],
+      ["NAS_EDGE2_API_URL", process.env.NAS_EDGE2_API_URL],
+      ["NAS_EDGE2_API_SECRET", process.env.NAS_EDGE2_API_SECRET],
+      ["NAS_EDGE2_API_SIGNING_KEY", process.env.NAS_EDGE2_API_SIGNING_KEY],
+    ]
+      .filter(([, value]) => !value?.trim())
+      .map(([name]) => name);
+    if (missing.length) throw new Error(`Missing required production configuration: ${missing.join(", ")}`);
+  }
+  return { bearerToken, testMode };
+}
 
-// ── Always-on tool 1: list_capabilities ──────────────────────────────────────
-server.addTool({
-  name: "list_capabilities",
-  description: LIST_CAPABILITIES_DESCRIPTION,
-  parameters: z.object({
-    group: z.string().optional().default("").describe("Optional group filter, e.g. storage, recovery, packages, logs, network, files, backup, write_restart."),
-    safety: z.string().optional().default("").describe("Optional safety filter: read_only or state_changing_preview_required."),
-    limit: z.number().int().optional().default(100).describe("Max capabilities to return. Default 100, max 200."),
-  }),
-  timeoutMs: TOOL_DEADLINE_MS,
-  execute: async ({ group, safety, limit }) => {
-    return withToolDeadline("list_capabilities", async () => {
-      const groupFilter = (group ?? "").trim();
-      const safetyFilter = (safety ?? "").trim();
-      const cap = Math.max(1, Math.min(limit ?? 100, 200));
-      const enabledTools = ALL_TOOL_DEFS
-        .filter((tool) => allEnabled.has(tool.name))
-        .filter((tool) => !groupFilter || getGroup(tool.name) === groupFilter)
-        .filter((tool) => {
-          if (!safetyFilter) return true;
-          return (tool.write ? "state_changing_preview_required" : "read_only") === safetyFilter;
-        });
-      return jsonToolResult({
-        ok: true,
-        groups: Array.from(new Set(ALL_TOOL_DEFS.map((tool) => getGroup(tool.name)))).sort(),
-        safety_classes: ["read_only", "state_changing_preview_required"],
-        count: Math.min(enabledTools.length, cap),
-        total_matches: enabledTools.length,
-        capabilities: enabledTools.slice(0, cap).map(compactCapability),
-        boundaries: [
-          "No arbitrary write shell access through run_command; NAS API blocks write commands there.",
-          "Named write tools preview first and require args.confirmed=true to execute.",
-          "Targets are edgesynology1, edgesynology2, or both.",
-          "Kubernetes operations are not available.",
-        ],
-      });
-    });
-  },
-});
-
-// ── Always-on tool 2: get_capability_details ─────────────────────────────────
-server.addTool({
-  name: "get_capability_details",
-  description: GET_CAPABILITY_DETAILS_DESCRIPTION,
-  parameters: z.object({
-    name: z.string().describe("Exact operation name from list_capabilities or tool_search."),
-  }),
-  timeoutMs: TOOL_DEADLINE_MS,
-  execute: async ({ name }) => {
-    return withToolDeadline("get_capability_details", async () => {
-      const tool = findToolByName(name);
-      if (!tool) {
-        return jsonToolResult({
-          ok: false,
-          error: `Unknown operation: ${name}`,
-          nearby_matches: closestToolNames(name),
-          hint: "Call list_capabilities or tool_search to discover exact names.",
-        });
-      }
-      return jsonToolResult({
-        ok: true,
-        capability: capabilityContract(tool, true),
-      });
-    });
-  },
-});
-
-// ── Always-on tool 3: tool_search ────────────────────────────────────────────
-server.addTool({
-  name: "tool_search",
-  description: TOOL_SEARCH_DESCRIPTION,
-  parameters: z.object({
-    query: z.string().describe("Keywords describing what you want to do, e.g. 'snapshot recovery', 'sharesync errors', 'restart drive package'."),
-    limit: z.number().int().optional().default(8).describe("Max tools to return. Default 8, max 30."),
-  }),
-  timeoutMs: TOOL_DEADLINE_MS,
-  execute: async ({ query, limit }) => {
-    return withToolDeadline("tool_search", async () => {
-      const matches = searchTools(query, allEnabled);
-      if (matches.length === 0) {
-        return {
-          content: [{
-            type: "text" as const,
-            text: `No tools matched "${query}". Try broader keywords (e.g. snapshot, drive, disk, network, files, logs, restart) or a group name (system, performance, network, security, drive_sync, logs, storage, files, recovery, packages, backup, write_restart, write_storage, write_files, write_tasks).`,
-          }],
-        };
-      }
-      const cap = Math.max(1, Math.min(limit ?? 8, 30));
-      const top = matches.slice(0, cap);
-      return jsonToolResult({
-        ok: true,
-        query,
-        count: top.length,
-        total_matches: matches.length,
-        operations: top.map((tool) => ({
-          ...capabilityContract(tool, true),
-          legacy_text: formatToolForSearchWithInvocation(tool),
-        })),
-        hint: "Use get_capability_details(name) for one full contract, then invoke_tool with the exact name, target, and args.",
-      });
-    });
-  },
-});
-
-// ── Always-on tool 4: invoke_tool ────────────────────────────────────────────
-server.addTool({
-  name: "invoke_tool",
-  description: INVOKE_TOOL_DESCRIPTION,
-  parameters: z.object({
-    name: z.string().describe("Exact operation name from tool_search output."),
-    target: z
-      .enum(["edgesynology1", "edgesynology2", "both"])
-      .describe("Which NAS to run on."),
-    args: z
-      .record(z.unknown())
-      .optional()
-      .describe("Tool-specific parameters from the tool_search schema. For write tools, include confirmed: true to execute after preview approval."),
-  }),
-  timeoutMs: TOOL_DEADLINE_MS,
-  execute: async ({ name, target, args }) => {
-    return withToolDeadline(`invoke_tool:${name}`, async () => {
-      const tool = findToolByName(name);
-      if (!tool) {
-        return jsonToolResult({
-          ok: false,
-          error: `Unknown operation: "${name}".`,
-          nearby_matches: closestToolNames(name),
-          hint: "Call tool_search, list_capabilities, or get_capability_details with an exact operation name.",
-        });
-      }
-      const isEnabled = tool.write ? enabledWrite.has(name) : enabledRead.has(name);
-      if (!isEnabled) {
-        return jsonToolResult({
-          ok: false,
-          error: `Operation "${name}" exists but is disabled in tools-config.json.`,
-          expected_list: tool.write ? "enabled_write_tools" : "enabled_read_tools",
-          group: getGroup(name),
-        });
-      }
-      const parsed = validationSchemaForTool(tool).safeParse(args ?? {});
-      if (!parsed.success) {
-        return jsonToolResult({
-          ok: false,
-          error: `Invalid arguments for "${name}".`,
-          issues: parsed.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message,
-          })),
-          expected: capabilityContract(tool),
-        });
-      }
-      const input: Record<string, unknown> = { ...parsed.data, target };
-      return runPredefinedTool(tool, input);
-    });
-  },
-});
-
-// ── Always-on tool 5: run_command (free-form, tier-1-only) ──────────────────
-if (enabledRead.has("run_command")) {
-  server.addTool({
-    name: "run_command",
-    description: "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution. There is no per-session call limit: a blocked command is permanently and statelessly refused because of its pattern, so retrying it or starting a new session cannot change the result; change the command instead. For named capabilities, prefer tool_search followed by invoke_tool.",
-    parameters: z.object({
-      target: z
-        .enum(["edgesynology1", "edgesynology2", "both"])
-        .describe("Which NAS to run on."),
-      command: z.string().describe("The shell command to execute."),
-    }),
-    timeoutMs: TOOL_DEADLINE_MS,
-    execute: async ({ target, command }) => {
-      return withToolDeadline("run_command", async () => {
-        const configs = getNasConfigs(target);
-        if (configs.length === 0) {
-          return {
-            content: [{ type: "text" as const, text: `No NAS configured for target "${target}".` }],
-          };
-        }
-        const results = await Promise.all(
-          configs.map(async (config) => {
-            try {
-              const preview = await nasPreview(config, command);
-              if (preview.blocked) {
-                return `[${config.name}] Blocked: ${preview.summary}`;
-              }
-              if (preview.tier >= 2) {
-                return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use invoke_tool with a specific write tool.`;
-              }
-              const result = await nasExec(config, command, 1);
-              const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
-              return `[${config.name}]\n${output || "(no output)"}`;
-            } catch (err) {
-              return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
-            }
-          }),
-        );
-        return {
-          content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
-        };
-      });
+export function authenticateBearer(authorization: string | undefined, bearerToken: string, testMode = false): void {
+  if (testMode && !bearerToken) return;
+  if (authorization === `Bearer ${bearerToken}`) return;
+  const invalid = Boolean(authorization);
+  throw new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: {
+      "Content-Type": "application/json",
+      "WWW-Authenticate": invalid ? 'Bearer realm="nas-mcp", error="invalid_token"' : 'Bearer realm="nas-mcp"',
     },
   });
 }
 
-// ── Eager freebies: check_disk_space + restart_nas_api ──────────────────────
-// Common enough that paying tool_search round-trip for them isn't worth it.
-for (const eagerName of EAGER_TOOLS) {
-  const tool = ALL_TOOL_DEFS.find((t) => t.name === eagerName);
-  if (!tool) continue;
-  const isEnabled = tool.write ? enabledWrite.has(tool.name) : enabledRead.has(tool.name);
-  if (!isEnabled) continue;
-  registerToolDef(server, tool);
+export function createNasMcpServer(options: NasMcpFactoryOptions = {}): FastMCP {
+  const { bearerToken, testMode } = validateRuntimeConfig(options);
+  const server = new FastMCP({
+    name: "synology-nas",
+    version: "1.0.0",
+    instructions: MCP_INSTRUCTIONS,
+    health: { enabled: false },
+    authenticate: async (req) => {
+      authenticateBearer(req.headers.authorization, bearerToken, testMode);
+      return {};
+    },
+  });
+
+  const parseAllowlist = (value: string | undefined) =>
+    new Set(
+      (value ?? "")
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    );
+  const allowedHosts = parseAllowlist(process.env.MCP_ALLOWED_HOSTS);
+  const allowedOrigins = parseAllowlist(process.env.MCP_ALLOWED_ORIGINS);
+  if (!testMode && allowedHosts.size === 0) allowedHosts.add("nas-mcp.designflow.app");
+  if (testMode) {
+    allowedHosts.add("localhost");
+    allowedHosts.add("127.0.0.1");
+  }
+  server.getApp().use("*", async (c, next) => {
+    // Health is deliberately public and redacted. Coolify probes it with an
+    // internal Host value that is not part of the public MCP allowlist.
+    if (c.req.path === "/health") {
+      await next();
+      return;
+    }
+    const rawHost = c.req.header("host") ?? "";
+    const host = rawHost.replace(/:\d+$/, "");
+    if (!allowedHosts.has(host)) return c.json({ error: "Host not allowed" }, 403);
+    const origin = c.req.header("origin");
+    if (origin && !allowedOrigins.has(origin)) return c.json({ error: "Origin not allowed" }, 403);
+    await next();
+  });
+
+  server.getApp().get("/health", (c) => {
+    return c.json({
+      status: "ok",
+      service: "nas-mcp",
+      framework: "fastmcp",
+      read_tools: enabledRead.size,
+      write_tools: enabledWrite.size,
+      registry_tools: ALL_TOOL_DEFS.length,
+      always_on: ["list_capabilities", "get_capability_details", "tool_search", "invoke_tool", "run_command", ...EAGER_TOOLS],
+    });
+  });
+
+  // ── Always-on tool 1: list_capabilities ──────────────────────────────────────
+  server.addTool({
+    name: "list_capabilities",
+    description: LIST_CAPABILITIES_DESCRIPTION,
+    parameters: z.object({
+      group: z.string().optional().default("").describe("Optional group filter, e.g. storage, recovery, packages, logs, network, files, backup, write_restart."),
+      safety: z.string().optional().default("").describe("Optional safety filter: read_only or state_changing_preview_required."),
+      limit: z.number().int().optional().default(100).describe("Max capabilities to return. Default 100, max 200."),
+    }),
+    timeoutMs: TOOL_DEADLINE_MS,
+    execute: async ({ group, safety, limit }) => {
+      return withToolDeadline("list_capabilities", async () => {
+        const groupFilter = (group ?? "").trim();
+        const safetyFilter = (safety ?? "").trim();
+        const cap = Math.max(1, Math.min(limit ?? 100, 200));
+        const enabledTools = ALL_TOOL_DEFS.filter((tool) => allEnabled.has(tool.name))
+          .filter((tool) => !groupFilter || getGroup(tool.name) === groupFilter)
+          .filter((tool) => {
+            if (!safetyFilter) return true;
+            return (tool.write ? "state_changing_preview_required" : "read_only") === safetyFilter;
+          });
+        return jsonToolResult({
+          ok: true,
+          groups: Array.from(new Set(ALL_TOOL_DEFS.map((tool) => getGroup(tool.name)))).sort(),
+          safety_classes: ["read_only", "state_changing_preview_required"],
+          count: Math.min(enabledTools.length, cap),
+          total_matches: enabledTools.length,
+          capabilities: enabledTools.slice(0, cap).map(compactCapability),
+          boundaries: [
+            "No arbitrary write shell access through run_command; NAS API blocks write commands there.",
+            "Named write tools preview first and require args.confirmed=true to execute.",
+            "Targets are edgesynology1, edgesynology2, or both.",
+            "Kubernetes operations are not available.",
+          ],
+        });
+      });
+    },
+  });
+
+  // ── Always-on tool 2: get_capability_details ─────────────────────────────────
+  server.addTool({
+    name: "get_capability_details",
+    description: GET_CAPABILITY_DETAILS_DESCRIPTION,
+    parameters: z.object({
+      name: z.string().describe("Exact operation name from list_capabilities or tool_search."),
+    }),
+    timeoutMs: TOOL_DEADLINE_MS,
+    execute: async ({ name }) => {
+      return withToolDeadline("get_capability_details", async () => {
+        const tool = findToolByName(name);
+        if (!tool) {
+          return jsonToolResult({
+            ok: false,
+            error: `Unknown operation: ${name}`,
+            nearby_matches: closestToolNames(name),
+            hint: "Call list_capabilities or tool_search to discover exact names.",
+          });
+        }
+        return jsonToolResult({
+          ok: true,
+          capability: capabilityContract(tool, true),
+        });
+      });
+    },
+  });
+
+  // ── Always-on tool 3: tool_search ────────────────────────────────────────────
+  server.addTool({
+    name: "tool_search",
+    description: TOOL_SEARCH_DESCRIPTION,
+    parameters: z.object({
+      query: z.string().describe("Keywords describing what you want to do, e.g. 'snapshot recovery', 'sharesync errors', 'restart drive package'."),
+      limit: z.number().int().optional().default(8).describe("Max tools to return. Default 8, max 30."),
+    }),
+    timeoutMs: TOOL_DEADLINE_MS,
+    execute: async ({ query, limit }) => {
+      return withToolDeadline("tool_search", async () => {
+        const matches = searchTools(query, allEnabled);
+        if (matches.length === 0) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `No tools matched "${query}". Try broader keywords (e.g. snapshot, drive, disk, network, files, logs, restart) or a group name (system, performance, network, security, drive_sync, logs, storage, files, recovery, packages, backup, write_restart, write_storage, write_files, write_tasks).`,
+              },
+            ],
+          };
+        }
+        const cap = Math.max(1, Math.min(limit ?? 8, 30));
+        const top = matches.slice(0, cap);
+        return jsonToolResult({
+          ok: true,
+          query,
+          count: top.length,
+          total_matches: matches.length,
+          operations: top.map((tool) => ({
+            ...capabilityContract(tool, true),
+            legacy_text: formatToolForSearchWithInvocation(tool),
+          })),
+          hint: "Use get_capability_details(name) for one full contract, then invoke_tool with the exact name, target, and args.",
+        });
+      });
+    },
+  });
+
+  // ── Always-on tool 4: invoke_tool ────────────────────────────────────────────
+  server.addTool({
+    name: "invoke_tool",
+    description: INVOKE_TOOL_DESCRIPTION,
+    parameters: z.object({
+      name: z.string().describe("Exact operation name from tool_search output."),
+      target: z.enum(["edgesynology1", "edgesynology2", "both"]).describe("Which NAS to run on."),
+      args: z.record(z.unknown()).optional().describe("Tool-specific parameters from the tool_search schema. For write tools, include confirmed: true to execute after preview approval."),
+    }),
+    timeoutMs: TOOL_DEADLINE_MS,
+    execute: async ({ name, target, args }) => {
+      return withToolDeadline(`invoke_tool:${name}`, async (signal) => {
+        const tool = findToolByName(name);
+        if (!tool) {
+          return jsonToolResult({
+            ok: false,
+            error: `Unknown operation: "${name}".`,
+            nearby_matches: closestToolNames(name),
+            hint: "Call tool_search, list_capabilities, or get_capability_details with an exact operation name.",
+          });
+        }
+        const isEnabled = isToolEnabled(tool);
+        if (!isEnabled) {
+          return jsonToolResult({
+            ok: false,
+            error: `Operation "${name}" exists but is disabled in tools-config.json.`,
+            expected_list: tool.write ? "enabled_write_tools" : "enabled_read_tools",
+            group: getGroup(name),
+          });
+        }
+        const parsed = validationSchemaForTool(tool).safeParse(args ?? {});
+        if (!parsed.success) {
+          return jsonToolResult({
+            ok: false,
+            error: `Invalid arguments for "${name}".`,
+            issues: parsed.error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message,
+            })),
+            expected: capabilityContract(tool),
+          });
+        }
+        const input: Record<string, unknown> = { ...parsed.data, target };
+        return runPredefinedTool(tool, input, signal);
+      });
+    },
+  });
+
+  // ── Always-on tool 5: run_command (free-form, tier-1-only) ──────────────────
+  if (enabledRead.has("run_command")) {
+    server.addTool({
+      name: "run_command",
+      description:
+        "Run any read-only shell command on a Synology NAS for deep diagnosis. Write commands are automatically blocked by the NAS API validator before execution. There is no per-session call limit: a blocked command is permanently and statelessly refused because of its pattern, so retrying it or starting a new session cannot change the result; change the command instead. For named capabilities, prefer tool_search followed by invoke_tool.",
+      parameters: z.object({
+        target: z.enum(["edgesynology1", "edgesynology2", "both"]).describe("Which NAS to run on."),
+        command: z.string().describe("The shell command to execute."),
+      }),
+      timeoutMs: TOOL_DEADLINE_MS,
+      execute: async ({ target, command }) => {
+        return withToolDeadline("run_command", async (signal) => {
+          const configs = getNasConfigs(target);
+          if (configs.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `No NAS configured for target "${target}".`,
+                },
+              ],
+            };
+          }
+          const results = await Promise.all(
+            configs.map(async (config) => {
+              try {
+                const preview = await nasPreview(config, command, { signal });
+                if (preview.blocked) {
+                  return `[${config.name}] Blocked: ${preview.summary}`;
+                }
+                if (preview.tier >= 2) {
+                  return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use invoke_tool with a specific write tool.`;
+                }
+                const result = await nasExec(config, command, 1, undefined, undefined, { signal });
+                const output = [result.stdout, result.stderr].filter(Boolean).join("\n");
+                return `[${config.name}]\n${output || "(no output)"}`;
+              } catch (err) {
+                return `[${config.name}] Error: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }),
+          );
+          return {
+            content: [{ type: "text" as const, text: results.join("\n\n---\n\n") }],
+          };
+        });
+      },
+    });
+  }
+
+  // ── Eager freebies: check_disk_space + restart_nas_api ──────────────────────
+  // Common enough that paying tool_search round-trip for them isn't worth it.
+  for (const eagerName of EAGER_TOOLS) {
+    const tool = ALL_TOOL_DEFS.find((t) => t.name === eagerName);
+    if (!tool) continue;
+    const isEnabled = tool.write ? enabledWrite.has(tool.name) : enabledRead.has(tool.name);
+    if (!isEnabled) continue;
+    registerToolDef(server, tool);
+  }
+
+  return server;
 }
 
-await server.start({
-  transportType: "httpStream",
-  httpStream: {
-    port: PORT,
-    host: "0.0.0.0",
-    endpoint: "/mcp",
-    stateless: true,
-    enableJsonResponse: true,
-  },
-});
+export async function startNasMcpServer(options: NasMcpFactoryOptions = {}): Promise<FastMCP> {
+  const server = createNasMcpServer(options);
+  await server.start({
+    transportType: "httpStream",
+    httpStream: {
+      port: PORT,
+      host: "0.0.0.0",
+      endpoint: "/mcp",
+      stateless: true,
+      enableJsonResponse: true,
+    },
+  });
 
-console.log(`NAS MCP FastMCP server listening on port ${PORT}`);
-console.log(`Registry: ${ALL_TOOL_DEFS.length} tools (${enabledRead.size} read + ${enabledWrite.size} write enabled)`);
-console.log(`Always-on: tool_search, invoke_tool, run_command, ${EAGER_TOOLS.join(", ")}`);
+  console.log(`NAS MCP FastMCP server listening on port ${PORT}`);
+  console.log(`Registry: ${ALL_TOOL_DEFS.length} tools (${enabledRead.size} read + ${enabledWrite.size} write enabled)`);
+  console.log(`Always-on: tool_search, invoke_tool, run_command, ${EAGER_TOOLS.join(", ")}`);
+  return server;
+}
+
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) await startNasMcpServer();
