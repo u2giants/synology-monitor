@@ -10,7 +10,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 |---:|---|---|---|---|
 | 0A | synology-monitor | ✅ done | 2026-08-05 | Shared formatter and four focused cases shipped in `bbfaf149`; validator regression and 69 shared tests pass |
 | 0B | synology-monitor | ✅ done | 2026-08-05 | Both web paths use the shared formatter; web typecheck and `guard:ai` pass in `bbfaf149` |
-| 0C | synology-monitor | ⚠ blocked | 2026-08-05 | Code/docs deployed at exact SHA `bbfaf149`; behavior gate failed because both NAS API health URLs timed out from the live MCP container. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
+| 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
 | 1 | both | ☐ open | 2026-08-05 | Capture exact current dependency and production build baselines |
 | 2 | synology-monitor | ☐ open | 2026-08-05 | Make npm/pnpm and lockfile use deterministic |
 | 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
@@ -194,11 +194,13 @@ Phase 0 code and documentation were committed and pushed on 2026-08-05 as
 `bbfaf149e47211e05c225129103c774889765fe8`. The NAS MCP and web workflows passed,
 and read-only inspection of both running production containers confirmed that
 exact OCI revision. The live NAS MCP initialize response contains the new
-no-call-limit instructions. `REFUSAL-009` nevertheless failed because both NAS
-API health URLs timed out from inside the deployed NAS MCP container; the
-validator therefore could not return its refusal. `REFUSAL-010` was not run.
-Phase A has not started because Phase 0's deployed behavior gate remains blocked
-on separately authorized restoration or confirmation of NAS API reachability.
+no-call-limit instructions. The first deployed evaluation failed because both NAS
+Tailscale services had stopped accepting normal tailnet traffic, so the validator
+was unreachable. Albert restarted Tailscale on both NASes on 2026-08-06. Both NAS
+API health endpoints then responded within five seconds, the known blocked command
+returned the permanent/stateless explanation in about one second, and fresh Codex
+sessions passed `REFUSAL-009` and `REFUSAL-010`. Do not redo Phase 0. Phase A has
+not started; the next session starts at Step 1.
 
 No official SDK migration described in Phases A through E has begun.
 
