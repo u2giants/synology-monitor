@@ -1,0 +1,879 @@
+# MCP `2026-07-28` Foundations and Official SDK v2 Migration Plan
+
+Updated: 2026-08-05 (America/New_York)
+
+## STATUS
+
+This file is the cross-repository source of truth for the work. Whoever completes a step must update this table, the matching current-state text, and the verification evidence before ending that session.
+
+| Step | Repository | Status | Last updated | Evidence / next action |
+|---:|---|---|---|---|
+| 1 | both | ☐ open | 2026-08-05 | Capture exact current dependency and production build baselines |
+| 2 | synology-monitor | ☐ open | 2026-08-05 | Make npm/pnpm and lockfile use deterministic |
+| 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
+| 4 | both | ☐ open | 2026-08-05 | Build one shared protocol-conformance test contract |
+| 5 | synology-monitor | ☐ open | 2026-08-05 | Add NAS MCP unit, HTTP, cancellation, and timeout tests |
+| 6 | devops-mcp | ☐ open | 2026-08-05 | Add DevOps MCP unit, HTTP, auth, process, and timeout tests |
+| 7 | devops-mcp | ☐ open | 2026-08-05 | Remove obsolete SSE and URL-token paths after usage proof |
+| 8 | both | ☐ open | 2026-08-05 | Standardize health, build, protocol, auth, and error metadata |
+| 9 | devops-mcp | ☐ open | 2026-08-05 | Align synchronous deadlines below client limits |
+| 10 | both | ☐ open | 2026-08-05 | Define and implement durable long-operation handles |
+| 11 | synology-monitor | ☐ open | 2026-08-05 | Migrate NAS MCP to the official TypeScript v2 SDK |
+| 12 | devops-mcp | ☐ open | 2026-08-05 | Migrate DevOps MCP to the official Python v2 SDK |
+| 13 | both | ☐ open | 2026-08-05 | Run side-by-side compatibility and failure-injection tests |
+| 14 | both | ☐ open | 2026-08-05 | Cut over, verify production, remove old paths, update docs |
+
+Fresh sessions start at the first open row. Re-read all later phases before starting a phase so that earlier discoveries do not make downstream instructions stale.
+
+## 1. The ultimate goal
+
+POP Creations needs NAS MCP and DevOps MCP to connect reliably from Claude, Codex, Roo Code, Windsurf, and other approved clients without stale sessions, initialization loops, unexplained multi-minute hangs, or successful server work being reported as a client failure.
+
+When this plan is complete:
+
+- both servers speak the stable MCP wire revision `2026-07-28` through exact-pinned official SDK v2 packages;
+- both remain stateless over Streamable HTTP at `/mcp`;
+- protocol sessions and initialization handshakes are not application failure points;
+- short operations finish before the shortest supported client deadline;
+- legitimate long work returns a durable operation handle immediately and is checked separately;
+- dependency builds are repeatable;
+- authentication, cancellation, restarts, stale headers, client disconnects, and proxy behavior are covered by automated tests;
+- the production build SHA and protocol behavior are independently verified after deployment.
+
+If a step conflicts with this goal, the goal wins. Stop and flag the conflict instead of following a stale instruction mechanically.
+
+## 2. What the applications are
+
+### Synology Monitor and NAS MCP
+
+Repository: `https://github.com/u2giants/synology-monitor`
+
+Normal local path: `/worksp/monitor/app`
+
+Branch policy: `main` only.
+
+NAS MCP is the TypeScript service under `apps/nas-mcp`. It gives approved AI clients guarded diagnostic and repair access to two production Synology NAS units. It does not connect directly to a shell on the public endpoint. It calls the Go NAS API running on each NAS, which independently validates commands and approval tiers. The public MCP endpoint is `https://nas-mcp.designflow.app/mcp`. The service runs as a Coolify application and is built as `ghcr.io/u2giants/synology-monitor-nas-mcp`.
+
+Important related code:
+
+- `apps/nas-mcp/src/index.ts`: MCP construction, tool registration, auth, health route, and HTTP startup.
+- `apps/nas-mcp/src/nas-client.ts`: NAS API HTTP calls and the 25-second command safety cap.
+- `apps/nas-mcp/src/job-client.ts`: existing native background-job client.
+- `packages/shared/src/nas-tools.ts` and related shared TypeScript sources: the 132-operation NAS catalog.
+- `apps/nas-api/`: Go service that executes guarded NAS commands and durable jobs.
+- `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and `docs/mcp-incident-2026-05.md`: current design and incident history.
+
+### DevOps MCP
+
+Repository: `https://github.com/u2giants/devops-mcp`
+
+The implementing session must clone it to a stable workspace path such as `/worksp/devops-mcp`; the planning audit used a temporary read-only clone only.
+
+Branch policy: `main` only.
+
+DevOps MCP is a Python service that gives approved AI clients audited, root-equivalent diagnostic and emergency access to the production VPS. It runs inside a privileged container with the host filesystem, PID namespace, and Docker socket available. Its public MCP endpoint is `https://mcp.designflow.app/mcp`. It is a Coolify service identified in its documentation as `vj5f76xet05bxwdq4utw1kho` and is built as `ghcr.io/u2giants/devops-mcp`.
+
+Important related code:
+
+- `server.py`: MCP construction, Starlette HTTP app, bearer authentication, audit middleware, tool registry, command execution, file operations, Docker operations, and systemd operations.
+- `test_server.py`: currently very small in-process tests.
+- `requirements.txt`: currently unbounded FastMCP and Uvicorn requirements.
+- `Dockerfile`, `docker-compose.yml`, and `.github/workflows/deploy.yml`: build and deployment.
+- `docs/server.md`, `docs/architecture.md`, `docs/gotchas.md`, `docs/troubleshooting.md`, and client setup docs: design and incident history.
+
+### Language decision
+
+The services use different languages because of their histories and neighboring code, not because MCP requires it.
+
+- Keep NAS MCP in TypeScript because its operation catalog, schemas, and monorepo tooling are already TypeScript.
+- Keep DevOps MCP in Python because its mature command, process-group, file-streaming, Docker, systemd, audit, ASGI, and test code is Python.
+- Standardize on the official MCP SDK family and the observable HTTP contract, not on one programming language.
+- Do not rewrite DevOps MCP in TypeScript merely for visual uniformity. That would replace security-sensitive, root-equivalent host code without solving a user-visible protocol problem.
+
+## 3. What triggered this work
+
+The request follows repeated connection and timeout failures across the two services:
+
+- NAS MCP returned `Bad Request: Server not initialized` in May 2026.
+- Clients reused stale session IDs and received `Session not found`.
+- A failed initialization or GET path could leave Claude waiting about four minutes.
+- NAS commands are capped at 25 seconds, NAS MCP tools at 45 seconds, and Roo Code gives up around 60 to 75 seconds.
+- DevOps MCP allows synchronous commands for 120 seconds by default and up to 600 seconds, so valid server work can continue after Roo has already declared failure.
+- DevOps MCP previously hung because child processes retained stdout pipes, large files were materialized, recursive directory results were fully sorted, and audit logs were loaded wholesale. Those four code-level causes were repaired, but there is still no universal request deadline or cancellation contract.
+
+The stable `2026-07-28` MCP wire revision removes protocol-level sessions, `Mcp-Session-Id`, and the `initialize` / `notifications/initialized` handshake for July 28 requests. It adds per-request protocol metadata and mandatory `server/discover`. Supported older wire revisions still use their earlier initialization rules through official SDK backward compatibility. This directly removes the protocol concepts behind several historical failures for July 28 clients, but it does not make long shell or filesystem work finish within a client timeout.
+
+Reproduction cases that the new automated suite must preserve are listed in Sections 9 and 10. Do not rely on manual recollection of the incidents.
+
+## 4. Scope
+
+### In scope
+
+- deterministic dependency management for both servers;
+- one shared protocol-conformance contract implemented in each repository;
+- HTTP, auth, restart, stale-header, cancellation, deadline, and proxy tests;
+- removal of unused legacy transport and URL-token behavior after usage proof;
+- standard health and build metadata;
+- a durable long-operation contract;
+- direct use of the official TypeScript SDK v2 in NAS MCP;
+- direct use of the official Python SDK v2 in DevOps MCP;
+- backward-compatibility tests for the real supported clients;
+- side-by-side deployment, production cutover, rollback, and documentation.
+
+### Not in this plan
+
+- rewriting DevOps MCP from Python to TypeScript;
+- rewriting NAS MCP from TypeScript to Python;
+- implementing raw JSON-RPC or MCP framing without an official SDK;
+- removing the NAS API's independent command validator or approval tiers;
+- raising the arbitrary NAS shell limit merely to accommodate longer work;
+- exposing all 132 NAS operations directly in `tools/list`;
+- replacing the five-tool DevOps discovery facade with all hidden operations;
+- changing shared Supabase data or schema;
+- changing unrelated production VPS, NAS, Coolify, Cloudflare, or ContextForge infrastructure;
+- adopting the optional Tasks extension as a hard requirement before supported clients prove compatibility;
+- changing client software's own timeout settings as the primary fix.
+
+## 5. Current state of the code
+
+### NAS MCP
+
+- `apps/nas-mcp/package.json` declares third-party TypeScript `fastmcp` `^4.0.1`.
+- The root pnpm lock resolves FastMCP 4.0.2 and official MCP SDK 1.29.0 indirectly.
+- `apps/nas-mcp/package-lock.json` is stale and conflicts with the root pnpm workflow.
+- `apps/nas-mcp/Dockerfile` uses `npm install`, so the container build does not enforce the repository's pnpm lock.
+- `apps/nas-mcp/src/index.ts` constructs a single FastMCP facade and starts Streamable HTTP with `stateless: true` and JSON responses.
+- NAS authentication currently fails open when `MCP_BEARER_TOKEN` is empty because `authenticate` returns success. The container migration must make production mode the default and refuse startup without a non-empty bearer.
+- The intended public endpoint is already stateless. It should not depend on a stored session surviving between requests or deployments.
+- Tool calls have both a FastMCP `timeoutMs` and a custom `Promise.race` deadline at 45 seconds. The custom race returns a timeout result but does not cancel its underlying promise.
+- `apps/nas-mcp/src/nas-client.ts` limits NAS `/exec` to 25 seconds with a five-second HTTP buffer. Preview is eight seconds. Native job HTTP calls are 15 seconds.
+- Calls targeting both NAS units run in parallel, not serially.
+- No meaningful NAS MCP unit or HTTP protocol suite currently gates CI.
+- The seven-tool facade and hidden 132-operation catalog are intentional and working. Preserve them.
+
+### DevOps MCP
+
+- `requirements.txt` declares `fastmcp>=2.14.0` and `uvicorn>=0.30.0` without upper bounds or a lockfile.
+- A routine container rebuild may therefore change the MCP framework and transport behavior without a source change.
+- `server.py` constructs the unrelated Python FastMCP project and mounts stateless Streamable HTTP at `/mcp`.
+- `server.py` also creates a legacy stateful SSE app and mounts it at `/sse`, although current architecture and client docs say Streamable HTTP is the single supported transport.
+- Missing and invalid bearer responses include `WWW-Authenticate`, which prevents known client OAuth-discovery loops.
+- Tokens are still accepted from the URL query string. This can leak credentials into browser, proxy, and access logs.
+- The default subprocess timeout is 120 seconds; accepted values are clamped to 1 through 600 seconds.
+- `_run_on_host` now creates a process group and kills the entire group on timeout. Preserve that behavior.
+- File reads, recursive directory lists, and audit-log reads now have bounded implementations. Preserve their bounds and add regression tests.
+- There is no universal MCP request deadline around non-subprocess work.
+- `test_server.py` has only a handful of in-process tests and does not test the HTTP protocol, authentication, sessions, reconnects, restarts, deadlines, or cancellation.
+- The deployment workflow builds and deploys without a test job.
+
+### Git and deployment state
+
+At plan creation on 2026-08-05, Synology Monitor `main` was at commit `00ea0d1` before this plan was added and was synchronized with `origin/main`. The checkout already contained unrelated untracked `.ai/` and `PLAN-degradation-myth.md`; do not stage or alter them as part of this work.
+
+The DevOps MCP planning audit read `main` commit `cfdd6a66dc364a4351d8c35bc364583d605bbc0d` from a temporary clone. The implementing session must fetch current `origin/main`, reconcile any changes made after that SHA, and update this section before editing.
+
+No application migration described here has been implemented, committed, pushed, or deployed yet.
+
+## 6. Key findings and root causes
+
+1. **The two FastMCP packages are not one standard.** NAS uses an unofficial TypeScript framework layered over `mcp-proxy` and the official v1 SDK. DevOps uses a separate Python framework. Their similar names conceal separate transport and lifecycle implementations.
+2. **The language split is not the problem.** The unstable boundary is the protocol and transport shell. The tool business logic is largely independent of it.
+3. **Both current `/mcp` endpoints intend to be stateless already.** Stale session and initialization failures should not be application requirements. A current recurrence points to an old deployment, client bridge, proxy, bogus-header handling, or wrapper implementation.
+4. **The `2026-07-28` wire revision removes the old protocol failure classes for July 28 clients.** It removes protocol sessions and the initialization handshake, requires per-request version and capability metadata, and adds `server/discover`. Official SDK v2 is a package generation, not the wire protocol's name. Supported older clients retain their older handshake through SDK compatibility.
+5. **The `2026-07-28` wire revision does not solve wall-clock limits.** NAS's 25-second cap is an operational safety policy. Roo's approximate 60-second deadline is client behavior. DevOps's 120-second default conflicts with that behavior.
+6. **Long work needs durable application state, not a long HTTP request.** The correct pattern is start, receive handle, poll status, fetch result, and cancel. NAS already has a native jobs foundation. DevOps does not.
+7. **Dependency drift can reintroduce protocol failures.** Both image builds can install changed transport code without a deliberate upgrade.
+8. **Protocol tests are the largest missing safety net.** Neither service currently proves behavior across auth, discovery, version metadata, bogus legacy headers, disconnects, restarts, and proxies.
+9. **The wrappers are not deeply embedded in tool logic.** Removing them changes server construction, tool registration, schema adapters, auth context, middleware, HTTP mounting, result types, and lifecycle hooks. NAS HTTP clients do require real cancellation plumbing, but NAS command builders, DevOps host commands, file streaming, process-group termination, Docker operations, systemd operations, and audit entry formatting should remain behaviorally intact.
+10. **DevOps MCP is security-sensitive.** It has root-equivalent access. A whole-language rewrite creates more risk than a contained protocol-shell migration.
+
+## 7. Approaches considered and rejected
+
+### Rewrite both services in TypeScript
+
+Rejected. It would create one language but require rewriting mature Python process, filesystem, audit, Docker, systemd, and ASGI behavior in a root-equivalent production tool. Wrapper uniformity does not justify that security and regression risk.
+
+### Rewrite both services in Python
+
+Rejected. NAS MCP shares TypeScript schemas and catalog logic with the Synology Monitor monorepo. Moving it would duplicate schemas or create a cross-language generation pipeline with no user-visible benefit.
+
+### Keep both third-party FastMCP wrappers and only bump versions
+
+Rejected as the final architecture. It leaves two separately maintained protocol shells between our code and the official SDKs. A version bump could adopt v2, but it would not give the same transport behavior, error shapes, or lifecycle control. It is acceptable only as the short-lived baseline while tests are built.
+
+### Implement the `2026-07-28` wire revision without an SDK
+
+Rejected. This would make POP Creations responsible for JSON-RPC validation, version negotiation, protocol metadata, discovery, HTTP streaming, cancellation, errors, and compatibility. The official SDKs already own that work.
+
+### Raise NAS and client timeouts
+
+Rejected as a root fix. A read-only whole-volume operation can overload production even when technically allowed to run longer. Client limits also remain outside server control.
+
+### Use one long synchronous call plus progress messages
+
+Rejected as the universal long-work design. Progress may keep some SDK deadlines alive, but it does not override Roo's transport deadline, survive a disconnect, or provide durable restart-safe status.
+
+### Require the optional Tasks extension immediately
+
+Rejected until the real client matrix supports it. Design the application job handle so it can later map to the Tasks extension without making Tasks a launch blocker.
+
+### Keep legacy SSE forever
+
+Rejected. SSE is deprecated and the July 28 core uses stateless Streamable HTTP. Keep it only long enough to prove no supported client still uses it.
+
+### Preserve query-string bearer tokens for convenience
+
+Rejected. URLs are routinely logged. Supported clients can send authorization headers.
+
+## 8. Design decisions
+
+Decisions recorded 2026-08-05.
+
+### Locked decisions
+
+1. Keep NAS MCP in TypeScript.
+2. Keep DevOps MCP in Python.
+3. Use official SDK v2 packages directly in their native languages and identify wire behavior as protocol revision `2026-07-28`.
+4. Do not implement the protocol manually.
+5. Keep `/mcp` as stateless Streamable HTTP.
+6. Keep bearer authentication in an explicit HTTP layer before MCP processing.
+7. Keep the compact visible-tool facades and hidden operation catalogs. Durable operation controls belong behind the existing `invoke_tool` registry unless a measured token-budget and client study explicitly approves a visible-surface change.
+8. Keep NAS API validation, approval previews, tiers, signed approval tokens, and the 25-second arbitrary-command safety cap.
+9. Keep DevOps process-group termination and bounded file/directory/audit readers.
+10. Use durable job handles for work that can exceed the shortest supported client deadline.
+11. Do not make the optional Tasks extension a requirement until client compatibility is proven.
+12. Deploy side by side before replacing either production endpoint.
+
+### Open implementation decisions with criteria
+
+1. **Exact official SDK patch versions.** Select the latest stable SDK v2 patch available when implementation starts, then pin it exactly. Do not use a caret, lower-bound-only range, beta, RC, or `latest` tag. Production cutover is blocked if the pinned patches have an open P0 or release-blocking defect affecting Streamable HTTP, auth, cancellation, or supported older wire revisions.
+2. **Python lock tool.** Prefer `uv.lock` with a committed `pyproject.toml` if the repository accepts uv cleanly. Otherwise use a fully hashed `requirements.lock`. The outcome must be deterministic local, CI, and Docker installs.
+3. **NAS package manager.** Prefer the monorepo's existing pnpm workspace and root lockfile. Remove the app-local npm lock only after Docker and CI both install through pnpm with `--frozen-lockfile`.
+4. **Long-job storage.** NAS must reuse its existing NAS API job storage. DevOps should start with a durable, bounded directory on its existing audit volume or a separate named volume, using atomic files and explicit retention. Do not introduce a database unless concurrent state or query needs prove files inadequate.
+5. **Maximum synchronous deadline.** Use 45 seconds as the initial cross-service ceiling because it is below the known Roo limit and matches current NAS behavior. A different number requires measured evidence from every supported client and proxy. A deadline response must be error-shaped and must prove underlying work stopped or was transferred to a durable operation.
+6. **SSE removal date.** Remove only after production access logs and client configuration searches show zero legitimate `/sse` use for at least seven days.
+7. **Tasks extension.** Enable only as an optional adapter after Claude, Codex, Roo, Windsurf, and ContextForge tests establish behavior. Core job tools remain supported regardless.
+
+## 9. Numbered implementation plan
+
+### Phase A: freeze the baseline and make builds repeatable
+
+Natural context cut after Step 3. Update STATUS, commit each repository independently, and start a fresh session before Phase B if context is crowded.
+
+### Step 1. Capture exact baselines
+
+Repositories: both.
+
+Changes:
+
+- Record current `main`, image digest, live build SHA, framework version, transitive official SDK version, endpoint response behavior, and client configurations.
+- In Synology Monitor, update this plan's Current State with the fetched SHA and create a small machine-readable test fixture under `apps/nas-mcp/test/fixtures/current-contract.json` containing only public protocol expectations, never tokens.
+- In DevOps MCP, create the equivalent `tests/fixtures/current-contract.json`.
+- Capture `/mcp` behavior for `server/discover`, a normal old-era request, missing auth, invalid auth, a bogus `Mcp-Session-Id`, unsupported protocol version, `tools/list`, and one harmless tool call.
+- Record whether ContextForge calls DevOps MCP and whether any supported client still calls `/sse`.
+
+Dependencies: none.
+
+Verification gate: a checked-in fixture exists in each repository, contains no secret, identifies the exact source SHA and image digest, and a reviewer can reproduce every recorded response with the new integration-test harness introduced in Steps 4 through 6.
+
+### Step 2. Make NAS MCP dependency installation deterministic
+
+Repository: Synology Monitor.
+
+Files:
+
+- `apps/nas-mcp/package.json`
+- root `pnpm-lock.yaml`
+- `apps/nas-mcp/Dockerfile`
+- remove `apps/nas-mcp/package-lock.json` only after confirming it is not used by another workflow
+- `.github/workflows/nas-mcp-image.yml`
+- `apps/nas-mcp/README.md`
+- `docs/development.md`
+
+Changes:
+
+- Declare exact MCP and transport package versions during the baseline phase.
+- Use pnpm consistently in local development, CI, and Docker.
+- Use `pnpm install --frozen-lockfile` with the workspace files copied in a cache-friendly order.
+- Make Docker fail when the lock and manifest disagree.
+- Add an automated check that rejects a new app-local npm lockfile.
+- Add the CI workflow shape and named prerequisite jobs so unit/protocol tests must pass before any future image build or GHCR push. During Step 2, the existing baseline tests occupy those jobs. Step 5 replaces/extends them with the full 21-case protocol suite and proves a failing protocol test prevents publishing.
+- Correct stale documentation that claims an AbortController implementation or SSE behavior not present in source.
+
+Dependencies: Step 1.
+
+Verification gate: two clean Docker builds from the same commit report identical dependency versions; changing a manifest without refreshing `pnpm-lock.yaml` makes CI and Docker fail; `git grep` finds no active build instruction using `npm install` or `--no-frozen-lockfile` for NAS MCP; workflow dependency inspection proves the image job cannot run until the current baseline test job succeeds. The intentional failing-protocol-test publish proof is deferred to Step 5 after the 21-case suite exists.
+
+### Step 3. Make DevOps MCP dependency installation deterministic
+
+Repository: DevOps MCP.
+
+Files:
+
+- replace or supersede `requirements.txt` with `pyproject.toml` plus `uv.lock`, or a fully pinned hashed lockfile
+- `Dockerfile`
+- `.github/workflows/deploy.yml`
+- `docs/development.md`
+- `docs/deployment.md`
+- `docs/configuration.md`
+
+Changes:
+
+- Pin FastMCP, Uvicorn, Starlette, test dependencies, and transitives during the baseline phase.
+- Make Docker and CI install only from the lock.
+- Add a dependency-version command used by health metadata and CI.
+- Add an intentional upgrade procedure requiring lock refresh, protocol suite execution, and changelog review.
+
+Dependencies: Step 1.
+
+Verification gate: two clean images resolve identical package versions; an unlocked install is absent from Docker and CI; changing a declared dependency without refreshing the lock fails.
+
+### Phase B: build the safety net before changing the protocol shell
+
+Natural context cut after Step 6.
+
+### Step 4. Define one cross-service protocol-conformance contract
+
+Repositories: both, with the canonical prose stored in this plan and executable equivalents in each repository.
+
+Required cases:
+
+1. authenticated `server/discover` returns the supported revisions, identity, and capabilities;
+2. a valid July 28 request includes required per-request protocol and client metadata and succeeds;
+3. a supported 2025-era client completes its required `initialize` / `notifications/initialized` flow and then succeeds through official backward compatibility;
+4. an unsupported revision returns the official unsupported-version error;
+5. no request requires `initialize` or `notifications/initialized` for July 28;
+6. missing static bearer auth is 401 with the exact configured `WWW-Authenticate: Bearer realm="<service>"` challenge and does not start OAuth discovery;
+7. invalid static bearer auth is 401 with `WWW-Authenticate: Bearer realm="<service>", error="invalid_token"`; 403 is reserved for an authenticated caller denied by application policy or insufficient scope;
+8. a bogus legacy `Mcp-Session-Id` cannot bind work to another client, revive state, or hang;
+9. `tools/list` order is deterministic and includes required `ttlMs` and `cacheScope` under the July 28 contract;
+10. `tools/call` returns a complete result with required `resultType` and server identity metadata;
+11. a client disconnect cancels request-scoped work where safe and never records false success;
+12. a server restart between two independent calls does not require reconnection state;
+13. a request over 45 seconds returns a loud, error-shaped `deadline_exceeded` result, never success-shaped text, and proves cancellable work stopped or transferred to a durable operation;
+14. health checks do not require MCP auth but expose no secrets or operation arguments;
+15. Host validation permits only configuration-driven production host, candidate host, and loopback test values; Origin validation permits a missing Origin for non-browser MCP clients and only an explicit configured allowlist when Origin is present;
+16. legacy SSE is either explicitly supported during transition or returns a clear permanent-removal response after cutover;
+17. proxy tests cover Cloudflare/Coolify and `mcp-remote` behavior without relying on production mutation;
+18. every Streamable HTTP POST carries and validates the required `Mcp-Method` and `Mcp-Name` headers for the July 28 wire revision;
+19. `subscriptions/listen` is tested for July 28 clients, while supported older clients' GET/notification behavior is tested separately and cannot enter an initialization hang;
+20. the May `Bad Request: Server not initialized` reproduction sends the historical GET/request sequence and must return or fail clearly within five seconds, never wait four minutes;
+21. executable contract fixtures in both repositories carry the same `contractVersion`, stable case IDs, and content digest, with CI rejecting drift.
+
+Changes:
+
+- Store the same versioned, language-neutral contract manifest in both repositories because each must remain executable when cloned alone. Give it a `contractVersion`, stable case IDs, and expected digest. A deliberate contract update changes both copies in coordinated commits; CI rejects an unexpected mismatch against the recorded digest.
+- Generate language-specific requests and assertions from that local manifest. Do not duplicate business-tool fixtures when only the protocol expectation is identical.
+- Do not make exact error prose part of the contract unless a human or client depends on it. Assert status, error type/code, required fields, cancellation, and bounded timing.
+
+Dependencies: Steps 2 and 3.
+
+Verification gate: both repositories have the same versioned test manifest listing all 21 cases with stable identifiers and matching digests; CI fails if either service omits a case or its local manifest does not match the approved contract digest.
+
+### Step 5. Add the NAS MCP test layers
+
+Repository: Synology Monitor.
+
+Files and new test areas:
+
+- `apps/nas-mcp/src/index.ts`: extract a side-effect-free server/handler factory; do not listen during imports.
+- `apps/nas-mcp/src/nas-client.ts`: accept an `AbortSignal` or official equivalent, inject or mock HTTP transport, and destroy the in-flight request/socket on cancellation.
+- `apps/nas-mcp/src/job-client.ts`: accept the same cancellation signal, inject or mock HTTP transport, and destroy in-flight request/socket work on cancellation.
+- `apps/nas-mcp/test/protocol.test.ts`
+- `apps/nas-mcp/test/auth.test.ts`
+- `apps/nas-mcp/test/deadline.test.ts`
+- `apps/nas-mcp/test/nas-client.test.ts`
+- `apps/nas-mcp/test/job-client.test.ts`
+- `apps/nas-mcp/test/catalog.test.ts`
+- `apps/nas-mcp/package.json`
+- root test orchestration and `.github/workflows/nas-mcp-image.yml`
+
+Specific tests:
+
+- all Step 4 cases applicable before and after migration;
+- 25-second clamp cannot be raised by tool input;
+- preview uses eight seconds and `/exec` uses command timeout plus five-second HTTP buffer;
+- target `both` starts both requests concurrently;
+- deadline abort reaches the underlying NAS and job HTTP requests rather than merely winning `Promise.race`;
+- late success after a deadline cannot be logged or returned as current success;
+- deadline returns an official error result or `isError` result with structured category `deadline_exceeded`, never ordinary success-shaped text content;
+- disabled operations cannot execute through `invoke_tool`;
+- write operations require preview, explicit confirmation, and tier-dependent approval token;
+- catalog search and result ordering stay deterministic;
+- seven always-on tools remain the expected visible surface;
+- production mode is the default in the container and startup fails closed when `MCP_BEARER_TOKEN` or required NAS configuration is missing or empty; an explicit test-only mode is required to run without bearer auth;
+- exact missing-token and invalid-token challenges match Step 4, while authenticated policy denial uses 403;
+- Host values come from `MCP_ALLOWED_HOSTS` with `nas-mcp.designflow.app` and the recorded candidate host in production configuration; missing Origin is accepted for non-browser clients, while present Origin must match `MCP_ALLOWED_ORIGINS`.
+
+Dependencies: Step 4.
+
+Verification gate: `pnpm --filter @synology-monitor/nas-mcp test` passes locally and in CI; tests use fake NAS endpoints and cannot reach production; intentional cancellation and stale-header regressions fail the suite; an intentionally failing protocol case proves the image/GHCR job never starts.
+
+### Step 6. Add the DevOps MCP test layers
+
+Repository: DevOps MCP.
+
+Files and new test areas:
+
+- `server.py`: keep `create_app()` import-safe and make configuration injectable for tests.
+- `tests/test_protocol.py`
+- `tests/test_auth.py`
+- `tests/test_deadlines.py`
+- `tests/test_process_groups.py`
+- `tests/test_file_bounds.py`
+- `tests/test_catalog.py`
+- `tests/test_audit.py`
+- dependency and CI files from Step 3
+
+Specific tests:
+
+- all Step 4 cases applicable before and after migration;
+- token identity propagates to the audit entry for concurrent clients without crossing contexts;
+- URL query tokens are rejected after Step 7;
+- production mode is the default container mode and startup fails closed when no non-empty `TOKEN_*` bearer values exist; explicit test mode is required for auth-free in-process tests;
+- missing and invalid token responses match the static-bearer 401 challenges in Step 4; authenticated policy denial alone uses 403;
+- subprocess timeout kills the whole process group and returns within a small bounded margin;
+- disconnect cancellation kills cancellable child work;
+- file reads never exceed configured byte and line limits;
+- recursive lists stop collecting at the bound and never sort the full tree;
+- audit reads seek only the bounded tail window;
+- command timeout cannot exceed policy through `invoke_tool`;
+- visible tools remain `health`, `list_capabilities`, `get_capability_details`, `tool_search`, and `invoke_tool`;
+- hidden operations validate required and optional arguments;
+- write/destructive safety metadata is deterministic and no fallback silently labels unknown work read-only.
+
+Dependencies: Step 4.
+
+Verification gate: the locked test command passes locally and in CI without Docker-socket, host-PID, production filesystem, or network access; regression fixtures prove each former hang returns within its expected bound.
+
+### Phase C: remove avoidable risk and separate short work from long work
+
+Natural context cut after Step 10.
+
+### Step 7. Retire DevOps legacy SSE and query-string authentication
+
+Repository: DevOps MCP.
+
+Files:
+
+- `server.py`, especially `PUBLIC_PREFIXES`, `AuthMiddleware`, and `create_app()`
+- `docs/DECISIONS.md`
+- `docs/architecture.md`
+- `docs/server.md`
+- `docs/claude-desktop-setup.md`
+- `docs/windsurf-roo-setup.md`
+- `docs/troubleshooting.md`
+- client setup scripts in `u2giants/ai-devops` if they still point at SSE or query tokens
+
+Changes:
+
+- Search production access logs and all managed client configurations for `/sse` over a seven-day window.
+- If zero legitimate use is proven, remove the SSE app, `/sse` mount, `/sse/messages` public bypass, and stale docs.
+- Remove query-string token parsing. Accept only `Authorization: Bearer`.
+- Add a clear response or redirect-free diagnostic for retired paths. Do not silently route old SSE clients into `/mcp`.
+- Pin `mcp-remote` in machine setup scripts and remove `@latest`.
+
+Dependencies: Step 6 and the seven-day evidence window.
+
+Verification gate: no source or active config accepts `?token=`; no public auth bypass remains for `/sse/messages`; supported clients connect through `/mcp`; retired-path tests return the documented response.
+
+### Step 8. Standardize observable server metadata and errors
+
+Repositories: both.
+
+Changes:
+
+- Health responses must include service name, source SHA, image/build identifier, official SDK name and exact version, supported MCP revisions, transport, stateless flag, maximum synchronous deadline, and enabled long-job capability.
+- Health responses must not include tokens, command arguments, host secrets, approval keys, or client identities.
+- MCP July 28 results must include required server identity metadata and result types.
+- Define common error categories: authentication, unsupported protocol, invalid arguments, policy blocked, deadline exceeded, upstream unavailable, operation not found, operation disabled, and internal failure.
+- Preserve framework-native official error codes where specified. Use project error data only for application categories.
+- Every fallback must be loud in logs and structured in the client result.
+- Add `BUILD_SHA` and exact SDK version to container build arguments and OCI labels, then pass `BUILD_SHA` into the runtime health response. A missing or `unknown` build SHA is a CI/deploy failure outside explicit local development.
+
+Files:
+
+- NAS: `apps/nas-mcp/src/index.ts` or extracted server/HTTP modules, `apps/nas-mcp/Dockerfile`, `.github/workflows/nas-mcp-image.yml`, README, deployment docs.
+- DevOps: `server.py`, `Dockerfile`, `.github/workflows/deploy.yml`, status page, server/configuration/troubleshooting docs.
+
+Dependencies: Steps 5 through 7.
+
+Verification gate: the same smoke-test script can query both health endpoints and print a comparable table; error tests assert categories and no fallback returns an apparently successful empty result.
+
+### Step 9. Align synchronous deadlines with supported clients
+
+Repository: DevOps MCP, with NAS regression verification.
+
+Changes:
+
+- Set the default and hard maximum for ordinary synchronous MCP operations to 45 seconds.
+- Separate subprocess policy timeout from MCP request deadline. The shorter remaining request budget wins.
+- Thread cancellation/deadline context into subprocess, bounded filesystem, Docker, and systemd operations.
+- Return a typed deadline result only after cancellable work is stopped or explicitly transferred to a durable job.
+- Reject a caller's attempt to request a longer synchronous timeout with a clear instruction to use the long-operation tools.
+- Keep NAS's 25-second command cap and 45-second outer deadline unless measured evidence justifies a smaller safe value.
+
+Dependencies: Steps 6 and 8.
+
+Verification gate: no supported synchronous request remains active after 45 seconds plus a small shutdown margin; Roo's 60-second client does not time out first; audit records distinguish completed, cancelled, deadline, and transferred-to-job outcomes.
+
+### Step 10. Implement durable long-operation handles
+
+Repositories: both.
+
+Common contract exposed as allowlisted hidden registry operations behind the existing visible `invoke_tool` facade:
+
+- `start_operation`: validates and starts only a named long-capable operation, returns `operation_id`, state, start time, expiry, safe summary, and polling guidance immediately.
+- `get_operation_status`: returns queued/running/succeeded/failed/cancelled/expired plus bounded progress.
+- `get_operation_result`: returns bounded result data or a result-file handle, never unbounded output.
+- `cancel_operation`: requests cancellation and reports whether work actually stopped.
+- These four names are registry operations, not four new always-on MCP tools. The visible-tool counts remain seven for NAS MCP and five for DevOps MCP. Any proposal to expose them directly requires a measured tool-schema token budget, real-client discovery proof, and an explicit update to locked decision 7.
+- Both services may run asynchronous work only from an explicit, code-reviewed allowlist of named durable operations. `start_operation` may dispatch only to those registered names. It must never accept or construct a generic background shell, arbitrary `/exec`, command string, script path, or unregistered callable.
+- IDs must be unguessable, scoped to the authenticated caller where identities differ, and validated as plain IDs rather than paths.
+- State writes must be atomic and survive MCP process restart.
+- Store command name and safe arguments needed for audit, but redact configured sensitive fields.
+- Enforce concurrency, CPU/I/O priority, output size, retention, and expiry.
+- On restart, reconcile running records with real PIDs/jobs and mark orphaned or indeterminate work loudly.
+
+NAS implementation:
+
+- Extend the existing native NAS API job model in `apps/nas-api/internal/jobs/` and `apps/nas-mcp/src/job-client.ts`.
+- Adapt existing file-inventory and archive-move start/status/result/cancel operations into the common registry contract where useful. Do not create a second parallel job system or duplicate existing stored state.
+- The first NAS allowlist contains only the existing durable file-inventory and archive-move job families. New families require their own NAS API native job implementation, resource limits, tests, safety review, and explicit addition to the allowlist. Thin aliases may call existing job operations; they may not widen arguments or bypass the 25-second `/exec` policy.
+- Do not route broad long-running scans through the 25-second `/exec` endpoint.
+- Follow the existing Synology long-running-operation safety pattern for broad metadata walks.
+
+DevOps implementation:
+
+- Add a narrow job registry module rather than embedding more logic in `server.py`.
+- Store bounded state in a durable named volume, using atomic files and a lock discipline.
+- Only explicitly registered operations may run asynchronously. Do not create a generic unaudited background shell escape.
+- Use process groups and low priority for heavy operations.
+- Gate the new DevOps durable-operation surface behind `MCP_LONG_OPERATIONS_ENABLED=false` by default. Enable it on the candidate only after restart, cancellation, quota, and rollback-format tests pass; enable it in production only after the protocol cutover itself is verified.
+
+Optional official Tasks-extension adapter:
+
+- Map the common operation state to the official Tasks extension only after client matrix tests pass.
+- Keep the four hidden registry operations through `invoke_tool` as the compatibility path.
+
+Dependencies: Steps 8 and 9.
+
+Verification gate: start a test operation, disconnect the MCP client, restart the MCP server, reconnect, retrieve the same status/result, then cancel a second operation and prove its process/job stopped. All tests run against fake or isolated work, never production data.
+
+### Phase D: replace the protocol wrappers
+
+Natural context cut after each repository migration.
+
+### Step 11. Migrate NAS MCP to the official TypeScript v2 SDK
+
+Repository: Synology Monitor.
+
+Target packages:
+
+- exact stable `@modelcontextprotocol/server@x.y.z` SDK v2 package selected and recorded at implementation time;
+- the exact official Node/HTTP mount package and API documented for that pinned patch, recorded in the plan before code changes rather than left as “some thin middleware”;
+- a Standard Schema-compatible validator, upgrading Zod only if the chosen SDK requires it.
+
+Refactor boundary:
+
+- Extract a cheap per-request MCP factory.
+- Register the same seven visible tools with the same names, descriptions, schemas, safety behavior, and catalog results.
+- Preserve the business behavior in `nas-client.ts`, `job-client.ts`, shared operation definitions, approval logic, and command builders, but explicitly change both clients to accept cancellation context and destroy in-flight HTTP requests. This is a real client-layer refactor, not typing glue.
+- Replace FastMCP construction, `addTool`, `getApp`, `start`, wrapper auth, wrapper timeout, and wrapper result conversions.
+- Mount an explicit `/health` route in front of the official MCP handler.
+- Use the official stateless per-request HTTP handler. Do not create or store protocol sessions.
+- Do not mount legacy SSE in the new NAS handler. The dual-era suite must still exercise official older-client compatibility and the historical GET sequence without relying on a persistent server session or legacy `/sse` endpoint.
+- Implement the Step 4 Host/Origin contract using `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`. Production hosts include `nas-mcp.designflow.app` plus the recorded candidate host; loopback is local-test-only; missing Origin is allowed for non-browser clients.
+- Use JSON response mode for ordinary tool results unless a tested client requires response streaming for progress.
+- Remove `fastmcp` and `mcp-proxy` from the dependency graph.
+
+Expected rewrite size:
+
+- Moderate protocol-shell rewrite in `index.ts` or newly extracted `server.ts` and `http.ts`.
+- Schema/result adaptations and cancellation plumbing through `nas-client.ts` and `job-client.ts`.
+- Little or no rewrite in NAS command builders, approval policy, or shared catalog definitions.
+
+Dependencies: Steps 2, 4, 5, 8, 9, and 10.
+
+Verification gate: all NAS tests pass against both the pre-migration fixture and July 28 contract; dependency inspection contains no third-party FastMCP or `mcp-proxy`; the seven-tool surface and all enabled hidden operations match the recorded baseline.
+
+### Step 12. Migrate DevOps MCP to the official Python v2 SDK
+
+Repository: DevOps MCP.
+
+Target packages:
+
+- exact stable official `mcp==x.y.z` SDK v2 package selected and recorded at implementation time;
+- its `MCPServer` API;
+- Starlette/Uvicorn only as needed for the status page, auth boundary, and deployment runtime.
+
+Refactor boundary:
+
+- Preserve Python and keep operation functions, process groups, bounded readers, Docker/systemd logic, audit entry formatting, catalog metadata, and status-page content.
+- Replace FastMCP construction, decorators, middleware types, `http_app`, session instructions, result conversions, and lifecycle integration.
+- Create an adapter that registers existing functions and derives schemas from type hints or explicit official SDK schemas.
+- Keep bearer auth in the outer ASGI layer and pass verified caller identity into official request context.
+- Replace FastMCP audit middleware with an explicit official handler wrapper or tool adapter that logs start, completion, cancellation, deadline, failure, and duration.
+- Use official stateless Streamable HTTP and implement the same metadata/error contract as NAS MCP.
+- Remove third-party `fastmcp` only after parity tests pass.
+
+Expected rewrite size:
+
+- Moderate changes to the top, registration, middleware, and bottom HTTP sections of `server.py`, or extraction into `mcp_server.py` and `http_app.py`.
+- Tool decorators may require mechanical conversion, but tool bodies should remain intact.
+- Do not combine protocol migration with stylistic rewrites of host-operation code.
+
+Dependencies: Steps 3, 4, 6, 7, 8, 9, and 10.
+
+Verification gate: all DevOps tests pass; dependency inspection contains no third-party `fastmcp`; operation counts, schemas, safety metadata, audit identity, command bounds, and status output match the baseline except for intentional v2 fields and removed legacy paths.
+
+### Phase E: compatibility, cutover, and cleanup
+
+### Step 13. Run isolated side-by-side compatibility and failure-injection tests
+
+Repositories: both.
+
+Changes and environment:
+
+- Build the exact candidate images locally or in CI and run them as isolated containers named `nas-mcp-20260728-candidate` and `devops-mcp-20260728-candidate`. Do not mount production Docker sockets, host PID, host root, NAS paths, audit volumes, or job volumes. Use fake NAS and host adapters plus synthetic test data.
+- Expose each isolated container only for the compatibility window through a temporary HTTPS tunnel protected by the MCP bearer and an unguessable temporary hostname. The tunnel must create no persistent DNS, Coolify application, volume, or shared-cloud resource. Record the temporary FQDNs in this STATUS table, allowlist only those FQDNs, and shut the tunnels down after the matrix. If the available tunnel mechanism requires persistent account or infrastructure creation, stop and obtain separate authority rather than substituting a production host.
+- Give each candidate a dedicated temporary bearer stored as a clearly named candidate field/item in the `vibe_coding` vault or generated for the isolated test run and kept only in protected runtime environment. Never reuse a production bearer, NAS approval key, audit volume, or DevOps job volume.
+- Give DevOps candidate an isolated temporary audit directory and durable-operation volume. Keep `MCP_LONG_OPERATIONS_ENABLED=false` until its isolated storage tests pass.
+- Do not replace the production `/mcp` routes yet.
+- Test Claude.ai, Claude Desktop, Claude Code, Codex, Roo Code, Windsurf, ContextForge, direct official clients, and `mcp-remote` where required.
+- For each client, test discovery, tools list, harmless call, invalid auth, restart between calls, bogus legacy session header, unsupported revision, 45-second deadline, disconnect, and durable job reconnect.
+- Test one instance and two load-balanced instances to prove no hidden process-local session state.
+- Inject an upstream NAS timeout, NAS API restart, DevOps subprocess tree timeout, MCP container restart, Cloudflare disconnect, and malformed request.
+- Record client version, transport, bridge version, protocol selected, and result in a checked-in compatibility matrix. Do not record tokens.
+
+Dependencies: Steps 11 and 12.
+
+Verification gate: candidate image digests, temporary URLs, isolated secret references, and temporary volumes are recorded; no Coolify or persistent shared-cloud resource was created; production domains remain untouched; every supported client passes the required matrix; any unsupported client has an explicit business decision and documented fallback; two-instance testing proves requests do not depend on local session state; temporary tunnels and containers are confirmed stopped after the matrix.
+
+### Step 14. Cut over production and close the work
+
+Repositories: both.
+
+Changes:
+
+- Verify commit identity before each first commit with `git var GIT_COMMITTER_IDENT`; it must be `Albert Hazan <u2giants@users.noreply.github.com>`.
+- Commit and push each repository's focused changes to `main` under its branch policy.
+- Require tests, lint/typecheck, build, container smoke test, dependency-lock validation, and protocol contract in CI before deploy.
+- Block cutover unless both exact SDK patches have no known open P0 or release-blocking Streamable HTTP, auth, cancellation, or backward-compatibility defect; the dual-era client matrix is green; no supported path requires the optional Tasks extension; and the exact prior SHA images have been redeployed once to a disposable candidate to prove rollback.
+- Deploy through GitHub Actions to GHCR and Coolify. Do not live-edit production source.
+- Verify the running build SHA and exact SDK version from health metadata and OCI labels. Fail deployment verification when health SHA differs from the GitHub commit being deployed or reports `unknown`.
+- Run the read-only production smoke subset for both endpoints.
+- Watch logs and audit outcomes through at least the longest supported operation and one service restart.
+- Remove old wrapper dependencies and transitional candidate resources only after production verification and rollback window.
+- Update all affected Markdown files, this STATUS table, repository handoffs, client setup, incident docs, architecture, development, deployment, troubleshooting, and the `ai-devops` machine setup scripts.
+- Add durable navigation from each repository's `AGENTS.md` to the final protocol/operations document. Remove or mark this plan complete only when all work is deployed and verified.
+
+Dependencies: Step 13.
+
+Verification gate: both production health endpoints report the intended SHA, exact official SDK v2 package version, `2026-07-28` wire support, stateless HTTP, and the deadline/job settings; all production smoke tests pass; CI is green; old wrappers are absent from deployed images; rollback images and instructions are verified.
+
+## 10. Tests required
+
+The following named behaviors are mandatory. The implementing session may choose framework-specific filenames but must preserve the stable case IDs.
+
+### Shared protocol cases
+
+- `MCP20260728-001-discover-supported-revisions`
+- `MCP20260728-002-july-request-with-per-request-meta`
+- `MCP20260728-003-supported-legacy-client-initializes`
+- `MCP20260728-004-unsupported-version-error`
+- `MCP20260728-005-july-client-needs-no-initialize`
+- `MCP20260728-006-missing-static-bearer-challenge`
+- `MCP20260728-007-invalid-static-bearer-challenge`
+- `MCP20260728-008-bogus-session-header-is-harmless`
+- `MCP20260728-009-deterministic-cacheable-tools-list`
+- `MCP20260728-010-result-type-and-server-info`
+- `MCP20260728-011-disconnect-stops-or-transfers-work`
+- `MCP20260728-012-restart-between-independent-calls`
+- `MCP20260728-013-deadline-error-and-work-stopped`
+- `MCP20260728-014-health-redacts-sensitive-data`
+- `MCP20260728-015-host-origin-validation`
+- `MCP20260728-016-legacy-sse-transition`
+- `MCP20260728-017-proxy-and-bridge-compatibility`
+- `MCP20260728-018-required-method-and-name-headers`
+- `MCP20260728-019-subscriptions-listen-and-legacy-get`
+- `MCP20260728-020-may-server-not-initialized-hang-regression`
+- `MCP20260728-021-cross-repo-contract-digest`
+
+### NAS-specific cases
+
+- `NAS-001-exec-timeout-clamped-to-25s`
+- `NAS-002-preview-and-http-buffer-bounds`
+- `NAS-003-both-targets-run-concurrently`
+- `NAS-004-deadline-aborts-underlying-request`
+- `NAS-005-no-late-success-after-timeout`
+- `NAS-006-disabled-operation-cannot-run`
+- `NAS-007-write-preview-confirmation-and-token`
+- `NAS-008-catalog-order-and-seven-tool-surface`
+- `NAS-009-job-survives-mcp-restart`
+- `NAS-010-job-cancellation-stops-real-work`
+
+### DevOps-specific cases
+
+- `DEVOPS-001-concurrent-auth-context-isolation`
+- `DEVOPS-002-query-token-rejected`
+- `DEVOPS-003-production-auth-fails-closed`
+- `DEVOPS-004-process-group-killed-on-timeout`
+- `DEVOPS-005-disconnect-kills-cancellable-child`
+- `DEVOPS-006-file-read-bounds`
+- `DEVOPS-007-directory-walk-bounds`
+- `DEVOPS-008-audit-tail-bounds`
+- `DEVOPS-009-caller-cannot-extend-sync-deadline`
+- `DEVOPS-010-five-tool-visible-surface`
+- `DEVOPS-011-hidden-operation-schema-validation`
+- `DEVOPS-012-safety-classification-fails-loudly`
+- `DEVOPS-013-job-survives-mcp-restart`
+- `DEVOPS-014-job-cancellation-kills-process-group`
+
+### Existing suites and build gates
+
+- Synology Monitor: run the repository's existing lint, TypeScript check, tests, build, Go tests for any touched NAS API job code, and the 55 Synology script tests if shared archive behavior is touched.
+- DevOps MCP: preserve existing `test_server.py` behavior while moving it into the locked test command; add formatting/static checks chosen in Step 3.
+- Both: build the exact production container, start it locally with fake credentials/upstreams, run the protocol smoke suite, and inspect the final dependency graph.
+
+No test may contact, mutate, scan, or load the production VPS, NAS units, Supabase project, Coolify, or Cloudflare unless Step 13 or 14 explicitly identifies a read-only production smoke check.
+
+## 11. Constraints, standing rules, and gotchas
+
+- GitHub is the source of truth. No production source edits.
+- Both repositories use `main` only.
+- Before the first commit in each repo, `git var GIT_COMMITTER_IDENT` must show `Albert Hazan <u2giants@users.noreply.github.com>`.
+- Preserve unrelated work. In the current Synology checkout, `.ai/` and `PLAN-degradation-myth.md` are unrelated untracked files.
+- No shared database change is expected. If one becomes necessary, stop and use the shared-db migration and PR process.
+- Production and shared infrastructure remain read-only by default. A future implementation request may authorize normal application deployment, but it does not authorize Terraform, Cloud Build trigger mutation, or unrelated infrastructure changes.
+- Never expose or commit bearer tokens, NAS HMAC keys, Cloudflare tokens, Coolify tokens, or 1Password values.
+- Serialize all 1Password reads.
+- Never raise the Synology Monitor MCP's 25-second NAS API safety timeout to make broad scans synchronous.
+- A read-only NAS walk can still overload production. Use the approved durable low-priority job design and obtain explicit approval for broad production metadata walks.
+- Keep every fallback loud and typed. Do not return empty success for unknown, timed out, cancelled, disabled, or policy-blocked work.
+- Do not hard-code SDK versions, protocol versions, domains, client deadlines, or job limits inside scattered tool functions. Centralize configuration with documented safe defaults.
+- Do not assume `Mcp-Session-Id`, initialize, GET polling, Last-Event-ID, or SSE resumability exists in July 28 core.
+- Do not add the optional Tasks extension as the only way to retrieve long results.
+- Do not expose all hidden operations to fix discovery. The compact facades are intentional context controls.
+- DevOps MCP is root-equivalent. Keep the protocol migration separate from refactoring host behavior.
+- The official HTTP handler does not automatically verify bearer tokens, Host, or Origin in every mounting pattern. Keep explicit validation in front.
+- A deadline response is not cancellation proof. Tests must demonstrate underlying work stopped or moved to a durable job.
+- Pin client bridges and sidecars used in the compatibility path. Do not rely on `@latest`, `cloudflared:latest`, or an RC gateway silently changing during protocol validation. Changing unrelated sidecars is out of scope unless required to freeze the test baseline.
+- Phases A through C must land and stay green before either official SDK wrapper migration begins. A protocol-shell migration may not be combined with dependency locking, auth hardening, cancellation plumbing, or deadline-shape changes in one unreviewable commit.
+- Documentation is a verification gate: `apps/nas-mcp/README.md` must stop claiming AbortController before it exists, `apps/nas-mcp/Dockerfile` must stop claiming SSE, and active docs must distinguish July 28 stateless requests from supported older-client initialization behavior.
+
+## 12. Access and environment
+
+Expected authenticated tools:
+
+- `gh` for `u2giants/synology-monitor` and `u2giants/devops-mcp`;
+- Docker or the repository's local container runtime for isolated builds;
+- installed `cloudflared` Quick Tunnels (`cloudflared tunnel --url http://127.0.0.1:<candidate-port>`) for temporary client-matrix HTTPS URLs; Quick Tunnels must use generated temporary hostnames and must not create persistent DNS or account resources;
+- Coolify read/deploy access through the existing approved API path for application deployment only;
+- read-only GitHub Actions and GHCR verification;
+- approved client applications for the compatibility matrix;
+- 1Password vault `vibe_coding` for secret references only.
+
+Relevant 1Password items named in current documentation:
+
+- `designflow-mcp` for managed MCP connection references;
+- `devops-mcp-client-tokens` for DevOps MCP client bearer fields;
+- `nas-monitor-secrets` for NAS Monitor runtime secret references.
+
+Never put their values in the plan, fixtures, commands captured to logs, or commits.
+
+Local setup:
+
+1. Synology Monitor is `/worksp/monitor/app`; read `AGENTS.md` first.
+2. Clone DevOps MCP to `/worksp/devops-mcp`; read its `AGENTS.md` first.
+3. Fetch current `origin/main` in both, check for concurrent work, and fast-forward only after preserving unrelated changes.
+4. Use fake bearer tokens and fake NAS/host adapters for local tests.
+5. Bind local servers to loopback unless a specific container test requires an isolated Docker network.
+6. Never mount `/`, `/var/run/docker.sock`, host PID, or production NAS paths for ordinary unit/protocol tests.
+7. On the current planning machine, `/usr/local/bin/cloudflared` and Docker are installed. Re-verify before Step 13. If Quick Tunnels are unavailable, use an equivalent temporary non-persistent HTTPS tunnel only if it requires no shared-infrastructure mutation; otherwise stop for authority rather than using production.
+
+Production identifiers and URLs:
+
+- NAS MCP: `https://nas-mcp.designflow.app/mcp`.
+- DevOps MCP: `https://mcp.designflow.app/mcp`.
+- Synology Monitor web: `https://mon.designflow.app`.
+- DevOps MCP Coolify service UUID: `vj5f76xet05bxwdq4utw1kho`.
+- NAS MCP Coolify application ID: `efl17f5iocnz94840pexre9d`.
+
+## 13. Definition of done, risks, and open questions
+
+### Definition of done
+
+- [ ] All 14 STATUS rows are complete with dates and evidence.
+- [ ] Both dependency installations are locked and reproducible.
+- [ ] Both CI pipelines run unit, protocol, auth, cancellation, deadline, and container smoke tests before deployment.
+- [ ] Both servers use exact stable official SDK v2 packages directly and report wire revision `2026-07-28` separately.
+- [ ] No third-party FastMCP or NAS `mcp-proxy` remains in deployed dependency graphs.
+- [ ] Both `/mcp` endpoints are stateless and pass July 28 `server/discover` and per-request metadata tests.
+- [ ] Supported older clients pass the compatibility matrix.
+- [ ] Obsolete DevOps SSE and query-token paths are removed, or an explicit dated exception with owner and removal gate is recorded.
+- [ ] Short calls finish before the shortest supported client deadline.
+- [ ] Long operations use durable, bounded, cancellable handles and survive MCP restart.
+- [ ] NAS validation, approval, and 25-second arbitrary command policies remain intact.
+- [ ] DevOps process-group and bounded-reader protections remain intact.
+- [ ] Both repositories are committed and pushed with Albert's correct identity.
+- [ ] CI is green and GHCR contains the expected SHA-tagged images.
+- [ ] Production health metadata and read-only smoke tests prove the deployed SHAs.
+- [ ] All affected Markdown, AGENTS routing, client setup, troubleshooting, and handoff state is current.
+- [ ] Transitional endpoints/resources are removed after the verified rollback window.
+
+### Primary risks and mitigations
+
+1. **New v2 SDK defects shortly after release.** Pin exact patches, run side by side, test real clients, and retain rollback images.
+2. **Client does not yet support July 28.** Use official SDK backward compatibility; record negotiated revisions; do not remove the last working path until the client matrix passes.
+3. **Tool schema or result drift during wrapper removal.** Snapshot the existing visible and hidden catalogs and compare automatically.
+4. **Auth identity lost across request contexts.** Add concurrent-client isolation and audit tests before migration.
+5. **Cancellation reports success while work continues.** Require process/PID/job evidence in tests.
+6. **Long-job storage grows without bound.** Enforce quotas, retention, expiry, output limits, and cleanup tests.
+7. **DevOps migration weakens root-level safety.** Keep host functions unchanged and review the adapter separately from operation logic.
+8. **NAS migration weakens approval boundaries.** Preserve NAS API independent classification and verify every write path.
+9. **Proxy or bridge changes protocol headers.** Pin versions and test direct plus proxied paths.
+10. **Documentation describes a pre-migration world.** Make plan and docs updates a CI/review and session-close gate.
+
+### Rollback
+
+- Keep the last known-good SHA-tagged image for each service.
+- Candidate endpoints remain separate until cutover.
+- If production fails a smoke test, route or redeploy back to the exact prior image without changing tokens or infrastructure.
+- Do not roll back by reinstalling an unpinned dependency set.
+- Durable job records must be forward/backward readable during the rollback window, or the new job feature must remain disabled until cutover is final.
+
+### Open questions and decision gates
+
+1. Which exact official TypeScript and Python v2 patch versions are stable when implementation begins? Resolve from official release notes and pin them.
+2. Which current clients send `/sse` to DevOps MCP? Decide from seven days of logs and managed configuration searches.
+3. Does ContextForge fully support July 28, or must it remain on an earlier revision through SDK compatibility? Decide from the side-by-side matrix.
+4. Which operations genuinely need durable long execution? Start with documented failures and measured duration; do not make every operation asynchronous.
+5. Do any clients support the redesigned Tasks extension well enough to enable the optional adapter? Decide from real calls, not feature claims.
+6. Does DevOps job state belong on the existing audit volume or a new named volume? Choose the least-privileged durable location with independent quotas and rollback compatibility.
+
+## Mandatory self-audit
+
+### 1. Could a brand-new AI session execute this perfectly without asking Albert anything?
+
+Yes. Sections 1 through 8 explain the business goal, both applications, the triggering failures, exact scope, current state, root causes, rejected paths, and locked decisions. Section 9 names ordered repository files, behavior, dependencies, context cut points, and verification gates. Sections 10 through 13 provide named tests, constraints, access, definition of done, rollback, and bounded decision criteria.
+
+### 2. Does the plan carry the full background, nuance, and rejected reasoning?
+
+Yes. Sections 3, 5, and 6 preserve the session, initialization, four-minute hang, 25/45/60/120-second timeout chain, dependency drift, stateless current design, hidden-tool facades, and repaired DevOps hang patterns. Section 7 records why language unification, raw protocol implementation, timeout increases, synchronous progress, mandatory Tasks, permanent SSE, and URL tokens were rejected.
+
+### 3. Is the ultimate goal clear enough for a correct judgment call if a step is wrong?
+
+Yes. Section 1 defines the user-visible outcome and explicitly says the goal wins over a conflicting step. Section 8 separates locked architecture from open choices and gives criteria. Section 13 defines measurable completion, risks, rollback, and the remaining evidence-based gates.
+
+Self-audit result: PASS. All 13 required sections are present, all implementation steps name concrete targets and verification gates, tests are named, scope and rejected approaches are explicit, secrets are referenced only by vault item name, and completion includes commit, push, CI, deploy, and production SHA verification.
+
+## Independent Grok 4.5 review
+
+Review date: 2026-08-05 (America/New_York)
+
+Grok session: `019fd4ad-8b7c-7623-976b-3efb4167e239`
+
+Grok first agreed with the architecture but required 12 corrections covering wire-versus-SDK terminology, missing protocol cases, fail-closed auth, cancellation, deadline result shape, durable-job placement, exact SDK cutover gates, candidate isolation, build identity, CI ordering, documentation gates, and cross-repository contract ownership. After those changes, Grok found three remaining mechanics: Step 2 depended prematurely on the Step 5 suite, candidate Coolify creation lacked authority, and the NAS asynchronous allowlist was not narrow enough.
+
+The final plan moves the full publish-failure proof to Step 5, uses isolated Docker candidates with non-persistent Quick Tunnel URLs instead of creating Coolify resources, and limits asynchronous work to code-reviewed allowlists with NAS initially restricted to existing inventory/archive-move native jobs. Grok's final verdict was: **APPROVE. No concrete implementation blocker remains.**

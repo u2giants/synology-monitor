@@ -46,6 +46,7 @@ Then load additional docs only when relevant:
 | Change database schema, migrations, models, auth/RLS, or data flow | `docs/architecture.md`, `docs/configuration.md`, relevant migration, `docs/telemetry-retention.md` when applicable | Unrelated NAS docs |
 | Continue unfinished work | `HANDOFF.md` plus only the docs it names | Completed historical plans |
 | Investigate an incident | Relevant file under `docs/*incident*`, `HANDOFF.md` if active, topic doc | Other incident files |
+| Continue the MCP v2 foundations or protocol migration | `plan_mcp-v2-foundations-and-migration.md`, then `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and `docs/mcp-incident-2026-05.md` | Unrelated NAS incident and archive docs |
 | Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, `docs/archive-move-runbook.md` | AI pipeline details |
 | Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, AGENTS "Moving or merging files inside a share" | Web/AI docs |
 | Seafile/inotify work | `docs/seafile-sync-inotify.md` | Archive and web docs |
