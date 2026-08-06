@@ -12,7 +12,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 | 0B | synology-monitor | ✅ done | 2026-08-05 | Both web paths use the shared formatter; web typecheck and `guard:ai` pass in `bbfaf149` |
 | 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
 | 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `8ce45af`, DevOps MCP `cfdd6a6`; exact production digests and runtime dependency versions recorded |
-| 2 | synology-monitor | ☐ open | 2026-08-05 | Make npm/pnpm and lockfile use deterministic |
+| 2 | synology-monitor | ✅ done | 2026-08-06 | Exact-pinned manifest plus committed root lock; frozen pnpm in CI/Docker; prerequisite verification job and local-lock guard; CI run `31116338234`; live OCI revision `d700f1d` |
 | 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
 | 4 | both | ☐ open | 2026-08-05 | Build one shared protocol-conformance test contract |
 | 5 | synology-monitor | ☐ open | 2026-08-05 | Add NAS MCP unit, HTTP, cancellation, and timeout tests |
@@ -218,6 +218,18 @@ for DevOps MCP Streamable HTTP at `/mcp`; current client documentation also uses
 log proof remains Step 7, not an assumption made during baseline capture.
 
 No official SDK migration described in Phases A through E has begun.
+
+Step 2 was completed on 2026-08-06 in
+`d700f1d49e996c1d09d06406e621579b7d2741d6`. NAS MCP now exact-pins its
+baseline dependencies, including direct Hono typing needed by a strict isolated
+workspace build; the root `pnpm-lock.yaml` is committed; local, CI, and Docker
+all use pnpm `9.15.4` with `--frozen-lockfile`; and CI rejects an app-local npm
+lock. The image job depends on a separate verification job that runs the shared
+69-test suite and NAS MCP TypeScript build. Clean local tests and a clean Docker
+build passed. Synthetic manifest drift failed both pnpm and Docker with
+`ERR_PNPM_OUTDATED_LOCKFILE`. GitHub Actions run `31116338234` passed, GHCR
+published the exact revision, and read-only production inspection confirmed the
+healthy running container carries OCI revision `d700f1d49e996c1d09d06406e621579b7d2741d6`.
 
 ## 6. Key findings and root causes
 
