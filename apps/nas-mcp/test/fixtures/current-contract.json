@@ -1,0 +1,98 @@
+{
+  "fixtureVersion": "1.0.0",
+  "capturedAt": "2026-08-06T11:27:36-04:00",
+  "service": "nas-mcp",
+  "endpoint": "https://nas-mcp.designflow.app/mcp",
+  "source": {
+    "repository": "https://github.com/u2giants/synology-monitor",
+    "baselineCommit": "8ce45af02c0ae99b8c5cdf6b29080057b878aab0"
+  },
+  "productionImage": {
+    "reference": "ghcr.io/u2giants/synology-monitor-nas-mcp:latest",
+    "indexDigest": "sha256:006f0634cc258d535be71ae073c8b1b6d6869a5b5ce38597db5907d135f262d6",
+    "amd64Digest": "sha256:f49aad413c56e6deb590fcfe121816b7deb9c87bd81af690bc16a899cad7372a",
+    "revision": "bbfaf149e47211e05c225129103c774889765fe8"
+  },
+  "runtime": {
+    "node": "20.20.2",
+    "framework": { "name": "fastmcp", "version": "4.0.2" },
+    "transitiveOfficialSdk": { "name": "@modelcontextprotocol/sdk", "version": "1.29.0" }
+  },
+  "cases": [
+    {
+      "id": "BASELINE-001-server-discover",
+      "replayPolicy": "intentional-cutover-change",
+      "request": "authenticated server/discover using 2026-07-28 headers",
+      "observed": { "status": 400, "errorCode": -32000, "outcome": "unsupported_protocol_version" }
+    },
+    {
+      "id": "BASELINE-002-legacy-initialize",
+      "replayPolicy": "legacy-parity",
+      "request": "authenticated initialize using 2024-11-05",
+      "observed": { "status": 200, "negotiatedProtocolVersion": "2024-11-05", "serverName": "synology-nas", "serverVersion": "1.0.0" }
+    },
+    {
+      "id": "BASELINE-003-missing-auth",
+      "replayPolicy": "legacy-parity",
+      "request": "initialize without Authorization",
+      "observed": { "status": 401, "bodyShape": { "error": "Unauthorized" }, "wwwAuthenticatePresent": false }
+    },
+    {
+      "id": "BASELINE-004-invalid-auth",
+      "replayPolicy": "legacy-parity",
+      "request": "initialize with an invalid bearer",
+      "observed": { "status": 401, "bodyShape": { "error": "Unauthorized" }, "wwwAuthenticatePresent": false }
+    },
+    {
+      "id": "BASELINE-005-bogus-session-id",
+      "replayPolicy": "intentional-cutover-change",
+      "request": "tools/list with an arbitrary Mcp-Session-Id",
+      "observed": { "status": 200, "outcome": "header_ignored_in_stateless_mode", "hang": false }
+    },
+    {
+      "id": "BASELINE-006-unsupported-version",
+      "replayPolicy": "intentional-cutover-change",
+      "request": "initialize with protocol version 1900-01-01",
+      "observed": { "status": 200, "negotiatedProtocolVersion": "2025-11-25", "outcome": "unsupported_version_not_rejected" }
+    },
+    {
+      "id": "BASELINE-007-tools-list",
+      "replayPolicy": "legacy-parity",
+      "request": "authenticated tools/list using 2024-11-05",
+      "observed": {
+        "status": 200,
+        "toolCount": 7,
+        "toolNames": ["list_capabilities", "get_capability_details", "tool_search", "invoke_tool", "run_command", "check_disk_space", "restart_nas_api"]
+      }
+    },
+    {
+      "id": "BASELINE-008-harmless-tool-call",
+      "replayPolicy": "legacy-parity",
+      "request": "authenticated tools/call for list_capabilities",
+      "observed": { "status": 200, "contentTypes": ["text"], "isError": false }
+    },
+    {
+      "id": "BASELINE-009-get-mcp-without-session",
+      "replayPolicy": "legacy-parity",
+      "request": "authenticated GET /mcp without Mcp-Session-Id",
+      "observed": { "status": 405, "outcome": "method_not_allowed", "hang": false }
+    },
+    {
+      "id": "BASELINE-010-legacy-sse",
+      "replayPolicy": "intentional-cutover-change",
+      "request": "authenticated GET /sse",
+      "observed": { "status": 200, "contentType": "text/event-stream", "outcome": "legacy_sse_stream_open" }
+    },
+    {
+      "id": "BASELINE-011-health",
+      "replayPolicy": "legacy-parity",
+      "request": "unauthenticated GET /health",
+      "observed": { "status": 200, "service": "nas-mcp", "framework": "fastmcp", "registryTools": 132, "visibleTools": 7 }
+    }
+  ],
+  "notes": [
+    "No bearer token, operation argument, private NAS URL, or other secret is stored in this fixture.",
+    "The production image revision predates the documentation-only baseline commit; both values are recorded deliberately.",
+    "Intentional-cutover-change cases are historical evidence and are not parity expectations for the official SDK v2 server."
+  ]
+}

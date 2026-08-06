@@ -11,7 +11,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 | 0A | synology-monitor | ✅ done | 2026-08-05 | Shared formatter and four focused cases shipped in `bbfaf149`; validator regression and 69 shared tests pass |
 | 0B | synology-monitor | ✅ done | 2026-08-05 | Both web paths use the shared formatter; web typecheck and `guard:ai` pass in `bbfaf149` |
 | 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
-| 1 | both | ☐ open | 2026-08-05 | Capture exact current dependency and production build baselines |
+| 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `8ce45af`, DevOps MCP `cfdd6a6`; exact production digests and runtime dependency versions recorded |
 | 2 | synology-monitor | ☐ open | 2026-08-05 | Make npm/pnpm and lockfile use deterministic |
 | 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
 | 4 | both | ☐ open | 2026-08-05 | Build one shared protocol-conformance test contract |
@@ -201,6 +201,21 @@ API health endpoints then responded within five seconds, the known blocked comma
 returned the permanent/stateless explanation in about one second, and fresh Codex
 sessions passed `REFUSAL-009` and `REFUSAL-010`. Do not redo Phase 0. Phase A has
 not started; the next session starts at Step 1.
+
+Step 1 was completed on 2026-08-06. Synology Monitor `main` was
+`8ce45af02c0ae99b8c5cdf6b29080057b878aab0`; the live NAS MCP image index was
+`sha256:006f0634cc258d535be71ae073c8b1b6d6869a5b5ce38597db5907d135f262d6`
+with OCI revision `bbfaf149e47211e05c225129103c774889765fe8`, FastMCP `4.0.2`,
+and transitive official SDK `1.29.0`. DevOps MCP `main` and its deployed source
+were `cfdd6a66dc364a4351d8c35bc364583d605bbc0d`; the running image digest was
+`sha256:28bbb27c1a3e7398c88b773a310dc16f734f40c3a57b4287d4155d06702d0602`
+with FastMCP `3.4.4` and transitive official SDK `1.28.1`. Public, secret-free
+fixtures now record each baseline case and its replay policy in
+`apps/nas-mcp/test/fixtures/current-contract.json` and
+`tests/fixtures/current-contract.json`, respectively. ContextForge is configured
+for DevOps MCP Streamable HTTP at `/mcp`; current client documentation also uses
+`/mcp`, and no supported `/sse` caller has yet been proven. The seven-day access
+log proof remains Step 7, not an assumption made during baseline capture.
 
 No official SDK migration described in Phases A through E has begun.
 
