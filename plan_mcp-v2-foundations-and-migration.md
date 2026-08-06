@@ -13,11 +13,11 @@ This file is the cross-repository source of truth for the work. Whoever complete
 | 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
 | 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `8ce45af`, DevOps MCP `cfdd6a6`; exact production digests and runtime dependency versions recorded |
 | 2 | synology-monitor | ✅ done | 2026-08-06 | Exact-pinned manifest plus committed root lock; frozen pnpm in CI/Docker; prerequisite verification job and local-lock guard; CI run `31116338234`; live OCI revision `d700f1d` |
-| 3 | devops-mcp | ☐ open | 2026-08-05 | Add a Python lockfile and exact runtime dependency policy |
-| 4 | both | ☐ open | 2026-08-05 | Build one shared protocol-conformance test contract |
-| 5 | synology-monitor | ☐ open | 2026-08-05 | Add NAS MCP unit, HTTP, cancellation, and timeout tests |
-| 6 | devops-mcp | ☐ open | 2026-08-05 | Add DevOps MCP unit, HTTP, auth, process, and timeout tests |
-| 7 | devops-mcp | ☐ open | 2026-08-05 | Remove obsolete SSE and URL-token paths after usage proof |
+| 3 | devops-mcp | ◐ implemented | 2026-08-06 | Exact uv lock and prerequisite test job landed in `58cfdbb`; local lock, 7 tests, image, and stale-lock proofs pass; production gate awaits GitHub Actions incident recovery |
+| 4 | both | ◐ implemented | 2026-08-06 | Byte-identical 21-case contract `1.0.0`, digest `df610a2`, landed in `5bb9d99` and `24f4cb6`; local verification passes; CI/deploy gate queued during Actions outage |
+| 5 | synology-monitor | ◐ implemented | 2026-08-06 | 18 fake/loopback tests, fail-closed config/auth, cancellation, and deadline error landed in `fbae496`; 69 shared tests and build pass; CI/deploy queued |
+| 6 | devops-mcp | ◐ implemented | 2026-08-06 | 33 isolated tests and runtime boundaries landed in `fb0cba4`; 600s ceiling deliberately preserved until Step 9B; CI/deploy queued |
+| 7 | devops-mcp | ⏸ evidence gate | 2026-08-06 | No retained seven-day access log, so SSE/query auth remain. Privacy-safe durable evidence log landed in `614f1a6`; seven-day clock starts only after exact deployment and persistence proof |
 | 8 | both | ☐ open | 2026-08-05 | Standardize health, build, protocol, auth, and error metadata |
 | 9 | devops-mcp | ☐ open | 2026-08-05 | Align synchronous deadlines below client limits |
 | 10 | both | ☐ open | 2026-08-05 | Define and implement durable long-operation handles |
@@ -230,6 +230,38 @@ build passed. Synthetic manifest drift failed both pnpm and Docker with
 `ERR_PNPM_OUTDATED_LOCKFILE`. GitHub Actions run `31116338234` passed, GHCR
 published the exact revision, and read-only production inspection confirmed the
 healthy running container carries OCI revision `d700f1d49e996c1d09d06406e621579b7d2741d6`.
+
+Steps 3 through 6 were implemented and pushed on 2026-08-06. DevOps MCP uses
+`pyproject.toml` plus `uv.lock` with exact production-baseline versions and a
+test-before-image workflow. Both repositories carry the same executable 21-case
+protocol contract. NAS MCP has an import-safe factory, production-default
+fail-closed configuration, exact bearer challenges, Host/Origin enforcement,
+socket-destroying cancellation, and 18 fake/loopback tests while preserving the
+25-second NAS command cap and 45-second outer deadline. DevOps MCP has an
+import-safe configurable app, fail-closed production startup, request-scoped
+identity, exact bearer challenges, bounded-reader/process/audit/catalog tests,
+and 33 isolated tests. Its current 600-second synchronous ceiling remains intact
+until Step 9B, as required. July 28-only assertions remain migration expectations
+for Steps 11 and 12 rather than false pre-migration passes.
+
+Step 7 reached its required evidence gate on 2026-08-06. Production application
+and tunnel containers had only about 30 minutes of retained logs, and Traefik had
+no access log, so seven days of zero legitimate `/sse` use could not be proven.
+SSE, query-token authentication, and the `/sse/messages` bypass therefore remain.
+DevOps MCP commit `614f1a629e8fe9e20e36db096d9dc29b9092ea35` adds a privacy-safe
+transport record on the existing durable audit volume. It stores only timestamp,
+method, normalized route, and response status, never query strings, headers,
+tokens, bodies, arguments, or caller-controlled path segments. After that exact
+commit is deployed and the file is proven to survive a replacement, observe
+seven complete consecutive days before revisiting removal. Auxiliary ai-devops
+commit `c725478` pins managed `mcp-remote` launchers to `0.1.38` and corrects the
+stale NAS `/sse` URL to `/mcp`.
+
+GitHub reported a major Actions partial outage beginning 2026-08-06 15:22 UTC.
+Runs for Steps 3 through 6 and the Step 7 evidence logger were queued or failed
+at `Set up job` before checkout. Those are infrastructure failures, not test
+failures. Do not mark the partial STATUS rows done until replacement runs pass,
+the exact images deploy, and the running revisions are verified.
 
 ## 6. Key findings and root causes
 
