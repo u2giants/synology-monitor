@@ -7,7 +7,7 @@
 > review record.
 
 Repo: `u2giants/synology-monitor` · working copy `/worksp/monitor/app` · branch `main`
-Written 2026-08-05 · Reviewed by GLM 5.2 (`.ai/reviews/glm-mcp-myth-plan-review-2-20260806T010719Z.md`)
+Written 2026-08-05 · Read the [GLM 5.2 review for the independent concerns that shaped this plan](.ai/reviews/glm-mcp-myth-plan-review-2-20260806T010719Z.md).
 
 ---
 
