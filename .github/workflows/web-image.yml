@@ -45,6 +45,16 @@ jobs:
       - name: AI cache CI guards
         run: pnpm --filter @synology-monitor/web run guard:ai
 
+      # This workflow triggers on packages/shared/**, and stage2-reasoning.ts builds
+      # its tool list straight from ALL_TOOL_DEFS (filtering !def.write) and executes
+      # the shell those tools generate. So web ships the same tier-1 read tools the
+      # NAS MCP does — the ones that auto-execute with no approval — and until this
+      # step existed it shipped them without ever running the catalog's safety suite.
+      # nas-mcp-image.yml has had this gate since the 2026-07-16 rename fix; the
+      # registry-wide audit is what showed web needed the identical one.
+      - name: Test shared tool catalog
+        run: pnpm --filter @synology-monitor/shared run test
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

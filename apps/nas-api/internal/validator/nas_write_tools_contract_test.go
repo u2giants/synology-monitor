@@ -77,16 +77,63 @@ func TestNasWriteToolsCarryHostileFiltersAsQuotedData(t *testing.T) {
 			continue
 		}
 		t.Run("hostile "+c.Filter, func(t *testing.T) {
-			for _, line := range strings.Split(c.Command, "\n") {
-				// Any line that both references the payload and is not carrying it
-				// inside single quotes would be executing it.
-				if strings.Contains(line, "touch /tmp/OWNED") && !strings.Contains(line, "'") {
-					t.Errorf("hostile filter appears outside single quotes, so it would execute:\n%s", line)
+			quoted := singleQuotedMask(c.Command)
+			for _, payload := range []string{"touch /tmp/OWNED"} {
+				for i := 0; i < len(c.Command); i++ {
+					idx := strings.Index(c.Command[i:], payload)
+					if idx == -1 {
+						break
+					}
+					at := i + idx
+					if !quoted[at] {
+						t.Errorf("hostile filter is NOT inside single quotes at offset %d, so it executes:\n%s",
+							at, lineAt(c.Command, at))
+					}
+					i = at + 1
 				}
-			}
-			if !strings.Contains(c.Command, "'"+strings.Replace(c.Filter, "/volume1", "/btrfs/volume1", 1)+"'") {
-				t.Errorf("expected the filter to appear single-quoted in the command:\n%s", c.Command)
 			}
 		})
 	}
+}
+
+// singleQuotedMask reports, per byte, whether that byte is inside a POSIX sh
+// single-quoted string — the only context that makes $( ) and ` ` inert.
+//
+// This replaces an earlier per-line "does the line contain an apostrophe?" check.
+// That heuristic passed any line with a quote ANYWHERE on it, including a line
+// carrying the payload outside the quotes, and it also assumed every tool passes
+// the filter as a standalone quoted path (true of the rename tools, false of
+// tools that embed it in a message or map it differently). The 2026-07-16
+// registry audit added such tools to the golden, so the check had to become an
+// actual quoting question rather than a proxy for one.
+func singleQuotedMask(cmd string) []bool {
+	mask := make([]bool, len(cmd))
+	inSingle, inDouble, escaped := false, false, false
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case escaped:
+			escaped = false
+		case c == '\\' && !inSingle:
+			// Inside single quotes a backslash is literal; elsewhere it escapes.
+			escaped = true
+		case c == '\'' && !inDouble:
+			inSingle = !inSingle
+			continue // the delimiter itself is not "inside"
+		case c == '"' && !inSingle:
+			inDouble = !inDouble
+			continue
+		}
+		mask[i] = inSingle
+	}
+	return mask
+}
+
+func lineAt(cmd string, at int) string {
+	start := strings.LastIndex(cmd[:at], "\n") + 1
+	end := strings.Index(cmd[at:], "\n")
+	if end == -1 {
+		return cmd[start:]
+	}
+	return cmd[start : at+end]
 }

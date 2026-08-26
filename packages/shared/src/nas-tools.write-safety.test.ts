@@ -6,12 +6,18 @@
 //
 // The tests drive the REAL buildCommand and execute its output, so they fail if the
 // builder regresses — a hand-copied command string would not.
+//
+// The registry-wide sweep at the bottom of this file is the generalisation: the
+// rename fix was scoped to two tools, and the follow-up audit found the SAME bug in
+// 23 more. Per-tool tests would not have found those, so the sweep asserts the
+// invariant over every tool in ALL_TOOL_DEFS, including ones not written yet.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { ALL_TOOL_DEFS } from "./nas-tools";
 
 const TOOLS = ["rename_file_to_old", "remove_invalid_chars"] as const;
@@ -290,5 +296,101 @@ describe("tier-3 classification contract (guards a fragile, invisible invariant)
         /mv -n '\/btrfs\/volume\d+\/[^']*'/,
       );
     });
+  }
+});
+
+// ─── Registry-wide sweep ──────────────────────────────────────────────────────
+//
+// Every tool in the catalog, every string parameter, executed for real.
+//
+// Why execution rather than reading the source or regex-matching the built string:
+// the bug is a *shell parsing* question, and the only authority on how sh parses a
+// string is sh. Static checks got this wrong in both directions during the audit —
+// they missed `echo "${pkg}: ..."` and falsely accused `"$(dirname '...')"`, which
+// is correctly quoted. A marker file on disk is not arguable.
+//
+// Safety: PATH is emptied, so the generated command can run NO external binary —
+// no pkill, no sysctl, no btrfs, no mv. The payloads use only shell redirection (a
+// builtin), so the marker still appears if and only if the injected text was
+// evaluated as code. Without this, running the catalog would restart services.
+const PAYLOADS: { name: string; make: (prefix: string) => string }[] = [
+  // Needs no quote character: expands inside double quotes AND unquoted.
+  { name: "command substitution", make: (p) => `${p}$(>PWNED)` },
+  { name: "backticks", make: (p) => `${p}\`>PWNED\`` },
+  // Closes a single-quoted shell string that the value was interpolated into raw.
+  { name: "single-quote breakout", make: (p) => `${p}'; >PWNED; echo '` },
+  { name: "double-quote breakout", make: (p) => `${p}"; >PWNED; echo "` },
+];
+
+// Tried in order until one builds: tools validate their input, and a value that
+// throws proves nothing. A tool whose every prefix throws is already safe by
+// validation and is skipped.
+const PREFIXES = ["/volume1/share/x", "", "volume1", "smb", "SynologyDrive", "1"];
+
+function unwrap(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let s = schema;
+  for (let i = 0; i < 5; i++) {
+    const d = s._def as { typeName?: string; innerType?: z.ZodTypeAny };
+    if (d.typeName === "ZodOptional" || d.typeName === "ZodDefault") s = d.innerType!;
+    else break;
+  }
+  return s;
+}
+function placeholderFor(schema: z.ZodTypeAny): unknown {
+  const d = unwrap(schema)._def as { typeName?: string; values?: string[] };
+  if (d.typeName === "ZodEnum") return d.values![0];
+  if (d.typeName === "ZodNumber") return 5;
+  if (d.typeName === "ZodBoolean") return true;
+  return "placeholder";
+}
+
+describe("no tool executes a caller-supplied value (registry-wide)", () => {
+  for (const def of ALL_TOOL_DEFS) {
+    if (!def.buildCommand) continue; // native job tools dispatch over REST, no shell
+    const shape = def.params ?? {};
+    const stringParams = Object.keys(shape).filter(
+      (k) => (unwrap(shape[k])._def as { typeName?: string }).typeName === "ZodString",
+    );
+
+    for (const param of stringParams) {
+      it(`${def.name}: treats '${param}' as data, never code`, () => {
+        for (const payload of PAYLOADS) {
+          for (const prefix of PREFIXES) {
+            const input: Record<string, unknown> = {};
+            for (const k of Object.keys(shape)) input[k] = placeholderFor(shape[k]);
+            input[param] = payload.make(prefix);
+
+            let cmd: string;
+            try {
+              cmd = def.buildCommand!(input);
+            } catch {
+              continue; // rejected by the tool's own validator; try the next prefix
+            }
+
+            const sandbox = mkdtempSync(join(tmpdir(), "nas-sweep-"));
+            try {
+              execFileSync("/bin/sh", ["-c", cmd], {
+                cwd: sandbox,
+                stdio: ["ignore", "ignore", "ignore"],
+                env: { PATH: "" },
+                timeout: 5000,
+              });
+            } catch {
+              // The visible command failing is expected (no binaries on PATH) and
+              // irrelevant: the injection runs at word expansion, before it.
+            }
+            const executed = existsSync(join(sandbox, "PWNED"));
+            rmSync(sandbox, { recursive: true, force: true });
+
+            expect(
+              executed,
+              `${def.name}.${param} executed an injected payload (${payload.name}). ` +
+                `Route the value through quote()/echoMsg() — see the header of nas-tools.ts.\n${cmd}`,
+            ).toBe(false);
+            break; // this payload built and ran; move to the next payload
+          }
+        }
+      });
+    }
   }
 });
