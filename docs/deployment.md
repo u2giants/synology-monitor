@@ -20,6 +20,15 @@ NAS 1 — edgesynology1 (100.107.131.35)          NAS 2 — edgesynology2 (100.1
   └─ synology-monitor-watchtower                   └─ synology-monitor-watchtower
 ```
 
+> **The Coolify deploy call must be a POST.** The endpoint answers a GET with
+> HTTP 405 and `{"message":"This endpoint has changed to a POST request."}`.
+> Both workflows originally used `curl -s -X GET`, which exits 0 on a 405, so
+> the "Trigger Coolify redeploy" step reported success while nothing deployed —
+> for nas-mcp and web this went unnoticed from 2026-08-06 until 2026-08-26.
+> The calls now use `curl -sS --fail-with-body -X POST`, so a future endpoint
+> or auth change fails the workflow instead of passing quietly. A green build
+> is not evidence of a deploy unless this step actually succeeded.
+
 Each NAS runs the agent, the NAS API, and a Watchtower container. Watchtower polls GHCR every 5 minutes and automatically recreates the agent and nas-api containers when a new image is available. The relay service has no CI workflow and is deployed manually on the VPS — treat that as an exceptional path (see `apps/relay/OPERATIONS.md`).
 
 ## GitHub Actions workflows
