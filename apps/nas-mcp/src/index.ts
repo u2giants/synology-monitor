@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { getNasConfigs, nasPreview, nasExec, buildApprovalToken } from "./nas-client.js";
+import { renderUntrustedBlock, QUOTE_LEGEND } from "./preview-format.js";
 import { runJobTool } from "./job-client.js";
 import { ALL_TOOL_DEFS, type McpToolDef, searchTools, formatToolForSearch, findToolByName, getGroup, listUntaggedTools } from "./nas-tools.js";
 
@@ -166,7 +167,10 @@ export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record
     const preview = await nasPreview(config, command, { signal });
 
     if (preview.blocked) {
-      return `[${config.name}] Blocked by NAS API: ${preview.summary}`;
+      return [
+        `[${config.name}] Blocked by NAS API. Reason reported:`,
+        ...renderUntrustedBlock(preview.summary),
+      ].join("\n");
     }
 
     // Every write tool previews first, whatever tier nas-api assigns the command.
@@ -176,10 +180,9 @@ export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record
       return [
         `[${config.name}] This action requires your approval before it runs.`,
         ``,
-        `Command that will execute (tier ${preview.tier}):`,
-        `\`\`\``,
-        command,
-        `\`\`\``,
+        `Command that will execute (tier ${preview.tier}).`,
+        QUOTE_LEGEND,
+        ...renderUntrustedBlock(command),
         ``,
         `Call this tool again with confirmed: true to approve and execute.`,
         `If you do not want to proceed, do nothing — no changes have been made.`,
@@ -735,7 +738,10 @@ export function createNasMcpServer(options: NasMcpFactoryOptions = {}): FastMCP 
               try {
                 const preview = await nasPreview(config, command, { signal });
                 if (preview.blocked) {
-                  return `[${config.name}] Blocked: ${preview.summary}`;
+                  return [
+                    `[${config.name}] Blocked. Reason reported:`,
+                    ...renderUntrustedBlock(preview.summary),
+                  ].join("\n");
                 }
                 if (preview.tier >= 2) {
                   return `[${config.name}] This command requires write access and cannot be run via run_command. Add it to enabled_write_tools in tools-config.json, or use invoke_tool with a specific write tool.`;
