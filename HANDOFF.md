@@ -1,6 +1,6 @@
 # Synology Monitor — Active Work Handoff
 
-Updated: 2026-07-17 (America/New_York)
+Updated: 2026-08-26 (America/New_York)
 
 This file exists because production operations remain unfinished. It contains
 continuation state only; completed implementation history belongs in `AGENTS.md`
@@ -379,12 +379,10 @@ unlabelled `@prechange_*` looks like litter to the next session.
    its live folder. Separately, have a human resolve the 4 live case-collision pairs
    listed in audit §2, then repeat the whole procedure for the other shares and for
    `edgesynology2` (never examined).
-10. **Shell injection in ~23 read tools (HIGHEST PRIORITY):** the fix is written and its 116 tests
-   pass, but it is **uncommitted** in worktree `recursing-volhard-7bd463` and the live `nas-mcp`
-   is still exposed. Read §3.G and run the command blocks there: commit → rebase onto `main` →
-   full test gate → push → confirm CI green → live-probe a read tool. Success means a payload in
-   a read-tool filter creates no file on the NAS. Then land `cd073d1` (declared tiers) and
-   `9346469` (preview escaping) the same way.
+10. ~~**Shell injection in ~23 read tools (HIGHEST PRIORITY)**~~ — **DONE 2026-08-26.** All three
+   fixes are merged and deployed (PRs #5, #6, #7). See §3.G for the record. No action remains.
+   The one thing not done: a live probe on the NAS confirming a payload in a read-tool filter
+   creates no file. The unit and contract tests cover it, but an end-to-end check was never run.
 
 ## 7. Constraints and gotchas
 
@@ -465,92 +463,36 @@ has not been done (chown is tier 3, so the only chown surface is the tool itself
 and every deeper item above (symlinked parent, check-to-write race, hard links, ACL-override,
 MCP approval binding) remains untouched.
 
-### G. Shell injection is NOT limited to the two write tools — ~23 more found, fix written but UNCOMMITTED ⚠️
+### G. Shell injection in ~23 read tools — RESOLVED 2026-08-26 ✅
 
-This is the highest-priority unfinished item in this file. **The fix exists, its tests pass, and
-it has never been committed.** If nothing is done, it is lost when the worktree is cleaned.
+Kept as a short record because this section previously described the highest-priority
+live exposure in this file, and a reader who remembers that needs to know it is closed.
 
-**Background.** On 2026-07-16 a proven root RCE was fixed in the two tier-3 write tools
-`rename_file_to_old` and `remove_invalid_chars` (`da9bcf9`, hardened by `c763f49`). That fix is
-shipped, deployed, and live-verified — the attack path is dead and the success path was proven
-end-to-end on a throwaway file. **That part is DONE; do not redo it.**
+All three fixes are merged to `main`, built, and deployed:
 
-**What the follow-up audit then found.** The same injection exists in roughly **23 more tools**,
-and they are **worse** than the two that were fixed:
-
-- The vulnerable shape is a *label* line, e.g. `` echo '=== SEARCHING ALL LOGS FOR: ${f} ===' ``.
-  It *looks* quoted, but the quotes are in the TypeScript template, not around `${f}`. One
-  apostrophe in `f` closes the shell string and the rest executes as root.
-- Most of these are **read tools**. Read tools are tier 1 and **auto-execute with no approval
-  prompt at all** (only `write: true` tools preview and require `confirmed:true` —
-  `apps/nas-mcp/src/index.ts:170`). The two tools already fixed at least demanded a (misleading)
-  approval; these demand nothing.
-- Realistic path: a hostile *filename on the NAS* gets copied into a search filter by the AI
-  pipeline. No human is in the loop.
-
-**The live deployed `nas-mcp` still has all of these.** The audit's fix is not on `main`.
-
-**Where the fix is (uncommitted, 6 modified files, 0 commits):**
-`/worksp/monitor/app/.claude/worktrees/recursing-volhard-7bd463` (branch
-`claude/recursing-volhard-7bd463`). It adds an `echoMsg()` helper (`echo` + `quote()`), converts
-**28 call-sites**, adds **8** more `quote()` fixes plus PID validation on
-`check_process_io_detail`, and grows the safety suite from 49 to **116 passing tests**. The work
-looks complete and correct; it was simply never committed before the session stopped.
-
-**Caveat:** that worktree is based on a `main` from *before* `c763f49`, so it must be rebased
-onto current `main` before landing. The two efforts touched different tools, so conflicts should
-be limited to the helper region at the top of `nas-tools.ts` — verify, do not assume.
-
-**Exact steps to land it** (copy-paste one block at a time; stop if any command fails):
-
-```bash
-# 1. See what is uncommitted and confirm it is still there
-cd /worksp/monitor/app/.claude/worktrees/recursing-volhard-7bd463
-git status --short
-git diff --stat
-
-# 2. Prove the fix passes ITS tests before trusting it (expect: 116 passed)
-npx vitest run src/nas-tools.write-safety.test.ts --root packages/shared
-
-# 3. Commit it on its own branch
-git add -A
-git commit -m "nas-tools: stop read tools executing injected shell from label lines"
-
-# 4. Rebase onto current main and re-run the FULL gate after the rebase
-git fetch origin
-git rebase origin/main
-npx vitest run --root packages/shared
-(cd apps/nas-api && go vet ./... && go test ./...)
-
-# 5. Ship (this deploys: Actions -> GHCR -> Coolify redeploys nas-mcp)
-git push origin HEAD:main
-```
-
-**Verify it actually landed** — do not trust the tool's own output, check the filesystem/behavior:
-
-```bash
-# CI must be green BEFORE believing anything shipped
-gh run list --limit 3
-
-# Then probe a read tool live with a payload; expect NO marker file to appear.
-# Via the MCP: run_command on edgesynology1 with:
-#   ls -la /tmp/AUDIT_PROBE 2>&1     -> must say "No such file or directory"
-```
-
-**Also unmerged and ready** (both clean trees, both done, neither on `main`):
-
-| Branch | Commit | What it does |
+| What | PR | Merged as |
 |---|---|---|
-| `claude/optimistic-gagarin-1df127` | `cd073d1` | nas-api enforces a declared minimum tier per named tool — removes the fragile lexical tier inference and makes the deliberate literal-path duplication in the rename tools deletable (see AGENTS.md §12) |
-| `claude/interesting-einstein-48a593` | `9346469` | nas-mcp escapes untrusted text in the write-approval preview, so a crafted filename cannot distort the approval message a human reads |
+| `echoMsg()` escaping across the ~23 read tools, PID validation, web CI gate | [#5](https://github.com/u2giants/synology-monitor/pull/5) | `83b40a3` |
+| nas-mcp write-approval preview escaping (was `9346469`) | [#6](https://github.com/u2giants/synology-monitor/pull/6) | `364bd4c` |
+| nas-api declared minimum tiers + exec token v2 (was `cd073d1`) | [#7](https://github.com/u2giants/synology-monitor/pull/7) | `be63347` |
 
-Land each the same way: `cd` into its worktree, `git fetch origin && git rebase origin/main`, run
-the gate above, then `git push origin HEAD:main`.
+The uncommitted worktree this section pointed at (`recursing-volhard-7bd463`) no longer
+exists; its work was committed, rebased onto current `main`, and merged. The two named
+branches are merged and deleted. Nothing here is actionable.
 
-**Ordering recommendation:** land G first (it is the live exposure), then the tier branch, then
-the preview branch. After the tier branch lands, the duplicated literal path in the rename tools
-can be simplified — but only then, and only with the Go contract test still green.
+Notes worth keeping:
 
+- The same flaw was found in `inspect_effective_permissions`, which was added to `main`
+  after the original audit. It is fixed in the same merge.
+- The duplicated literal path in the rename tools is gone: `EffectiveTier` now takes
+  `max(ClassifyTier, declared minimum)` from `nas_tool_minimum_tiers.json`, so tier no
+  longer depends on what the regex can see. Unknown tools fail closed.
+- Old-format approval tokens are rejected on purpose, so a mixed nas-api/nas-mcp
+  deployment fails closed for writes rather than losing enforcement. Deploy both.
+- Deploying this exposed a separate CI defect — the Coolify redeploy step used GET
+  against an endpoint that now requires POST, and passed green while deploying nothing.
+  Fixed in [#8](https://github.com/u2giants/synology-monitor/pull/8); see
+  `docs/deployment.md`.
 ## 9. Open questions and risks
 
 - Is `seafile-ignore.txt` installed on every affected library, and does seaf-cli
@@ -573,17 +515,15 @@ the current state, avoid documented dead ends, execute each next step with a
 verification gate, locate required access, and understand every active risk without
 the prior chat transcript.
 
-Re-audited 2026-07-20 after adding §3.G: a stranger can now find the uncommitted
-injection fix (exact worktree path and branch), prove it before trusting it (exact
-test command and expected count), land it (exact commit/rebase/push blocks), verify it
-actually shipped (CI check plus a live probe that does not trust the tool's own
-output), and knows the ordering and the rebase caveat. The two ready-but-unmerged
-branches are named with their commit SHAs and what each does.
+Re-audited 2026-08-26: §3.G is closed — all three injection/tier fixes are merged and
+deployed, and the worktree and branches it pointed at are gone. The section is kept as a
+short resolved record. The remaining four operational efforts in this file are unchanged
+and still belong to whoever picks them up.
 
 Risks / watchouts:
-- **§3.G is a live, unapproved root-RCE surface (~23 read tools, tier 1, no approval
-  prompt) and its fix exists only as uncommitted files in one worktree.** Losing that
-  worktree loses the work. This outranks every other item in this file.
+- ~~§3.G root-RCE surface~~ — closed 2026-08-26, merged and deployed (see §3.G). The one
+  gap: the end-to-end live probe (payload in a read-tool filter creates no file on the NAS)
+  was never run. Unit and Go contract tests cover the behaviour; a live confirmation does not.
 - Leftover test artifact on `edgesynology1`: `/volume1/mac/mcp-selftest/delete-me.txt.old`
   (from the 2026-07-20 live proof that the fixed rename tool works end-to-end). Harmless;
   delete the `mcp-selftest` directory whenever. No MCP tool renames it back — that reverse

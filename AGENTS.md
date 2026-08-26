@@ -233,25 +233,29 @@ Do not change because:
 Removing either layer reopens unattended write paths. Every new write command needs
 builder tests plus real validator tests.
 
-### Literal paths repeat on tier-3 write lines
+### Tier comes from the declared minimum, not from what the regex can see
 
-Looks like:
-`mv`/`chown` commands should use only a previously assigned shell variable.
+Resolved 2026-08-26 (PR #7). This entry used to say the opposite — that `mv`/`chown`
+lines must repeat a literal `/btrfs/volumeN/...` path so `ClassifyTier` would rate them
+tier 3, and must not be "cleaned up" into a shell variable. That constraint is gone.
 
-Actually:
-The validator matches each command line and needs a literal `/btrfs/volumeN/...`
-beside the write verb to classify user-data writes as tier 3.
+Now:
+`EffectiveTier(command, toolName)` returns `max(ClassifyTier, declared minimum)`, with
+the minimum owned by `apps/nas-api/internal/validator/nas_tool_minimum_tiers.json`
+(embedded at build time, generated from the shared registry by
+`packages/shared/src/nas-tool-tiers.golden.test.ts`). Both `/preview` and `/exec` use it,
+so the rename tools request tier 3 regardless of what the line looks like, and the
+tier-2 user-data rejection in `validator.go` cannot fire for them.
 
-Why:
-Go regexes do not cross newlines; the shared golden fixture locks this contract.
-
-Do not change because:
-Hoisting the path entirely into a variable classifies the command tier 2, and
-nas-api hard-rejects a tier-2 command whose text still contains `/volume1/`
-(`validator.go:358`) — so the "cleanup" makes nas-api refuse the command and the
-tool stops working, not merely weakens approval. Fails silently (compiles, no
-test failure without the golden contract test). Closes only once nas-api enforces
-a declared minimum tier per tool.
+Still true:
+- An **unknown** tool name fails closed — a new write tool that forgets to declare a
+  minimum errors instead of auto-executing at tier 1.
+- Free-form `run_command` passes an empty tool name and keeps pure lexical
+  classification, deliberately.
+- The tier is signed into the v2 exec token along with the tool name, so a caller
+  cannot weaken enforcement by editing or omitting either. Old-format tokens are
+  rejected, so a mixed nas-api/nas-mcp deployment fails closed for writes — deploy
+  both together.
 
 ### Per-share mounts are read-only; writes use `/btrfs/volumeN`
 
