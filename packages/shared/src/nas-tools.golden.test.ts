@@ -34,6 +34,28 @@ const CASES = [
   { tool: "repair_path_ownership", filter: "mac:users", exactPath: "/volume1/mac/scratch.txt", expectedTier: 3 },
   { tool: "restore_path_from_snapshot", filter: "/volume1/mac/#snapshot/a.txt|/volume1/mac/a.txt", expectedTier: 3 },
   { tool: "restore_from_recycle_bin", filter: "/volume1/mac/#recycle/a.txt|/volume1/mac/a.txt", expectedTier: 3 },
+
+  // The rest of the enabled write tools that interpolate the caller's filter,
+  // added by the 2026-07-16 registry-wide audit. Each one executed an injected
+  // payload before that audit, so each is pinned here at the tier the operator is
+  // promised — the tier is half the guarantee, and quoting the payload is the other
+  // half (asserted by the hostile-data test on the Go side).
+  //
+  // Tier 2 for the service/snapshot ops is BY DESIGN, not a downgrade to fix:
+  // ClassifyTier rates `btrfs subvolume snapshot`/`scrub start`/package restarts as
+  // additive service operations. They still preview and still need confirmed:true.
+  // quarantine_path and write_seafile_ignore write user data and must stay tier 3.
+  { tool: "quarantine_path", filter: "/volume1/mac/x$(touch /tmp/OWNED).txt", expectedTier: 3 },
+  { tool: "write_seafile_ignore", filter: "/volume1/mac/Art Library", expectedTier: 3 },
+  { tool: "write_seafile_ignore", filter: "/volume1/mac/x$(touch /tmp/OWNED)", expectedTier: 3 },
+  { tool: "create_prechange_snapshot", filter: "volume1", expectedTier: 2 },
+  { tool: "create_prechange_snapshot", filter: "volume1$(touch /tmp/OWNED)", expectedTier: 2 },
+  { tool: "start_btrfs_scrub", filter: "volume1", expectedTier: 2 },
+  { tool: "start_btrfs_scrub", filter: "volume1$(touch /tmp/OWNED)", expectedTier: 2 },
+  { tool: "trigger_sharesync_resync", filter: "mac", expectedTier: 2 },
+  { tool: "trigger_sharesync_resync", filter: "mac$(touch /tmp/OWNED)", expectedTier: 2 },
+  { tool: "restart_network_service_safe", filter: "smb", expectedTier: 2 },
+  { tool: "restart_network_service_safe", filter: "smb$(touch /tmp/OWNED)", expectedTier: 2 },
 ];
 
 function build(tool: string, filter: string, exactPath?: string): string {

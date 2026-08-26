@@ -65,5 +65,71 @@
     "filter": "/volume1/mac/#recycle/a.txt|/volume1/mac/a.txt",
     "expectedTier": 3,
     "command": "echo '=== SOURCE (recycle bin) ==='\n[ -e '/btrfs/volume1/mac/#recycle/a.txt' ] || { echo \"ERROR: source does not exist\"; exit 1; }\necho '=== DESTINATION CHECK ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>/dev/null && echo \"EXISTS — refusing to overwrite\" && exit 1 || echo \"(does not exist — safe to restore)\"\necho '=== RESTORING ==='\nmv -n '/btrfs/volume1/mac/#recycle/a.txt' '/btrfs/volume1/mac/a.txt' 2>&1 || { echo \"FAILED to restore\"; exit 1; }\n[ -e '/btrfs/volume1/mac/#recycle/a.txt' ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho '=== VERIFY ==='\nls -la '/btrfs/volume1/mac/a.txt' 2>&1"
+  },
+  {
+    "tool": "quarantine_path",
+    "filter": "/volume1/mac/x$(touch /tmp/OWNED).txt",
+    "expectedTier": 3,
+    "command": "src='/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt'\n[ -e \"$src\" ] || { echo \"ERROR: no such path: $src\"; exit 1; }\nts=$(date +%Y%m%d_%H%M%S)\ndest=\"$src.quarantine.$ts\"\n[ -e \"$dest\" ] && { echo \"ERROR: destination already exists: $dest\"; exit 1; }\nmv -n '/btrfs/volume1/mac/x$(touch /tmp/OWNED).txt' \"$dest\" || { echo \"FAILED to quarantine: $src\"; exit 1; }\n[ -e \"$src\" ] && { echo \"FAILED: destination appeared concurrently; nothing was moved\"; exit 1; }\necho \"Quarantined successfully: $dest\""
+  },
+  {
+    "tool": "write_seafile_ignore",
+    "filter": "/volume1/mac/Art Library",
+    "expectedTier": 3,
+    "command": "echo '=== TARGET WORKTREE ROOT ==='\n[ -d '/btrfs/volume1/mac/Art Library' ] || { echo 'ERROR: not a directory: /btrfs/volume1/mac/Art Library'; exit 1; }\nls -la '/btrfs/volume1/mac/Art Library/seafile-ignore.txt' 2>/dev/null && echo '(existing ignore file will be OVERWRITTEN)' || echo '(no existing ignore file)'\necho '=== WRITING seafile-ignore.txt ==='\nprintf '%s\\n' '@eaDir' '#recycle' '#snapshot' '@tmp' '.DS_Store' 'Thumbs.db' '*@SynoEAStream' '*@SynoResource' '*.tmp' > '/btrfs/volume1/mac/Art Library/seafile-ignore.txt'\necho '=== VERIFY ==='\ncat '/btrfs/volume1/mac/Art Library/seafile-ignore.txt'"
+  },
+  {
+    "tool": "write_seafile_ignore",
+    "filter": "/volume1/mac/x$(touch /tmp/OWNED)",
+    "expectedTier": 3,
+    "command": "echo '=== TARGET WORKTREE ROOT ==='\n[ -d '/btrfs/volume1/mac/x$(touch /tmp/OWNED)' ] || { echo 'ERROR: not a directory: /btrfs/volume1/mac/x$(touch /tmp/OWNED)'; exit 1; }\nls -la '/btrfs/volume1/mac/x$(touch /tmp/OWNED)/seafile-ignore.txt' 2>/dev/null && echo '(existing ignore file will be OVERWRITTEN)' || echo '(no existing ignore file)'\necho '=== WRITING seafile-ignore.txt ==='\nprintf '%s\\n' '@eaDir' '#recycle' '#snapshot' '@tmp' '.DS_Store' 'Thumbs.db' '*@SynoEAStream' '*@SynoResource' '*.tmp' > '/btrfs/volume1/mac/x$(touch /tmp/OWNED)/seafile-ignore.txt'\necho '=== VERIFY ==='\ncat '/btrfs/volume1/mac/x$(touch /tmp/OWNED)/seafile-ignore.txt'"
+  },
+  {
+    "tool": "create_prechange_snapshot",
+    "filter": "volume1",
+    "expectedTier": 2,
+    "command": "echo '=== CREATING PRECHANGE SNAPSHOT: /btrfs/volume1 ==='\nts=$(date +%Y%m%d_%H%M%S)\nsnap='/btrfs/volume1'\"/@prechange_${ts}\"\nbtrfs subvolume snapshot -r '/btrfs/volume1' \"$snap\" 2>&1 && echo \"Snapshot created: $snap\" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.agent.yml)'"
+  },
+  {
+    "tool": "create_prechange_snapshot",
+    "filter": "volume1$(touch /tmp/OWNED)",
+    "expectedTier": 2,
+    "command": "echo '=== CREATING PRECHANGE SNAPSHOT: /btrfs/volume1$(touch /tmp/OWNED) ==='\nts=$(date +%Y%m%d_%H%M%S)\nsnap='/btrfs/volume1$(touch /tmp/OWNED)'\"/@prechange_${ts}\"\nbtrfs subvolume snapshot -r '/btrfs/volume1$(touch /tmp/OWNED)' \"$snap\" 2>&1 && echo \"Snapshot created: $snap\" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.agent.yml)'"
+  },
+  {
+    "tool": "start_btrfs_scrub",
+    "filter": "volume1",
+    "expectedTier": 2,
+    "command": "echo '=== STARTING BTRFS SCRUB: /btrfs/volume1 ==='\nbtrfs scrub start '/btrfs/volume1' 2>&1\necho ''\necho '=== SCRUB STATUS ==='\nbtrfs scrub status '/btrfs/volume1' 2>&1"
+  },
+  {
+    "tool": "start_btrfs_scrub",
+    "filter": "volume1$(touch /tmp/OWNED)",
+    "expectedTier": 2,
+    "command": "echo '=== STARTING BTRFS SCRUB: /btrfs/volume1$(touch /tmp/OWNED) ==='\nbtrfs scrub start '/btrfs/volume1$(touch /tmp/OWNED)' 2>&1\necho ''\necho '=== SCRUB STATUS ==='\nbtrfs scrub status '/btrfs/volume1$(touch /tmp/OWNED)' 2>&1"
+  },
+  {
+    "tool": "trigger_sharesync_resync",
+    "filter": "mac",
+    "expectedTier": 2,
+    "command": "echo '=== Triggering ShareSync re-sync for folder: mac ==='\necho \"Restarting SynologyDriveShareSync to force full re-sync of all tasks\"\necho \"\"\nif [ -z \"${DSM_USERNAME:-}\" ] || [ -z \"${DSM_PASSWORD:-}\" ]; then echo \"ERROR: DSM_USERNAME/DSM_PASSWORD not set in .env — required for WebAPI package restarts\"; exit 1; fi\nDSM_BASE=\"http://localhost:${DSM_PORT:-5000}/webapi/entry.cgi\"\necho \"=== Authenticating to DSM WebAPI ===\"\nSID=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.API.Auth\" --data-urlencode \"version=7\" --data-urlencode \"method=login\" --data-urlencode \"account=${DSM_USERNAME}\" --data-urlencode \"passwd=${DSM_PASSWORD}\" --data-urlencode \"format=sid\" 2>/dev/null | grep -o '\"sid\":\"[^\"]*\"' | cut -d'\"' -f4)\nif [ -z \"$SID\" ]; then echo \"ERROR: DSM login failed — check DSM_USERNAME/DSM_PASSWORD and that DSM is reachable on port ${DSM_PORT:-5000}\"; exit 1; fi\necho \"Authenticated to DSM\"\necho \"\"\necho \"=== Stopping SynologyDriveShareSync via SYNO.Core.Package method=stop ===\"\nSTOP=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.Core.Package\" --data-urlencode \"version=1\" --data-urlencode \"method=stop\" --data-urlencode \"id=SynologyDriveShareSync\" --data-urlencode \"_sid=$SID\" 2>/dev/null)\necho \"$STOP\"\necho \"$STOP\" | grep -q '\"success\":true' && echo \"Stop: OK\" || echo \"Stop: non-success (package may already be stopped)\"\necho \"\"\nsleep 4\necho \"=== Starting SynologyDriveShareSync via SYNO.Core.Package method=start ===\"\nSTART=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.Core.Package\" --data-urlencode \"version=1\" --data-urlencode \"method=start\" --data-urlencode \"id=SynologyDriveShareSync\" --data-urlencode \"_sid=$SID\" 2>/dev/null)\necho \"$START\"\necho \"$START\" | grep -q '\"success\":true' && echo \"Start: OK\" || echo \"Start: non-success — check DSM Package Center for errors\"\necho \"\"\ncurl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.API.Auth\" --data-urlencode \"version=7\" --data-urlencode \"method=logout\" --data-urlencode \"_sid=$SID\" >/dev/null 2>&1 || true\necho \"Session closed\""
+  },
+  {
+    "tool": "trigger_sharesync_resync",
+    "filter": "mac$(touch /tmp/OWNED)",
+    "expectedTier": 2,
+    "command": "echo '=== Triggering ShareSync re-sync for folder: mac$(touch /tmp/OWNED) ==='\necho \"Restarting SynologyDriveShareSync to force full re-sync of all tasks\"\necho \"\"\nif [ -z \"${DSM_USERNAME:-}\" ] || [ -z \"${DSM_PASSWORD:-}\" ]; then echo \"ERROR: DSM_USERNAME/DSM_PASSWORD not set in .env — required for WebAPI package restarts\"; exit 1; fi\nDSM_BASE=\"http://localhost:${DSM_PORT:-5000}/webapi/entry.cgi\"\necho \"=== Authenticating to DSM WebAPI ===\"\nSID=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.API.Auth\" --data-urlencode \"version=7\" --data-urlencode \"method=login\" --data-urlencode \"account=${DSM_USERNAME}\" --data-urlencode \"passwd=${DSM_PASSWORD}\" --data-urlencode \"format=sid\" 2>/dev/null | grep -o '\"sid\":\"[^\"]*\"' | cut -d'\"' -f4)\nif [ -z \"$SID\" ]; then echo \"ERROR: DSM login failed — check DSM_USERNAME/DSM_PASSWORD and that DSM is reachable on port ${DSM_PORT:-5000}\"; exit 1; fi\necho \"Authenticated to DSM\"\necho \"\"\necho \"=== Stopping SynologyDriveShareSync via SYNO.Core.Package method=stop ===\"\nSTOP=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.Core.Package\" --data-urlencode \"version=1\" --data-urlencode \"method=stop\" --data-urlencode \"id=SynologyDriveShareSync\" --data-urlencode \"_sid=$SID\" 2>/dev/null)\necho \"$STOP\"\necho \"$STOP\" | grep -q '\"success\":true' && echo \"Stop: OK\" || echo \"Stop: non-success (package may already be stopped)\"\necho \"\"\nsleep 4\necho \"=== Starting SynologyDriveShareSync via SYNO.Core.Package method=start ===\"\nSTART=$(curl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.Core.Package\" --data-urlencode \"version=1\" --data-urlencode \"method=start\" --data-urlencode \"id=SynologyDriveShareSync\" --data-urlencode \"_sid=$SID\" 2>/dev/null)\necho \"$START\"\necho \"$START\" | grep -q '\"success\":true' && echo \"Start: OK\" || echo \"Start: non-success — check DSM Package Center for errors\"\necho \"\"\ncurl -sfG \"$DSM_BASE\" --data-urlencode \"api=SYNO.API.Auth\" --data-urlencode \"version=7\" --data-urlencode \"method=logout\" --data-urlencode \"_sid=$SID\" >/dev/null 2>&1 || true\necho \"Session closed\""
+  },
+  {
+    "tool": "restart_network_service_safe",
+    "filter": "smb",
+    "expectedTier": 2,
+    "command": "echo '=== RESTARTING NETWORK SERVICE: smb ==='\necho ''\necho '--- trying synopkg restart ---'\nLD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart 'smb' 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'\necho ''\necho '--- trying pkill/respawn for service processes ---'\npkill -SIGTERM -x 'smbd' 2>&1 && echo 'SIGTERM sent to smbd (DSM will respawn)' || echo 'smbd: process not found'\necho ''\necho '=== SERVICE PROCESSES AFTER RESTART (2s delay) ==='\nsleep 2\nps aux | grep -iE 'smb' | grep -v grep | head -10 || echo 'No matching processes found'"
+  },
+  {
+    "tool": "restart_network_service_safe",
+    "filter": "smb$(touch /tmp/OWNED)",
+    "expectedTier": 2,
+    "command": "echo '=== RESTARTING NETWORK SERVICE: smb$(touch /tmp/OWNED) ==='\necho ''\necho '--- trying synopkg restart ---'\nLD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synopkg restart 'smb$(touch /tmp/OWNED)' 2>/dev/null && echo 'synopkg restart succeeded' || echo 'synopkg: not a DSM package or restart failed (gcompat required in nas-api image)'\necho ''\necho '--- trying pkill/respawn for service processes ---'\npkill -SIGTERM -x 'smb$(touch /tmp/OWNED)' 2>&1 && echo 'SIGTERM sent to smb$(touch /tmp/OWNED) (DSM will respawn)' || echo 'smb$(touch /tmp/OWNED): process not found'\necho ''\necho '=== SERVICE PROCESSES AFTER RESTART (2s delay) ==='\nsleep 2\nps aux | grep -iE 'smb$(touch /tmp/OWNED)' | grep -v grep | head -10 || echo 'No matching processes found'"
   }
 ]
