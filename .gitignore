@@ -6,6 +6,10 @@ node_modules/
 **/next-env.d.ts
 dist/
 out/
+# TypeScript incremental-build cache. AGENTS.md already listed *.tsbuildinfo as
+# generated content, but it was never ignored, so apps/web/tsconfig.tsbuildinfo
+# sat in git for two commits and rewrote itself on every local `tsc`.
+*.tsbuildinfo
 
 # Environment
 .env
