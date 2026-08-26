@@ -5,6 +5,45 @@ import (
 	"testing"
 )
 
+func TestEffectiveTierUsesDeclaredNamedToolMinimum(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		toolName string
+		want     int
+	}{
+		{
+			name:     "hoisted rename path keeps file tier",
+			command:  `mv "$src" "$dest"`,
+			toolName: "rename_file_to_old",
+			want:     TierFile,
+		},
+		{
+			name:     "genuine named read stays read tier",
+			command:  "df -h /volume1",
+			toolName: "check_disk_space",
+			want:     TierRead,
+		},
+		{
+			name:     "free-form command keeps pure classification",
+			command:  `mv "$src" "$dest"`,
+			toolName: "",
+			want:     TierService,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := EffectiveTier(tc.command, tc.toolName)
+			if err != nil {
+				t.Fatalf("EffectiveTier returned error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("EffectiveTier = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReadOnlyDiagnosticsStayTierRead(t *testing.T) {
 	tests := []struct {
 		name    string

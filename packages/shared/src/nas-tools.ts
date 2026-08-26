@@ -2907,14 +2907,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       // a raw path in a double-quoted echo is still an injection (the `||` branch
       // executes it precisely when the path is hostile).
       //
-      // The mv repeats the path LITERALLY instead of using "$src" on purpose:
-      // nas-api's ClassifyTier matches filePatterns per line and needs a literal
-      // /volumeN path beside the mv to rate this a tier-3 user-data write. Passing
-      // "$src" there classifies tier 2, which drops the approval TOKEN
-      // (buildApprovalToken fires on tier >= 2; nas-mcp confirms every write tool
-      // regardless of tier — see apps/nas-mcp/src/index.ts:170). Delete this
-      // duplication only once nas-api enforces a declared minimum tier per tool,
-      // which would make tier independent of what the regex can see.
+      // The mv used to repeat the path LITERALLY so nas-api's ClassifyTier could
+      // see a /volumeN path beside it and rate this tier 3. That crutch is gone:
+      // EffectiveTier now takes max(ClassifyTier, declared minimum) from
+      // nas_tool_minimum_tiers.json, so the tier no longer depends on what the
+      // regex happens to see on the line. "$src" is the honest spelling.
       //
       // `mv -n` supplies the no-clobber; the end-state check (renameEndStateCheck)
       // is what makes a lost race REPORT correctly and removes any dependence on
@@ -2926,7 +2923,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `[ -e "$src" ] || { echo "ERROR: no such path: $src"; exit 1; }`,
         ...confineResolvedPathToShare(),
         `[ -e "$dest" ] && { echo "ERROR: destination already exists: $dest"; exit 1; }`,
-        `mv -n ${quote(filePath)} ${quote(`${filePath}.old`)} || { echo "FAILED to rename: $src"; exit 1; }`,
+        `mv -n "$src" "$dest" || { echo "FAILED to rename: $src"; exit 1; }`,
         ...renameEndStateCheck(`"$dest"`, "Renamed successfully", "$src"),
       ].join("\n");
     },
@@ -2953,9 +2950,8 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         // characters found" and exiting 0 — a false success on a real failure.
         `if [ "$file" = "$newfile" ]; then echo "No invalid characters found"; exit 0; fi`,
         `[ -e "$dir/$newfile" ] && { echo "ERROR: destination already exists: $dir/$newfile"; exit 1; }`,
-        // Literal path on the mv line — see rename_file_to_old for why the tier-3
-        // classification depends on it and why that is load-bearing.
-        `mv -n ${quote(filePath)} "$dir/$newfile" || { echo "FAILED to rename: $file"; exit 1; }`,
+        // Tier comes from the declared minimum now — see rename_file_to_old.
+        `mv -n "$src" "$dir/$newfile" || { echo "FAILED to rename: $file"; exit 1; }`,
         ...renameEndStateCheck(`"$dir/$newfile"`, "Renamed: $file -> $newfile", "$file"),
       ].join("\n");
     },
@@ -3920,9 +3916,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
 
 // ─── Group taxonomy + tool_search registry ────────────────────────────────────
 //
-// Tool name → group. Not part of McpToolDef so we can re-tag without touching
-// the (very large) defs above. Tools missing from this map fall through to
-// "misc" via getGroup() and are still fully searchable + invokable.
+// Tool name → group. Read-tool groups are search taxonomy only. Write-tool groups
+// also declare the nas-api minimum tier through getDeclaredMinimumTier below:
+// write_restart/write_storage/write_tasks are tier 2; write_files and ungrouped
+// writes are tier 3. The generated cross-language contract test guards drift.
+// Tools missing from this map fall through to "misc" and remain invokable.
 
 export const TOOL_GROUPS: Record<string, string> = {
   // Archive file-inventory job tools.
@@ -4149,6 +4147,25 @@ const KNOWN_GROUPS: Set<string> = new Set([
 
 export function getGroup(toolName: string): string {
   return TOOL_GROUPS[toolName] ?? "misc";
+}
+
+/**
+ * Minimum tier nas-api must enforce for a named shell tool, independently of
+ * what its generated command happens to reveal to the lexical classifier.
+ *
+ * Read tools stay tier 1. Known service/storage/task write groups are tier 2.
+ * Every other write tool defaults to tier 3, so a new or ungrouped write tool
+ * fails toward the strongest approval instead of silently becoming unprotected.
+ * Native job tools use their endpoint-specific approval policy and never call
+ * /exec, so this value is only consumed for definitions with buildCommand.
+ */
+export function getDeclaredMinimumTier(tool: McpToolDef): 1 | 2 | 3 {
+  if (!tool.write) return 1;
+  const group = getGroup(tool.name);
+  if (group === "write_restart" || group === "write_storage" || group === "write_tasks") {
+    return 2;
+  }
+  return 3;
 }
 
 export function listUntaggedTools(): string[] {

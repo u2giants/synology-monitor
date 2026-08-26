@@ -9,13 +9,10 @@ import (
 )
 
 // The tier-3 rename tools live in TypeScript (packages/shared/src/nas-tools.ts) but
-// their security depends on how THIS classifier reads their output. That split is
-// exactly where a regression hides: ClassifyTier matches filePatterns line-by-line
-// and Go regexes do not cross newlines, so a harmless-looking refactor of the builder
-// (hoisting the path into a shell variable, `mv "$src" "$dest"`) silently reclassifies
-// a user-data write from tier 3 to tier 2 — no error, no failing build, just a weaker
-// approval than the operator was promised. Measured, not hypothetical: that refactor
-// was written and caught here during the 2026-07-16 injection fix.
+// their security depends on nas-api combining lexical classification with the
+// server-owned minimum declared for the tool. The builders intentionally hoist
+// paths into variables, so ClassifyTier sees only tier 2; EffectiveTier must restore
+// the promised tier 3 without relying on duplicated literal paths.
 //
 // Go cannot invoke the TypeScript builder, so the seam is a golden file generated from
 // the real builder. packages/shared/src/nas-tools.golden.test.ts fails if the golden
@@ -50,17 +47,39 @@ func loadGolden(t *testing.T) []goldenCase {
 	return cases
 }
 
-func TestNasWriteToolsClassifyAtDeclaredTier(t *testing.T) {
+// Tools whose builder hoists the path into a shell variable, so ClassifyTier can no
+// longer see a /volumeN literal beside the mv and under-rates them. These are exactly
+// the cases where the declared minimum tier is doing the work.
+var loweredByHoisting = map[string]bool{
+	"rename_file_to_old":   true,
+	"remove_invalid_chars": true,
+}
+
+func TestNasWriteToolsResolveAtDeclaredTier(t *testing.T) {
 	for _, c := range loadGolden(t) {
 		t.Run(c.Tool+" "+c.Filter, func(t *testing.T) {
 			if IsHardBlocked(c.Command) {
 				t.Fatalf("command is hard-blocked, so the tool cannot run at all:\n%s", c.Command)
 			}
-			if got := ClassifyTier(c.Command); got != c.ExpectedTier {
-				t.Errorf("ClassifyTier = %d, want %d.\n"+
-					"A user-data write classified below tier 3 loses the approval token "+
-					"(buildApprovalToken fires on tier >= 2).\nCommand:\n%s",
-					got, c.ExpectedTier, c.Command)
+			// Only the rename tools had a duplicated literal path removed, so only
+			// they are guaranteed to under-classify. Asserting this for every tool
+			// would be wrong: tools that still name a /volumeN path on the command
+			// line legitimately classify at 3 on their own. What must hold there is
+			// simply that EffectiveTier lands on the declared tier, checked below.
+			if loweredByHoisting[c.Tool] {
+				lexical := ClassifyTier(c.Command)
+				if lexical >= c.ExpectedTier {
+					t.Errorf("ClassifyTier = %d, want below the declared tier %d — the point of\n"+
+						"this case is that lexical classification alone is insufficient and the\n"+
+						"declared minimum is load-bearing.\nCommand:\n%s", lexical, c.ExpectedTier, c.Command)
+				}
+			}
+			got, err := EffectiveTier(c.Command, c.Tool)
+			if err != nil {
+				t.Fatalf("EffectiveTier returned error: %v", err)
+			}
+			if got != c.ExpectedTier {
+				t.Errorf("EffectiveTier = %d, want %d.\nCommand:\n%s", got, c.ExpectedTier, c.Command)
 			}
 		})
 	}

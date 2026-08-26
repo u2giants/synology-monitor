@@ -33,6 +33,10 @@ export type NasRequest = typeof httpRequest;
 export interface NasClientOptions {
   signal?: AbortSignal;
   request?: NasRequest;
+  /** Named registry tool this call is for. Signed into the exec token and sent
+   *  to nas-api so it can apply the tool's declared minimum tier. Empty means
+   *  the free-form run_command path, which keeps pure lexical classification. */
+  toolName?: string;
 }
 
 function normalizeRequestError(err: unknown, label: string, timeoutMs: number): Error {
@@ -138,9 +142,34 @@ export function buildApprovalToken(config: NasConfig, command: string, tier: num
   return Buffer.from(JSON.stringify({ command, tier, expires_at: expiresAt, signature })).toString("base64url");
 }
 
+/** Builds the versioned POST /exec token. Tier and tool name are signed so a
+ * caller cannot weaken named-tool enforcement by editing or omitting either. */
+export function buildExecApprovalToken(
+  config: NasConfig,
+  command: string,
+  tier: number,
+  toolName = "",
+): string {
+  const expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  const signature = createHmac("sha256", config.approvalSigningKey)
+    .update(`exec-v2\n${command}\n${tier}\n${toolName}\n${expiresAt}`)
+    .digest("hex");
+  return Buffer.from(
+    JSON.stringify({ version: 2, command, tier, tool_name: toolName, expires_at: expiresAt, signature }),
+  ).toString("base64url");
+}
+
 /** Asks the NAS API to classify a command's tier without running it. */
 export async function nasPreview(config: NasConfig, command: string, options: NasClientOptions = {}): Promise<NasPreviewResult> {
-  return requestJson<NasPreviewResult>(config, "/preview", { command }, PREVIEW_TIMEOUT_MS, "NAS preview", options);
+  const { toolName = "" } = options;
+  return requestJson<NasPreviewResult>(
+    config,
+    "/preview",
+    { command, ...(toolName ? { tool_name: toolName } : {}) },
+    PREVIEW_TIMEOUT_MS,
+    "NAS preview",
+    options,
+  );
 }
 
 /**
@@ -148,6 +177,7 @@ export async function nasPreview(config: NasConfig, command: string, options: Na
  * `timeoutMs` controls how long nas-api is given to run the command (capped at MAX_EXEC_TIMEOUT_MS).
  */
 export async function nasExec(config: NasConfig, command: string, tier: number, approvalToken?: string, timeoutMs = MAX_EXEC_TIMEOUT_MS, options: NasClientOptions = {}): Promise<NasExecResult> {
+  const { toolName = "" } = options;
   const clampedTimeout = Math.min(timeoutMs, MAX_EXEC_TIMEOUT_MS);
   const body: Record<string, unknown> = {
     command,
@@ -155,6 +185,7 @@ export async function nasExec(config: NasConfig, command: string, tier: number, 
     timeout_ms: clampedTimeout,
   };
   if (approvalToken) body.approval_token = approvalToken;
+  if (toolName) body.tool_name = toolName;
   return requestJson<NasExecResult>(config, "/exec", body, clampedTimeout + 5_000, "NAS exec", options);
 }
 
