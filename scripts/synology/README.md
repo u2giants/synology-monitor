@@ -31,11 +31,12 @@ works; `VAR=x sudo bash …` does **not** — sudo resets the environment and th
 variable is silently dropped (you get a dry run while believing you applied).
 
 `renew-edge1-certificate.sh` is the exception to the share-maintenance dry-run
-contract: it is a root-only scheduled service script. Its Cloudflare token,
-ACME account state, and pinned `lego` binary live in the mode-0700
-`/volume1/docker/synology-monitor-agent/cert-renewal` directory and are never
-stored in this repository. The matching Synology cron definition is
-`deploy/synology/edge1-certificate-renewal.json`.
+contract: it is a root-only scheduled service script. Despite the historical
+filename, `CERT_DOMAIN` and `CERT_ARCHIVE_ID` let the same reviewed script serve
+either NAS. Its Cloudflare token, ACME account state, and pinned `lego` binary
+live in the mode-0700 `/volume1/docker/synology-monitor-agent/cert-renewal`
+directory and are never stored in this repository. The matching Synology cron
+definitions are under `deploy/synology/*-certificate-renewal.json`.
 
 ## Before running anything that writes
 

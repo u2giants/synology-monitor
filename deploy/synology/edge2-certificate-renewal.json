@@ -1,0 +1,9 @@
+[
+  {
+    "assure_execute": 168,
+    "cmd": "CERT_DOMAIN=edge2.designflow.app CERT_ARCHIVE_ID=EJiCmB /volume1/docker/synology-monitor-agent/cert-renewal/renew-edge2-certificate.sh",
+    "name": "edge2.designflow.app - Cloudflare DNS certificate renewal",
+    "period": "daily",
+    "user": "root"
+  }
+]
