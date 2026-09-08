@@ -11,6 +11,31 @@ It also documents the monitor-stack control assumption used by the web app:
 - monitor write actions target `/volume1/docker/synology-monitor-agent`
 - the web app does not assume arbitrary Docker control outside that stack
 
+## Private DSM certificates
+
+Both NAS management hostnames are private Tailscale endpoints. Their DSM
+certificates use Let's Encrypt DNS-01 validation through Cloudflare, so renewal
+does not depend on exposing either NAS to the public internet.
+
+| NAS | Hostname | Tailscale address | DSM certificate archive | Daily task |
+|---|---|---|---|---|
+| edgesynology1 | `edge1.designflow.app` | `100.107.131.35` | `nS2S34` | `/usr/syno/etc/synocron.d/edge1-dns-cert.conf` |
+| edgesynology2 | `edge2.designflow.app` | `100.107.131.36` | `EJiCmB` | `/usr/syno/etc/synocron.d/edge2-dns-cert.conf` |
+
+The Cloudflare DNS records stay DNS-only. Root-only renewal assets live under
+`/volume1/docker/synology-monitor-agent/cert-renewal`; the Cloudflare token is
+in a mode-0600 file and the directory is mode 0700. Synology's scheduler runs
+the pinned ACME client every day. The renewal script exits successfully when a
+certificate is not yet due; when renewal is due it validates the key and chain,
+backs up the active DSM archive, installs the certificate, regenerates DSM's
+certificate configuration, restarts nginx, verifies the live system/default
+certificate serial, and restores the backup if deployment fails.
+
+Cloudflare Advanced Certificate Manager certificates terminate at Cloudflare's
+edge, and Cloudflare Origin CA certificates are not browser-trusted for a direct
+Tailscale connection. Neither replaces the DSM certificates on these private
+hostnames.
+
 ## Canonical layout on each NAS
 
 Live directory:
