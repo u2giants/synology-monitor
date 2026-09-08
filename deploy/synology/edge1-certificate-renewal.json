@@ -1,0 +1,9 @@
+[
+  {
+    "assure_execute": 168,
+    "cmd": "/volume1/docker/synology-monitor-agent/cert-renewal/renew-edge1-certificate.sh",
+    "name": "edge1.designflow.app - Cloudflare DNS certificate renewal",
+    "period": "daily",
+    "user": "root"
+  }
+]

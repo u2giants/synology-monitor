@@ -12,6 +12,7 @@ Written after the Dollar General FW2026 merge incident on 2026-07-16
 | `scan-case-collisions.sh` | no | Reports entries in the same folder differing only by case — each one is a Synology Drive conflict that has not happened yet. |
 | `resolve-drive-conflicts.sh` | yes | Resolves `*_Conflict` / `*_CaseConflict` artifacts against the file they collided with, and repairs mode-000 dirs. |
 | `merge-folders.sh` | yes | Merges one folder into another, case-safely, newest-wins. |
+| `renew-edge1-certificate.sh` | yes | Renews the private `edge1.designflow.app` DSM certificate through Cloudflare DNS and rolls back a failed deployment. |
 | `lib-nas-safe.sh` | — | Shared helpers. Source it; don't run it. |
 | `tests/run-tests.sh` | — | 38 assertions against synthetic trees. No NAS needed. |
 
@@ -28,6 +29,13 @@ ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=0 sudo -E bash resolve-driv
 Note `sudo -E`, which preserves the environment. Plain `sudo VAR=x bash …` also
 works; `VAR=x sudo bash …` does **not** — sudo resets the environment and the
 variable is silently dropped (you get a dry run while believing you applied).
+
+`renew-edge1-certificate.sh` is the exception to the share-maintenance dry-run
+contract: it is a root-only scheduled service script. Its Cloudflare token,
+ACME account state, and pinned `lego` binary live in the mode-0700
+`/volume1/docker/synology-monitor-agent/cert-renewal` directory and are never
+stored in this repository. The matching Synology cron definition is
+`deploy/synology/edge1-certificate-renewal.json`.
 
 ## Before running anything that writes
 
