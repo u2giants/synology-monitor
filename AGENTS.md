@@ -36,22 +36,24 @@ Then load additional docs only when relevant:
 |---|---|---|
 | Quick repo orientation | `README.md`, `AGENTS.md` | Deep docs under `docs/` |
 | Modify app behavior or project-owned code | Relevant folder README; `docs/architecture.md` if design changes | Deployment docs unless rollout changes |
-| Add or change a NAS MCP capability | `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md` | Web deployment details |
-| Change agent or NAS API behavior | `docs/architecture.md`, `docs/development.md`, `deploy/synology/README.md` if mounts/env change | Unrelated web docs |
-| NAS container privilege, capabilities, block-device mounts, or SMART/disk health | `docs/nas-privilege-hardening.md`, `deploy/synology/README.md` | Web/AI docs |
+| Add or change a NAS MCP capability | [NAS MCP server contract and tool-discovery flow](apps/nas-mcp/README.md), `docs/architecture.md`, `docs/development.md` | Web deployment details |
+| Change agent or NAS API behavior | `docs/architecture.md`, `docs/development.md`, [NAS deployment and runtime contract](deploy/synology/README.md) if mounts/env change | Unrelated web docs |
+| NAS container privilege, capabilities, block-device mounts, or SMART/disk health | `docs/nas-privilege-hardening.md`, [NAS deployment and runtime contract](deploy/synology/README.md) | Web/AI docs |
 | Repo↔NAS compose drift, or reconciling the compose files | `docs/nas-config-drift.md` | AI pipeline details |
 | Add or change configuration, env vars, feature flags, secrets, or runtime settings | `docs/configuration.md`; `docs/deployment.md` for production | Incident histories |
 | Change local setup, scripts, tests, lint, or package tooling | `docs/development.md`, relevant package files | Production deployment docs |
 | Change deployment, Docker, CI/CD, hosting, rollback, or runtime environment | `docs/deployment.md`, `docs/configuration.md`, relevant workflow/compose files | Local debugging sections |
 | Change database schema, migrations, models, auth/RLS, or data flow | `docs/architecture.md`, `docs/configuration.md`, relevant migration, `docs/telemetry-retention.md` when applicable | Unrelated NAS docs |
 | Continue unfinished work | `HANDOFF.md` plus only the docs it names | Completed historical plans |
-| Investigate an incident | Relevant file under `docs/*incident*`, `HANDOFF.md` if active, topic doc | Other incident files |
-| Continue the MCP v2 foundations or protocol migration | `plan_mcp-v2-foundations-and-migration.md`, then `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and `docs/mcp-incident-2026-05.md` | Unrelated NAS incident and archive docs |
-| Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, `docs/archive-move-runbook.md` | AI pipeline details |
+| Investigate file visibility, permission drift, sync, or snapshot incidents | [June 2026 combined incident evidence](docs/synology-incident-2026-06.md), `HANDOFF.md`, relevant topic doc | MCP transport incidents |
+| Investigate MCP hangs or connection failures | [May 2026 MCP incident causes and safeguards](docs/mcp-incident-2026-05.md), `docs/architecture.md` | NAS filesystem incidents |
+| Continue the MCP v2 foundations or protocol migration | [Canonical MCP v2 migration plan and its current status](plan_mcp-v2-foundations-and-migration.md), then [NAS MCP server contract](apps/nas-mcp/README.md), `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and [MCP incident history](docs/mcp-incident-2026-05.md) | Unrelated NAS incident and archive docs |
+| Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, [operator runbook for safe archive moves and recovery](docs/archive-move-runbook.md) | AI pipeline details |
+| Audit or repair archive timestamps | [single-tree timestamp evidence](docs/timestamp-audit-2026-06-15.md), then [layered source/destination comparison and repair constraints](docs/layered-timestamp-audit-2026-06-15.md) | Web/AI docs |
 | Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, AGENTS "Moving or merging files inside a share" | Web/AI docs |
-| Seafile/inotify work | `docs/seafile-sync-inotify.md` | Archive and web docs |
-| Telemetry retention or pg_partman | `docs/telemetry-retention.md`, `docs/supabase-virginia-migration-2026-06.md` | NAS filesystem docs |
-| Relay behavior or recovery | `apps/relay/README.md`, `apps/relay/OPERATIONS.md`, `docs/architecture.md` relay section | Unrelated NAS MCP internals |
+| Seafile/inotify work | [root cause, safeguards, and verification runbook](docs/seafile-sync-inotify.md) | Archive and web docs |
+| Telemetry retention or pg_partman | `docs/telemetry-retention.md`, [Virginia migration history and retired-project warnings](docs/supabase-virginia-migration-2026-06.md) | NAS filesystem docs |
+| Relay behavior or recovery | [relay purpose, API, and security boundaries](apps/relay/README.md), [exceptional operations and recovery procedure](apps/relay/OPERATIONS.md), `docs/architecture.md` relay section | Unrelated NAS MCP internals |
 | Work in a folder with its own README | That README and only the broader docs it links | Other folder READMEs |
 | Claude Code session | `CLAUDE.md`, then this file | All docs by default |
 | Documentation-only cleanup | This file, `README.md`, affected topic docs | Source except what verifies facts |

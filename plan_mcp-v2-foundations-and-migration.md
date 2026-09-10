@@ -10,7 +10,7 @@ This file is the cross-repository source of truth for the work. Whoever complete
 |---:|---|---|---|---|
 | 0A | synology-monitor | ✅ done | 2026-08-05 | Shared formatter and four focused cases shipped in `bbfaf149`; validator regression and 69 shared tests pass |
 | 0B | synology-monitor | ✅ done | 2026-08-05 | Both web paths use the shared formatter; web typecheck and `guard:ai` pass in `bbfaf149` |
-| 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. See `docs/mcp-refusal-behavior-evaluation-2026-08-05.md` |
+| 0C | synology-monitor | ✅ done | 2026-08-06 | Tailscale restarted on both NASes; both APIs healthy; live refusal returned in ~1s; REFUSAL-009 and REFUSAL-010 passed. Read the [measured refusal-behavior evaluation](docs/mcp-refusal-behavior-evaluation-2026-08-05.md) for the proof and limits. |
 | 1 | both | ✅ done | 2026-08-06 | Public protocol baselines captured in both repositories; Synology Monitor `10644bf`, DevOps MCP `fc56271`; exact production digests and runtime dependency versions recorded |
 | 2 | synology-monitor | ✅ done | 2026-08-06 | Exact-pinned manifest plus committed root lock; frozen pnpm in CI/Docker; prerequisite verification job and local-lock guard; CI run `31116338234`; live OCI revision `d700f1d` |
 | 3 | devops-mcp | ◐ implemented | 2026-08-06 | Exact uv lock and prerequisite test job landed in `58cfdbb`; local lock, 7 tests, image, and stale-lock proofs pass; production gate awaits GitHub Actions incident recovery |
@@ -415,9 +415,9 @@ Files:
 - `apps/nas-mcp/src/index.ts`, the server instructions and `run_command` description;
 - `apps/web/src/lib/server/ai/stage2-reasoning.ts`, the web system prompt and its `run_command` description;
 - `docs/architecture.md` historical degradation entries;
-- `docs/synology-incident-2026-06.md`, annotate rather than rewrite incident history;
+- [June 2026 Synology incident record](docs/synology-incident-2026-06.md), annotate rather than rewrite incident history;
 - `AGENTS.md`, this plan's routing row and the intentional-quirks section;
-- `plan_mcp-degradation-myth.md`, mark superseded by this canonical merged plan without deleting its historical review record.
+- [Earlier degradation-myth plan and its rejected alternatives](plan_mcp-degradation-myth.md), mark superseded by this canonical merged plan without deleting its historical review record.
 
 Changes:
 
