@@ -70,3 +70,10 @@ func TestManifestEntryJSON(t *testing.T) {
 		t.Fatalf("roundtrip %s -> %+v %v", b, back, err)
 	}
 }
+
+func TestCollapseSiblingSortOrder(t *testing.T) {
+	got := collapse([]string{"s/a", "s/a.png", "s/a/x.png"})
+	if len(got) != 2 || got[0] != "s/a" || got[1] != "s/a.png" {
+		t.Fatalf("got %v", got)
+	}
+}
