@@ -273,15 +273,40 @@ func (c *ReplicaParityCollector) runReplica() {
 	if m == nil {
 		return
 	}
-	last, _ := c.sender.LoadCheckpoint("replica_parity_scan_id")
-	if last == m.ScanID {
+	done, _ := c.sender.LoadCheckpoint("replica_parity_scan_id")
+	if done == m.ScanID {
 		return
 	}
 	// Only judge items older than the grace period at check time, so items
-	// still in flight are not reported.
-	missing := FindMissing(m.Entries, filepath.Dir(firstOr(m.Roots, "/host/shares/x")), time.Now().Add(-c.cfg.Grace))
-	c.report(m, missing)
-	_ = c.sender.SaveCheckpoint("replica_parity_scan_id", m.ScanID)
+	// still in flight are not reported. Re-check the same scan on every poll
+	// until every entry has aged past the grace period, then mark it done.
+	cut := time.Now().Add(-c.cfg.Grace)
+	missing := FindMissing(m.Entries, filepath.Dir(firstOr(m.Roots, "/host/shares/x")), cut)
+	sig := fmt.Sprintf("%s:%d:%s", m.ScanID, len(missing), strings.Join(firstN(missing, 50), "|"))
+	if prev, _ := c.sender.LoadCheckpoint("replica_parity_alert_sig"); prev != sig {
+		c.report(m, missing)
+		_ = c.sender.SaveCheckpoint("replica_parity_alert_sig", sig)
+	}
+	if allOlder(m.Entries, cut) {
+		_ = c.sender.SaveCheckpoint("replica_parity_scan_id", m.ScanID)
+	}
+}
+
+func firstN(s []string, n int) []string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func allOlder(entries []manifestEntry, cut time.Time) bool {
+	c := cut.Unix()
+	for _, e := range entries {
+		if e.Ctime > c {
+			return false
+		}
+	}
+	return true
 }
 
 func firstOr(s []string, d string) string {
