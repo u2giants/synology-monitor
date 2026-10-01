@@ -69,7 +69,7 @@ current implementation guidance.
 | `apps/web/` | Project-owned Next.js dashboard and AI pipeline; runs in Coolify |
 | `apps/relay/` | Project-owned narrow named-action relay; exceptional/manual deployment |
 | `packages/shared/src/` | Shared TypeScript types, AI capabilities, archive contracts, and 132 NAS tool definitions |
-| `supabase/migrations/` | Append-only database migrations, currently `00000` through `00043` |
+| `supabase/migrations/` | Append-only database migrations, currently `00000` through `00045` |
 | `supabase/functions/` | Project-owned Supabase Edge Functions |
 | `deploy/synology/` | Canonical NAS compose and environment examples |
 | `.github/workflows/` | Image build/publish and deploy triggers |

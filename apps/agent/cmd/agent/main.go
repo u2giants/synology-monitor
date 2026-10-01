@@ -223,6 +223,14 @@ func main() {
 		shareSyncCollector.Run(stop)
 	}()
 
+	// Start replica parity check (edge1 items that never reached the edge2 ShareSync replica)
+	replicaParity := collector.NewReplicaParityCollector(s, cfg.NasID, cfg.SupabaseURL, cfg.SupabaseServiceKey, collector.DefaultReplicaParityConfig())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		replicaParity.Run(stop)
+	}()
+
 	// Start security watcher
 	secW, err := security.NewWatcher(s, cfg.NasID, cfg.WatchPaths, cfg.MaxInotifyDirs, cfg.DataDir)
 	if err != nil {
