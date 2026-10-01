@@ -345,14 +345,26 @@ func hasExcludedSegment(p string) bool {
 	return false
 }
 
-// collapse keeps the top-most missing paths; input must be sorted.
-func collapse(sorted []string) []string {
+// collapse keeps the top-most missing paths: a path is dropped when any of its
+// ancestors is itself missing. Sorting alone is not enough because "a.png"
+// sorts between "a" and "a/x.png".
+func collapse(paths []string) []string {
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[p] = true
+	}
 	var out []string
-	for _, p := range sorted {
-		if n := len(out); n > 0 && strings.HasPrefix(p, out[n-1]+string(filepath.Separator)) {
-			continue
+	for _, p := range paths {
+		covered := false
+		for d := filepath.Dir(p); d != "." && d != string(filepath.Separator) && d != p; d = filepath.Dir(d) {
+			if set[d] {
+				covered = true
+				break
+			}
 		}
-		out = append(out, p)
+		if !covered {
+			out = append(out, p)
+		}
 	}
 	return out
 }
