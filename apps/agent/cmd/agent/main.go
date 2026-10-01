@@ -111,7 +111,7 @@ func main() {
 		containerIOCollector.Run(stop)
 	}()
 
-	// Start Drive Admin collector (team folders, user activity, stats, ShareSync tasks)
+	// Start Drive collector (ShareSync tasks, Drive log signals, client attribution)
 	driveCollector := collector.NewDriveCollector(dsmClient, s, cfg.NasID, cfg.MetricsInterval)
 	wg.Add(1)
 	go func() {

@@ -79,7 +79,7 @@ shadowing the container's own kernel namespaces:
 | Collector | File | Primary tables | Default interval |
 |---|---|---|---|
 | system | `collector/system.go` | `metrics`, `container_status`, `storage_snapshots` | 30s / 60s |
-| drive | `collector/drive.go` | `sync_task_snapshots`, `drive_team_folders`, `nas_logs` | 30s |
+| drive | `collector/drive.go` | `sync_task_snapshots`, `nas_logs` (team-folder/activity/stats collectors removed 2026-10-01: those DSM APIs do not exist on our NAS units) | 30s |
 | sharesync | `collector/sharesync.go` | `alerts`, `nas_logs` | 5m (hardcoded) |
 | sharehealth | `collector/sharehealth.go` | `nas_logs`, `metrics`, `package_status`, `dsm_errors` | 2m |
 | storagepool | `collector/storagepool.go` | `snapshot_replicas`, `metrics`, `nas_logs` | 60s (mdstat) / 5m (replicas) |
@@ -871,7 +871,7 @@ them.
   future AI clustering layer
 - `second_opinion_model` and `cluster_model` exist in `ai-settings.ts` but are not
   wired to any pipeline stage
-- `drive_team_folders` is written by the agent but never queried by the web app
+- `drive_team_folders` and `drive_activities` are no longer written by the agent (dead DSM APIs removed 2026-10-01) and are never queried by the web app
 - `drive_team_folders_partitioned` has no child partitions and receives no writes;
   it is forward infrastructure — do not drop it
 - `issue_resolutions` / `resolution_steps` / `resolution_log` / `resolution_messages`
