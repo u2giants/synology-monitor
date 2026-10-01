@@ -1,7 +1,9 @@
 package dsm
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -65,7 +67,12 @@ func (c *Client) Login() error {
 		"format":  {"sid"},
 	}
 
-	resp, err := c.rawRequest(params)
+	// Login is sent as a POST form so the password never appears in a URL
+	// (and therefore never in a *url.Error message), with a longer timeout
+	// because DSM auth can be very slow when the NAS is under heavy disk load.
+	ctx, cancel := context.WithTimeout(context.Background(), LoginTimeout)
+	defer cancel()
+	resp, err := c.doRequest(ctx, http.MethodPost, params)
 	if err != nil {
 		return fmt.Errorf("login request failed: %w", err)
 	}
@@ -142,10 +149,50 @@ func (c *Client) request(api string, version int, method string, extra url.Value
 	return data, nil
 }
 
-func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
-	reqURL := fmt.Sprintf("%s/webapi/entry.cgi?%s", c.baseURL, params.Encode())
+// LoginTimeout bounds a single DSM login attempt. It is longer than the
+// general 30s client timeout because DSM auth stalls under heavy disk load.
+var LoginTimeout = 90 * time.Second
 
-	resp, err := c.httpClient.Get(reqURL)
+// APIError is a DSM API failure response (success=false).
+type APIError struct{ Code int }
+
+func (e *APIError) Error() string { return fmt.Sprintf("API error code: %d", e.Code) }
+
+// IsAuthRejected reports whether err is a DSM auth rejection where rapid
+// retries are harmful: 400 (bad credentials), 407 (IP blocked).
+func IsAuthRejected(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && (ae.Code == 400 || ae.Code == 407)
+}
+
+func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
+	return c.doRequest(context.Background(), http.MethodGet, params)
+}
+
+func (c *Client) doRequest(ctx context.Context, method string, params url.Values) (json.RawMessage, error) {
+	endpoint := c.baseURL + "/webapi/entry.cgi"
+	var req *http.Request
+	var err error
+	if method == http.MethodPost {
+		req, err = http.NewRequestWithContext(ctx, method, endpoint, strings.NewReader(params.Encode()))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+	} else {
+		req, err = http.NewRequestWithContext(ctx, method, endpoint+"?"+params.Encode(), nil)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("building request failed: %w", redactURLError(err))
+	}
+	client := c.httpClient
+	if _, ok := ctx.Deadline(); ok {
+		// Let the context deadline govern instead of the shorter client timeout.
+		cc := *c.httpClient
+		cc.Timeout = 0
+		client = &cc
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", redactURLError(err))
 	}
@@ -154,6 +201,9 @@ func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response body failed: %w", err)
+	}
+	if resp.StatusCode >= 500 {
+		return nil, fmt.Errorf("DSM HTTP status %d", resp.StatusCode)
 	}
 
 	var apiResp apiResponse
@@ -166,7 +216,7 @@ func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
 		if apiResp.Error != nil {
 			code = apiResp.Error.Code
 		}
-		return nil, fmt.Errorf("API error code: %d", code)
+		return nil, &APIError{Code: code}
 	}
 
 	return apiResp.Data, nil
