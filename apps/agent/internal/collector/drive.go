@@ -70,7 +70,7 @@ var (
 	reConflictSuffix = regexp.MustCompile(`(?i)(_Conflict|_UploadNameConflict|_CaseConflict|_DESKTOP-[A-Z0-9]+|_LAPTOP-[A-Z0-9]+|_ZAR-[A-Z0-9-]+|_DiskStation[^_]*|_Copy|\s+\(\d+\))`)
 )
 
-// DriveCollector collects Drive team folders and user activity via DSM API
+// DriveCollector collects ShareSync task state, Drive log signals and client attribution
 type DriveCollector struct {
 	client           *dsm.Client
 	sender           *sender.Sender
@@ -113,15 +113,6 @@ func (c *DriveCollector) Run(stop <-chan struct{}) {
 func (c *DriveCollector) collect() {
 	c.attributionCycle++
 
-	// Collect team folders
-	c.collectTeamFolders()
-
-	// Collect user activity
-	c.collectUserActivity()
-
-	// Collect Drive stats
-	c.collectStats()
-
 	// Collect ShareSync task snapshots (API-first, log-based fallback)
 	c.collectShareSyncTasks()
 
@@ -134,95 +125,6 @@ func (c *DriveCollector) collect() {
 	if c.attributionCycle%10 == 1 {
 		c.collectDriveAttribution()
 	}
-}
-
-func (c *DriveCollector) collectTeamFolders() {
-	folders, err := c.client.DriveAdminTeamFolders()
-	if err != nil {
-		log.Printf("[drive] error getting team folders: %v", err)
-		return
-	}
-
-	now := time.Now().UTC()
-
-	for _, folder := range folders {
-		// Calculate usage percentage
-		usagePct := float64(0)
-		if folder.QuotaLimit > 0 {
-			usagePct = float64(folder.QuotaUsed) / float64(folder.QuotaLimit) * 100.0
-		}
-
-		c.sender.QueueDriveTeamFolder(sender.DriveTeamFolderPayload{
-			NasID:        c.nasID,
-			FolderID:     folder.ID,
-			FolderName:   folder.Name,
-			FolderPath:   folder.Path,
-			QuotaBytes:   folder.QuotaLimit,
-			UsedBytes:    folder.QuotaUsed,
-			UsagePercent: usagePct,
-			MemberCount:  folder.MemberCount,
-			SyncCount:    folder.SyncCount,
-			IsExternal:   folder.IsExternal,
-			Priority:     folder.Priority,
-			Status:       folder.Status,
-			RecordedAt:   now,
-		})
-	}
-
-	if len(folders) > 0 {
-		log.Printf("[drive] collected %d team folders", len(folders))
-	}
-}
-
-func (c *DriveCollector) collectUserActivity() {
-	// Get last 50 activities
-	activities, err := c.client.DriveAdminUserActivity(50)
-	if err != nil {
-		log.Printf("[drive] error getting user activity: %v", err)
-		return
-	}
-
-	now := time.Now().UTC()
-
-	for _, activity := range activities {
-		c.sender.QueueDriveActivity(sender.DriveActivityPayload{
-			NasID:      c.nasID,
-			User:       activity.User,
-			LoginTime:  activity.LoginTime,
-			IP:         activity.IP,
-			Device:     activity.Device,
-			Action:     activity.Action,
-			FilePath:   activity.FilePath,
-			Timestamp:  activity.Timestamp,
-			RecordedAt: now,
-		})
-	}
-
-	if len(activities) > 0 {
-		log.Printf("[drive] collected %d user activities", len(activities))
-	}
-}
-
-func (c *DriveCollector) collectStats() {
-	stats, err := c.client.DriveAdminStats()
-	if err != nil {
-		log.Printf("[drive] error getting stats: %v", err)
-		return
-	}
-
-	now := time.Now().UTC()
-
-	// Queue Drive stats as a log event with structured metadata
-	c.sender.QueueLog(sender.LogPayload{
-		NasID:    c.nasID,
-		Source:   "drive_admin_stats",
-		Severity: "info",
-		Message:  "Drive statistics snapshot",
-		Metadata: stats,
-		LoggedAt: now,
-	})
-
-	log.Printf("[drive] collected stats")
 }
 
 // collectShareSyncTasks gathers ShareSync task details.

@@ -76,36 +76,6 @@ type AlertPayload struct {
 	Message  string `json:"message"`
 }
 
-// DriveTeamFolderPayload represents a Synology Drive team folder snapshot
-type DriveTeamFolderPayload struct {
-	NasID        string    `json:"nas_id"`
-	FolderID     string    `json:"folder_id"`
-	FolderName   string    `json:"folder_name"`
-	FolderPath   string    `json:"folder_path"`
-	QuotaBytes   int64     `json:"quota_bytes"`
-	UsedBytes    int64     `json:"used_bytes"`
-	UsagePercent float64   `json:"usage_percent"`
-	MemberCount  int       `json:"member_count"`
-	SyncCount    int       `json:"sync_count"`
-	IsExternal   bool      `json:"is_external"`
-	Priority     string    `json:"priority"`
-	Status       string    `json:"status"`
-	RecordedAt   time.Time `json:"recorded_at"`
-}
-
-// DriveActivityPayload represents a Drive user activity event
-type DriveActivityPayload struct {
-	NasID      string    `json:"nas_id"`
-	User       string    `json:"user"`
-	LoginTime  string    `json:"login_time,omitempty"`
-	IP         string    `json:"ip,omitempty"`
-	Device     string    `json:"device,omitempty"`
-	Action     string    `json:"action"`
-	FilePath   string    `json:"file_path,omitempty"`
-	Timestamp  string    `json:"timestamp,omitempty"`
-	RecordedAt time.Time `json:"recorded_at"`
-}
-
 // ProcessSnapshotPayload is a single process row in process_snapshots
 type ProcessSnapshotPayload struct {
 	NasID         string    `json:"nas_id"`

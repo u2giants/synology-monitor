@@ -222,14 +222,6 @@ func normalizeSeverity(sev string) string {
 	}
 }
 
-func (s *Sender) QueueDriveTeamFolder(p DriveTeamFolderPayload) {
-	s.queue("drive_team_folders", p)
-}
-
-func (s *Sender) QueueDriveActivity(p DriveActivityPayload) {
-	s.queue("drive_activities", p)
-}
-
 func (s *Sender) QueueProcessSnapshot(p ProcessSnapshotPayload) {
 	s.queue("process_snapshots", p)
 }
