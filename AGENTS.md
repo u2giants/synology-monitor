@@ -471,6 +471,18 @@ Never commit secret values. Production runtime values live in Coolify or each NA
 untracked `.env`; CI values live in GitHub Secrets; human-accessible secrets live in
 1Password vault `vibe_coding`.
 
+**NAS `.env` plaintext is accepted — do not "fix" it.** Each NAS agent's
+`/volume1/docker/synology-monitor-agent/.env` (and its `.env.bak.*` copies) holds
+`DSM_PASSWORD` and other secrets as plain text. This is an accepted owner decision
+(Albert, 2026-10-01): the files are `root:root` mode `600`, so only the NAS
+administrator can read them. Do not flag this as a finding, and do not rotate or
+change NAS account passwords on that basis. History: on 2026-10-01 a session treated
+it as a problem, the `ai` and `popdam` DSM passwords were changed, the agents on both
+NAS units crash-looped (DSM login error 400/407), and DSM auto-blocked `::1`. Any
+future change of the `popdam` DSM password must update `DSM_PASSWORD` in both `.env`
+files, then `docker compose up -d --force-recreate` (a plain `docker restart` keeps the old
+environment), and clear `::1` from DSM's auto-block list if it was added.
+
 | Variable/group | Purpose | Stored where | Required in dev | Required in prod |
 |---|---|---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser Supabase access | Local web env / Coolify; also GitHub build secrets | yes for web | yes |
