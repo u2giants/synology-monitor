@@ -39,9 +39,7 @@ func main() {
 	dsmClient := dsm.NewClient(cfg.DsmURL, cfg.DsmUsername, cfg.DsmPassword, cfg.DsmInsecureSkipVerify)
 
 	// Login to DSM
-	if err := dsmClient.Login(); err != nil {
-		log.Fatalf("Failed to login to DSM: %v", err)
-	}
+	loginWithRetry(dsmClient)
 	defer dsmClient.Logout()
 	log.Println("Connected to DSM API")
 	log.Printf("Agent version: sha=%s built=%s", BuildSHA, BuildTime)
@@ -257,4 +255,36 @@ func main() {
 	// Wait for all goroutines to finish
 	wg.Wait()
 	log.Println("Agent stopped")
+}
+
+// loginWithRetry blocks until DSM login succeeds. A failed first login used to
+// exit the process, which made Docker crash-loop the agent whenever DSM was
+// slow (e.g. heavy disk load). Transient errors back off 5s doubling to 2m;
+// auth rejections (400 bad credentials, 407 IP blocked) always wait the full
+// 2m cap, because rapid retries are what triggers DSM auto-block.
+func loginWithRetry(c *dsm.Client) {
+	const (
+		initialDelay = 5 * time.Second
+		maxDelay     = 2 * time.Minute
+	)
+	delay := initialDelay
+	for attempt := 1; ; attempt++ {
+		err := c.Login()
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("DSM login succeeded on attempt %d", attempt)
+			}
+			return
+		}
+		wait := delay
+		if dsm.IsAuthRejected(err) {
+			wait = maxDelay
+		}
+		log.Printf("DSM login attempt %d failed: %v; retrying in %s", attempt, err, wait)
+		time.Sleep(wait)
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
 }
