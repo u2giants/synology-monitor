@@ -147,7 +147,7 @@ func (c *Client) rawRequest(params url.Values) (json.RawMessage, error) {
 
 	resp, err := c.httpClient.Get(reqURL)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request failed: %w", err)
+		return nil, fmt.Errorf("HTTP request failed: %w", redactURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -1003,4 +1003,30 @@ func firstMapString(item map[string]interface{}, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// redactURLError strips credentials from a *url.Error. net/http embeds the full
+// request URL in its errors, and the DSM login URL carries passwd (and later
+// calls carry _sid), so an unredacted error writes the password to the log.
+func redactURLError(err error) error {
+	ue, ok := err.(*url.Error)
+	if !ok {
+		return err
+	}
+	return &url.Error{Op: ue.Op, URL: redactURL(ue.URL), Err: ue.Err}
+}
+
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[unparseable URL redacted]"
+	}
+	q := u.Query()
+	for _, k := range []string{"passwd", "_sid", "otp_code", "device_id"} {
+		if q.Has(k) {
+			q.Set(k, "REDACTED")
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
