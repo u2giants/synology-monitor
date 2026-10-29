@@ -1,12 +1,18 @@
-# WALL ART re-filing runbook
+# Concept Approved Designs re-filing runbook
 
 Rare, owner-requested job: find item-number folders scattered around
 `\mac\Decor\Character Licensed\____New Structure` and propose (later, perform)
-moves into the canonical WALL ART tree:
+moves into the canonical Concept Approved Designs tree — **every department**,
+not only WALL ART (Albert, 2026-10-29: "you're not supposed to limit this to
+just wall art"):
 
 ```
-\mac\Decor\Character Licensed\____New Structure\Concept Approved Designs\WALL ART\<Category>\<Size>\<Licensor>\<ITEM>
+\mac\Decor\Character Licensed\____New Structure\Concept Approved Designs\<Department>\<Category>[\<Sub-group>][\<Size>][\<Licensor>]\<ITEM>
 ```
+
+Departments on 2026-10-29: WALL ART, TABLETOP, STORAGE, DESKTOP, FUNCTIONAL
+WALL, FLOOR COVERINGS. Bracketed levels exist only where that category already
+uses them (see "Category layouts").
 
 First run: 2026-10-29 (proposal only, nothing moved). Requested by Albert.
 Deliberately a runbook, not a skill — it is used too rarely to justify
@@ -18,7 +24,7 @@ Item numbers look like `GFZ14DYMM01`:
 
 | Characters | Meaning | Where to look it up |
 |---|---|---|
-| 1–3 (`GFZ`) | product-type prefix | the WALL ART category folder whose name contains that 3-character code (`BGX _GFZ - Printed glass`) |
+| 1–3 (`GFZ`) | product-type prefix | the category folder (any department) whose name starts with that code (`WALL ART\BGX _GFZ - Printed glass`). A 5-character code (prefix + size, e.g. `MDD05`, `MTP57`) beats a plain prefix |
 | 4–5 (`14`) | size code | merch group **MG04** → `11X14"` → size folder `11x14` (fuzzy) |
 | 6–7 (`DY`) | licensor code | merch group **MG05** → `DISNEY` → licensor folder `Disney` (fuzzy) |
 | 8–11 | property + sequence | not used for filing |
@@ -59,6 +65,24 @@ Notes on the data:
   codes appear in two category folders (`MBF`, `MF1`, `MF2`, `MQC`, `VSZ`).
   Those items are marked REVIEW.
 
+### Category layouts
+
+Categories are not all filed the same way. The script infers each category's
+layout from the folders that already exist inside it:
+
+- **size + licensor** (most of WALL ART): `<Category>\11x14\Disney\ITEM`
+- **size only** or **licensor only**: `<Category>\10x10\ITEM`, `<Category>\Disney\ITEM`
+- **coded sub-groups** (DESKTOP `MDD_Desktop Org\MDD05_Chicago`): the script
+  walks into the sub-group whose leading code matches the item (`MDD05` first,
+  then `MDD`), then applies the layout above.
+- **flat** (`FLOOR COVERINGS\VDC_HXP - Floor coverings`): item goes straight in.
+- Sub-groups named only in words (`Fabric toy chest w playmat`, `2pk 6x12`)
+  cannot be chosen from the item number — REVIEW.
+
+A folder counts as size-like if it reads `NxN` (or "Non-standard sizes"), and
+licensor-like if it matches an MG05 description or a known variant (NBCU,
+Warner Bros…).
+
 ## 3. Steps to produce the proposal CSV
 
 Work folder: any scratch folder (`$W` below). All steps are read-only.
@@ -67,9 +91,9 @@ Work folder: any scratch folder (`$W` below). All steps are read-only.
    ```bash
    ssh edgesynology1 'cd "/volume1/mac/Decor/Character Licensed/____New Structure" && find . -path "*/@eaDir" -prune -o -path "*/#recycle" -prune -o -type d -regextype posix-extended -regex ".*/[A-Za-z0-9]{3}[0-9]{2}[A-Za-z]{2}[^/]*" -printf "%d\t%p\n"' > $W/dirs.tsv
    ```
-2. **Target tree**:
+2. **Target tree** (all departments, 4 levels):
    ```bash
-   ssh edgesynology1 'cd "/volume1/mac/Decor/Character Licensed/____New Structure/Concept Approved Designs/WALL ART" && find . -mindepth 1 -maxdepth 3 -type d -not -path "*@eaDir*" -printf "%p\n"' > $W/target.txt
+   ssh edgesynology1 'cd "/volume1/mac/Decor/Character Licensed/____New Structure/Concept Approved Designs" && find . -mindepth 1 -maxdepth 4 -type d -not -path "*@eaDir*" -printf "%p\n"' > $W/target.txt
    ```
 3. **MG04/MG05** → `$W/mg.json` (JSON array of rows):
    ```sql
@@ -82,15 +106,17 @@ Work folder: any scratch folder (`$W` below). All steps are read-only.
 4. **Sheet columns** → copy the two saved `get_values` results to
    `$W/skus.json` (column B) and `$W/status.json` (column N). Both must have the
    same row count — that is how rows are paired.
-5. **Run**: `python3 -I scripts/synology/wall-art-refile/propose_moves.py $W`
+5. **Run**: `python3 -I scripts/synology/concept-approved-refile/propose_moves.py $W`
    → `$W/proposed_moves.csv` (UTF-8 with BOM so Excel opens it cleanly).
 6. Spot-check `GFZ14DYMM01` still maps to the worked example.
 
 ### What the script does
 
 - Sources = every item-number folder under `____New Structure` **except**
-  those already inside WALL ART, and only the top-most one when item folders
-  are nested inside each other.
+  those already filed (at `Concept Approved Designs\<Dept>\<Category>\` with
+  only size/licensor folders in between), and only the top-most one when item
+  folders are nested. Items loose in a department, in `_need to sort`, or in In
+  Development / Product Ideas / Discontinued / Freelancer art are candidates.
 - Matching is case-insensitive and ignores spaces/quotes/punctuation. Sizes
   also accept swapped dimensions (`14x11`). Licensors accept containment
   (`NBC` ↔ `NBCU`) or close spelling. Every non-exact match is written in the
@@ -100,7 +126,7 @@ Work folder: any scratch folder (`$W` below). All steps are read-only.
 
 ### CSV columns and decisions
 
-Columns: item number, source folder, area, license status, category folder,
+Columns: item number, source folder, area, license status, department, category folder (with sub-group),
 size code, MG04 text, size folder, licensor code, MG05 text, licensor folder,
 destination folder, decision, notes.
 
@@ -108,13 +134,15 @@ destination folder, decision, notes.
 |---|---|
 | `MOVE` | everything resolved, status allowed, destination folders exist |
 | `DO NOT MOVE - status` | destination resolved but status not in the allowed three (or SKU missing from the sheet) |
-| `REVIEW` | resolvable but needs a human glance: item already exists in WALL ART, prefix in two categories, or a licensor folder would have to be created |
-| `REVIEW - destination unresolved` | wall-art prefix found but size or licensor could not be resolved |
-| `LEAVE - not a wall-art product` | prefix matches no WALL ART category (tabletop, storage, etc.) |
+| `REVIEW` | resolvable but needs a human glance: item already filed elsewhere, prefix in two categories, an uncoded sub-group, or a new size/licensor folder would be created |
+| `REVIEW - destination unresolved` | category found but size, licensor or sub-group could not be resolved |
+| `LEAVE - no matching category` | prefix matches no category folder in any department |
 | `SKIP` | folder name is not a standard item number |
 
-Results 2026-10-29: 478 MOVE, 389 REVIEW, 190 unresolved, 506 blocked by
-status, 2,653 not wall art, 224 skipped.
+Results 2026-10-29 (all departments): 468 MOVE (WALL ART 297, FLOOR
+COVERINGS 73, DESKTOP 53, STORAGE 27, TABLETOP 13, FUNCTIONAL WALL 5),
+756 REVIEW, 408 unresolved, 678 blocked by status, 1,046 no matching category,
+112 skipped.
 
 ## 4. Performing the moves later (not done yet)
 
