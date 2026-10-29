@@ -49,6 +49,7 @@ Then load additional docs only when relevant:
 | Continue the MCP v2 foundations or protocol migration | `plan_mcp-v2-foundations-and-migration.md`, then `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and `docs/mcp-incident-2026-05.md` | Unrelated NAS incident and archive docs |
 | Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, `docs/archive-move-runbook.md` | AI pipeline details |
 | Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, AGENTS "Moving or merging files inside a share" | Web/AI docs |
+| Re-file item folders into WALL ART (size/licensor/status rule) | `docs/wall-art-refile-runbook.md` | Web/AI docs |
 | Seafile/inotify work | `docs/seafile-sync-inotify.md` | Archive and web docs |
 | Telemetry retention or pg_partman | `docs/telemetry-retention.md`, `docs/supabase-virginia-migration-2026-06.md` | NAS filesystem docs |
 | Relay behavior or recovery | `apps/relay/README.md`, `apps/relay/OPERATIONS.md`, `docs/architecture.md` relay section | Unrelated NAS MCP internals |
