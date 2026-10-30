@@ -36,9 +36,12 @@ Move only when the status is exactly one of:
 - `Concept Approved`
 - `Production Approved`
 
-Everything else stays (including `Concept Approved with Comments` and
-`Pre Production approved w/comment` — Albert's list does not include them; ask
-him again if that ever matters).
+Albert added on 2026-10-30 that the "with comments" variants also move:
+
+- `Concept Approved with Comments`
+- `Pre Production approved w/comment`
+
+Everything else stays.
 
 Worked example (Albert's): `...\In Development\Customer Adopted\Ross\2025\Ross
 Wall Jun-Sep_Harvest_Halloween FH 2025\GFZ14DYMM01` → `...\Concept Approved
@@ -139,10 +142,10 @@ destination folder, decision, notes.
 | `LEAVE - no matching category` | prefix matches no category folder in any department |
 | `SKIP` | folder name is not a standard item number |
 
-Results 2026-10-29 (all departments): 468 MOVE (WALL ART 297, FLOOR
-COVERINGS 73, DESKTOP 53, STORAGE 27, TABLETOP 13, FUNCTIONAL WALL 5),
-756 REVIEW, 408 unresolved, 678 blocked by status, 1,046 no matching category,
-112 skipped.
+Results 2026-10-30 (all departments, five statuses): 499 MOVE (WALL ART 311,
+FLOOR COVERINGS 84, DESKTOP 53, STORAGE 31, TABLETOP 13, FUNCTIONAL WALL 7),
+814 REVIEW, 408 unresolved, 589 blocked by status, 1,046 no matching category,
+106 skipped.
 
 ## 4. Performing the moves later (not done yet)
 

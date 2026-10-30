@@ -15,7 +15,8 @@ from collections import Counter, defaultdict
 W = sys.argv[1]
 ROOT = r"\mac\Decor\Character Licensed\____New Structure"
 CAD = "Concept Approved Designs"
-MOVE_STATUSES = {"Pre-Pro Approved", "Concept Approved", "Production Approved"}
+MOVE_STATUSES = {"Pre-Pro Approved", "Concept Approved", "Production Approved",
+                 "Concept Approved with Comments", "Pre Production approved w/comment"}
 ITEM = re.compile(r"^([A-Za-z0-9]{3})([A-Za-z0-9]{2})([A-Za-z]{2})([A-Za-z0-9]{2})(\d{2})")
 SIZE_RE = re.compile(r"^\s*[\d.]+\s*[xX]\s*[\d.]+")
 
