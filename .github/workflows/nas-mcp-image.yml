@@ -68,8 +68,9 @@ jobs:
       - name: Build NAS MCP
         run: pnpm --filter @synology-monitor/nas-mcp run build
 
+  build-and-push:
     needs: verify
-    needs: verify
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
