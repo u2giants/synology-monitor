@@ -16,8 +16,16 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/synology-monitor-nas-mcp
 
 jobs:
+  route:
+    uses: popcre/ai-devops/.github/workflows/edge-dev3-route.yml@main
+    with:
+      heartbeat: ${{ vars.EDGE_DEV3_RUNNER_HEARTBEAT }}
+      fallback: ubuntu-latest
+
   verify:
-    runs-on: ubuntu-latest
+    needs: route
+    if: ${{ !cancelled() }}
+    runs-on: ${{ fromJSON(needs.route.outputs.runs_on || '"ubuntu-latest"') }}
     permissions:
       contents: read
 
@@ -62,6 +70,7 @@ jobs:
 
   build-and-push:
     needs: verify
+    if: ${{ !cancelled() && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
