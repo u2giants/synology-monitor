@@ -27,6 +27,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Prove the live-version check (matching passes, deliberately stale fails)
+        run: bash apps/web/scripts/test-verify-live-version.sh
+
       # PLAN.md §9.7 — hard build blockers. If these fail the image is never
       # built/pushed and Coolify is never triggered, so a cache-hostile prompt
       # ordering, collapsed multi-turn history, or an un-normalized provider
@@ -81,6 +84,7 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha
+            type=raw,value=sha-${{ github.sha }}
             type=ref,event=branch
 
       - name: Build and push web image
@@ -97,6 +101,31 @@ jobs:
             NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
             BUILD_SHA=${{ github.sha }}
 
+      - name: Pin Coolify to the immutable image tag
+        env:
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          # Application uuid (not a secret) for nas-monitor-web / mon.designflow.app.
+          COOLIFY_APP_UUID: lrddgp8im0276gllujfu7wm3
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: |
+          echo "Pinning Coolify to ghcr.io/u2giants/synology-monitor-web:${IMAGE_TAG}..."
+          response=$(curl -sS -w "\n%{http_code}" \
+            -X PATCH \
+            -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            "https://coolify.designflow.app/api/v1/applications/${COOLIFY_APP_UUID}" \
+            -d "{\"docker_registry_image_tag\": \"${IMAGE_TAG}\"}")
+
+          http_code=$(echo "$response" | tail -1)
+          echo "Response code: ${http_code}"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Coolify tag pin failed with HTTP ${http_code}"
+            echo "Deploy stays fail-closed: refusing to deploy a mutable tag."
+            exit 1
+          fi
+
       - name: Trigger Coolify redeploy
         run: |
           # POST, not GET: Coolify's deploy endpoint moved to POST and answers a
@@ -107,3 +136,10 @@ jobs:
           curl -sS --fail-with-body -X POST \
             "http://178.156.180.212:8000/api/v1/deploy?uuid=${{ secrets.COOLIFY_WEBHOOK_UUID }}&force=false" \
             -H "Authorization: Bearer ${{ secrets.COOLIFY_TOKEN }}"
+
+      - name: Verify production serves this commit
+        run: |
+          bash apps/web/scripts/verify-live-version.sh \
+            --url "https://mon.designflow.app/version.json" \
+            --expected "${GITHUB_SHA}" \
+            --attempts 60 --interval 10
