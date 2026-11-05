@@ -375,6 +375,6 @@ when package SQLite/config paths are not visible.
 
 ### PopDAM search indexing watchdog
 
-The existing background issue worker checks the shared POP database once per minute when `POPDAM_SUPABASE_URL` and `POPDAM_SUPABASE_SERVICE_ROLE_KEY` are configured. Use the runtime key already held in 1Password; keep it server-only. `RUN_ISSUE_WORKER=true` remains required. The admin-only `get_search_embedding_health` RPC defines eligible pending work and the two-hour stall threshold. A failed health request creates a separate unavailable alert and never clears an existing stall.
+A supervised background loop in the existing web container checks the shared POP database once per minute when `POPDAM_SUPABASE_URL` and `POPDAM_SUPABASE_SERVICE_ROLE_KEY` are configured. Use the runtime key already held in 1Password; keep it server-only. Set `RUN_SEARCH_EMBEDDING_WATCHDOG=true` to enable it. This is independent of `RUN_ISSUE_WORKER` and never starts or drains AI issue jobs. The admin-only `get_search_embedding_health` RPC defines eligible pending work and the two-hour stall threshold. A failed health request creates a separate unavailable alert and never clears an existing stall.
 
 Alerts use the existing dashboard channel at mon.designflow.app, with one stable alert per corpus, cleared on recovery. This integration does not claim off-page push delivery. Missing both optional variables leaves this check unconfigured; incomplete configuration raises unavailable.
