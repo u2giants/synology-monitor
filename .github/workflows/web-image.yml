@@ -47,7 +47,7 @@ jobs:
 
       - name: Search indexing watchdog checks
         run: |
-          node --test apps/web/scripts/search-embedding-watchdog.test.mjs
+          node --test apps/web/scripts/search-embedding-watchdog.test.mjs apps/web/scripts/search-watchdog-entrypoint.test.mjs
           pnpm --filter @synology-monitor/web exec tsx --test src/lib/active-alerts.test.ts
 
       # This workflow triggers on packages/shared/**, and stage2-reasoning.ts builds
