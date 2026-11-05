@@ -19,6 +19,16 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_BUILD_SHA: sha,
     NEXT_PUBLIC_BUILD_DATE: date,
   },
+  // The deploy check reads /version.json after Coolify deploys; it must never
+  // see a cached document or the live read can hide a stale container.
+  async headers() {
+    return [
+      {
+        source: "/version.json",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

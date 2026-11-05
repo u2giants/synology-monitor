@@ -32,6 +32,9 @@ ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV BUILD_SHA=$BUILD_SHA
 
 WORKDIR /app/apps/web
+# Known version path the deploy check reads after Coolify deploys
+# (apps/web/scripts/verify-live-version.sh compares git_sha with the merged commit).
+RUN printf '{"git_sha":"%s"}\n' "$BUILD_SHA" > public/version.json
 RUN npx next build
 
 # Production
