@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { mergeActiveAlert } from "@/lib/active-alerts";
 import type { Alert } from "@synology-monitor/shared";
 
 export function useRealtimeAlerts() {
@@ -41,7 +42,7 @@ export function useRealtimeAlerts() {
         (payload) => {
           if (payload.eventType === "INSERT") {
             const newAlert = payload.new as Alert;
-            if (newAlert.status === "active") setAlerts((prev) => [newAlert, ...prev]);
+            setAlerts((prev) => mergeActiveAlert(prev, newAlert));
 
             // Trigger push notification for critical alerts
             if (newAlert.severity === "critical" && Notification.permission === "granted") {
@@ -54,7 +55,7 @@ export function useRealtimeAlerts() {
           } else if (payload.eventType === "UPDATE") {
             const updated = payload.new as Alert;
             setAlerts((prev) =>
-              prev.map((a) => (a.id === updated.id ? updated : a)).filter((a) => a.status === "active")
+              mergeActiveAlert(prev, updated)
             );
           }
         }

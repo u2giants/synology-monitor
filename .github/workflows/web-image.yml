@@ -46,7 +46,9 @@ jobs:
         run: pnpm --filter @synology-monitor/web run guard:ai
 
       - name: Search indexing watchdog checks
-        run: node --test apps/web/scripts/search-embedding-watchdog.test.mjs
+        run: |
+          node --test apps/web/scripts/search-embedding-watchdog.test.mjs
+          pnpm --filter @synology-monitor/web exec tsx --test src/lib/active-alerts.test.ts
 
       # This workflow triggers on packages/shared/**, and stage2-reasoning.ts builds
       # its tool list straight from ALL_TOOL_DEFS (filtering !def.write) and executes
