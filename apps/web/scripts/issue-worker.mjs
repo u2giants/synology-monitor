@@ -1,3 +1,5 @@
+import { checkSearchEmbeddings } from "./search-embedding-watchdog.mjs";
+
 const port = process.env.PORT || "3000";
 const intervalMs = Number(process.env.ISSUE_WORKER_INTERVAL_MS || 3000);
 const limit = Number(process.env.ISSUE_WORKER_BATCH_LIMIT || 10);
@@ -15,7 +17,13 @@ async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+let lastSearchCheck = 0;
 async function tick() {
+  if (Date.now() - lastSearchCheck >= 60000) {
+    lastSearchCheck = Date.now();
+    try { await checkSearchEmbeddings(); }
+    catch { console.error("[search-watchdog] alert check failed; will retry"); }
+  }
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {

@@ -41,7 +41,7 @@ export function useRealtimeAlerts() {
         (payload) => {
           if (payload.eventType === "INSERT") {
             const newAlert = payload.new as Alert;
-            setAlerts((prev) => [newAlert, ...prev]);
+            if (newAlert.status === "active") setAlerts((prev) => [newAlert, ...prev]);
 
             // Trigger push notification for critical alerts
             if (newAlert.severity === "critical" && Notification.permission === "granted") {
@@ -54,7 +54,7 @@ export function useRealtimeAlerts() {
           } else if (payload.eventType === "UPDATE") {
             const updated = payload.new as Alert;
             setAlerts((prev) =>
-              prev.map((a) => (a.id === updated.id ? updated : a))
+              prev.map((a) => (a.id === updated.id ? updated : a)).filter((a) => a.status === "active")
             );
           }
         }
