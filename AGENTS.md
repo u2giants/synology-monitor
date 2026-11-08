@@ -528,7 +528,7 @@ rollback, health checks, and compose exceptions are in `docs/deployment.md`.
 
 - Use SSH aliases `edgesynology1` and `edgesynology2` (user `ahazan`; edge2 SSH is on
   port **1904**, in `~/.ssh/config`); do not hand-build addresses.
-- **`ahazan` has passwordless sudo for `/usr/bin/python3` ONLY** (`(ALL) NOPASSWD:
+- **As of 2026-11-08, sudo on edge2 (and edge1) asks for a password** — the SSH alias logs in as `ai`; feed the `edgesynologyN NAS - ai service account` 1Password login to `sudo -S` via 1Password `op_run`, never on the command line. Historical note: `ahazan` had passwordless sudo for `/usr/bin/python3` ONLY (`(ALL) NOPASSWD:
   /usr/bin/python3` on both NASes — effectively passwordless root). Plain `sudo docker`,
   `sudo sed`, `sudo cp` HANG on a password prompt with no answer available. Do every
   privileged action as `sudo -n /usr/bin/python3 -c '...'` — edit files with Python I/O,
