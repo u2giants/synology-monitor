@@ -37,6 +37,11 @@ either NAS. Its Cloudflare token, ACME account state, and pinned `lego` binary
 live in the mode-0700 `/volume1/docker/synology-monitor-agent/cert-renewal`
 directory and are never stored in this repository. The matching Synology cron
 definitions are under `deploy/synology/*-certificate-renewal.json`.
+Synology's scheduler only accepts a bare executable path as `cmd` — an
+environment-variable prefix (`CERT_DOMAIN=... script`) is silently never
+scheduled. The edge2 copy on the NAS (`renew-edge2-certificate.sh`) therefore
+has edge2's domain and archive ID as its defaults. Confirm a new job appears in
+`/usr/syno/etc/synocrond.config` after `systemctl restart synocrond`.
 
 ## Before running anything that writes
 
