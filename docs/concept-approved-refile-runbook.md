@@ -35,12 +35,12 @@ moves. Move outright when the status is one of:
 - `Concept Approved`, `Concept Approved with Comments` (Albert, 2026-10-29/30)
 - `Pre-Pro Approved`, `Pre-Pro Resubmit`, `Pre Production approved w/comment`,
   `Production Approved` (Laura, 2026-11-09)
-- `Pre-Pro Resubmitted` (assumed same stage as Pre-Pro Resubmit; not confirmed)
+- `Pre-Pro Resubmitted` (same as Pre-Pro Resubmit — Laura confirmed 2026-11-09)
 
 **Sample stages need a second look** (Laura, 2026-11-09): column N shows only the
 *current* stage, and items are sometimes sent to sample before licensing
-approves them. So `Requested Sample`, `Sample Received` (and, by assumption,
-`Sample Submitted`) move **only when column R "Concept Approval" or column S
+approves them. So `Requested Sample`, `Sample Received` and `Sample Submitted`
+(Laura confirmed 2026-11-09) move **only when column R "Concept Approval" or column S
 "Concept Approved with Comments" holds a date**. Without one the concept may
 not even be submitted yet — leave it.
 
