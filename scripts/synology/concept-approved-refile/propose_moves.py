@@ -6,7 +6,8 @@ Inputs (all in one work folder, produced by the runbook steps):
   dirs.tsv    depth<TAB>./relative/path of every item-number folder under ____New Structure
   target.txt  ./Department/Category/... folders under Concept Approved Designs (find -maxdepth 4)
   mg.json     merchGroup rows for mgTypeCode 04 (size) and 05 (licensor)
-  skus.json / status.json  License.Style columns B (Style #) and N (License Status)
+  skus.json    License.Style column B (Style #), rows 3+
+  status.json  License.Style columns N:AC (License Status ... Production Approval), rows 3+
 Output: proposed_moves.csv
 """
 import csv, difflib, json, re, sys
@@ -15,8 +16,14 @@ from collections import Counter, defaultdict
 W = sys.argv[1]
 ROOT = r"\mac\Decor\Character Licensed\____New Structure"
 CAD = "Concept Approved Designs"
-MOVE_STATUSES = {"Pre-Pro Approved", "Concept Approved", "Production Approved",
-                 "Concept Approved with Comments", "Pre Production approved w/comment"}
+# Statuses that move outright (Albert 2026-10-29/30, Laura 2026-11-09).
+MOVE_STATUSES = {"Concept Approved", "Concept Approved with Comments",
+                 "Pre-Pro Approved", "Pre-Pro Resubmit", "Pre-Pro Resubmitted",
+                 "Pre Production approved w/comment", "Production Approved"}
+# Sample stages can be reached without approval (Laura 2026-11-09): these move
+# only when the Concept Approval (R) or Concept Approved with Comments (S) date is filled.
+SAMPLE_STATUSES = {"Requested Sample", "Sample Received", "Sample Submitted"}
+CONCEPT_DATE_COLS = (4, 5)          # R, S as offsets from column N
 ITEM = re.compile(r"^([A-Za-z0-9]{3})([A-Za-z0-9]{2})([A-Za-z]{2})([A-Za-z0-9]{2})(\d{2})")
 SIZE_RE = re.compile(r"^\s*[\d.]+\s*[xX]\s*[\d.]+")
 
@@ -102,10 +109,15 @@ def pick(wants, options):
 # --- license status ------------------------------------------------------------
 skus = json.load(open(f"{W}/skus.json"))["values"]
 stats = json.load(open(f"{W}/status.json"))["values"]
-status = defaultdict(set)
+status = defaultdict(set)            # sku -> {(status, has concept-approval date)}
 for i, s in enumerate(skus):
     if s and s[0].strip():
-        status[s[0].strip().upper()].add((stats[i][0].strip() if i < len(stats) and stats[i] else "") or "(blank)")
+        row = (stats[i] if i < len(stats) else []) + [""] * 16
+        dated = any(re.search(r"\d", row[c]) for c in CONCEPT_DATE_COLS)
+        status[s[0].strip().upper()].add((row[0].strip() or "(blank)", dated))
+
+def allowed(st, dated):
+    return st in MOVE_STATUSES or (st in SAMPLE_STATUSES and dated)
 
 # --- sources --------------------------------------------------------------------
 rows = [l.rstrip("\n").split("\t")[1] for l in open(f"{W}/dirs.tsv")]
@@ -139,7 +151,8 @@ for src in sorted(rows):
     pre, size, lic = m[1].upper(), m[2].upper(), m[3].upper()
     rec.update(size_code=size, licensor_code=lic)
     st = status.get(item) or status.get(name.upper())
-    rec["license_status"] = " | ".join(sorted(st)) if st else "(not in sheet)"
+    rec["license_status"] = " | ".join(sorted(x + (" (concept approval dated)" if d and x in SAMPLE_STATUSES else "")
+                                              for x, d in st)) if st else "(not in sheet)"
     sizes = sorted(mg.get(("04", size), []))
     lics = sorted(mg.get(("05", lic), []))
     rec["size_from_MG04"] = " | ".join(sizes) or "(code not in MG04)"
@@ -184,7 +197,7 @@ for src in sorted(rows):
             rec["destination_folder"] = winpath(dest)
             if item in filed_items:
                 notes.append("this item number is already filed at: " + winpath(filed_items[item]))
-    ok = bool(st) and st <= MOVE_STATUSES
+    ok = bool(st) and all(allowed(x, d) for x, d in st)
     txt = " ".join(notes)
     if not cands:
         rec["decision"] = "LEAVE - no matching category"
