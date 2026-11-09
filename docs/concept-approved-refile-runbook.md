@@ -29,19 +29,23 @@ Item numbers look like `GFZ14DYMM01`:
 | 6–7 (`DY`) | licensor code | merch group **MG05** → `DISNEY` → licensor folder `Disney` (fuzzy) |
 | 8–11 | property + sequence | not used for filing |
 
-Then the **License Status** column of the Google sheet decides whether it moves.
-Move only when the status is exactly one of:
+Then the **License Status** column (N) of the Google sheet decides whether it
+moves. Move outright when the status is one of:
 
-- `Pre-Pro Approved`
-- `Concept Approved`
-- `Production Approved`
+- `Concept Approved`, `Concept Approved with Comments` (Albert, 2026-10-29/30)
+- `Pre-Pro Approved`, `Pre-Pro Resubmit`, `Pre Production approved w/comment`,
+  `Production Approved` (Laura, 2026-11-09)
+- `Pre-Pro Resubmitted` (assumed same stage as Pre-Pro Resubmit; not confirmed)
 
-Albert added on 2026-10-30 that the "with comments" variants also move:
+**Sample stages need a second look** (Laura, 2026-11-09): column N shows only the
+*current* stage, and items are sometimes sent to sample before licensing
+approves them. So `Requested Sample`, `Sample Received` (and, by assumption,
+`Sample Submitted`) move **only when column R "Concept Approval" or column S
+"Concept Approved with Comments" holds a date**. Without one the concept may
+not even be submitted yet — leave it.
 
-- `Concept Approved with Comments`
-- `Pre Production approved w/comment`
-
-Everything else stays.
+Everything else stays. When a SKU appears on several sheet rows, every row
+must qualify.
 
 Worked example (Albert's): `...\In Development\Customer Adopted\Ross\2025\Ross
 Wall Jun-Sep_Harvest_Halloween FH 2025\GFZ14DYMM01` → `...\Concept Approved
@@ -107,7 +111,8 @@ Work folder: any scratch folder (`$W` below). All steps are read-only.
    `https://api.supabase.com/v1/projects/qsllyeztdwjgirsysgai/database/query/read-only`
    with `Authorization: Bearer <token>`.
 4. **Sheet columns** → copy the two saved `get_values` results to
-   `$W/skus.json` (column B) and `$W/status.json` (column N). Both must have the
+   `$W/skus.json` (`License.Style!B3:B`) and `$W/status.json`
+   (`License.Style!N3:AC` — status plus the approval-date columns). Both must have the
    same row count — that is how rows are paired.
 5. **Run**: `python3 -I scripts/synology/concept-approved-refile/propose_moves.py $W`
    → `$W/proposed_moves.csv` (UTF-8 with BOM so Excel opens it cleanly).
@@ -142,10 +147,11 @@ destination folder, decision, notes.
 | `LEAVE - no matching category` | prefix matches no category folder in any department |
 | `SKIP` | folder name is not a standard item number |
 
-Results 2026-10-30 (all departments, five statuses): 499 MOVE (WALL ART 311,
-FLOOR COVERINGS 84, DESKTOP 53, STORAGE 31, TABLETOP 13, FUNCTIONAL WALL 7),
-814 REVIEW, 408 unresolved, 589 blocked by status, 1,046 no matching category,
-106 skipped.
+Results 2026-11-09 (all departments, Laura's status rule): 589 MOVE
+(WALL ART 365, FLOOR COVERINGS 112, DESKTOP 57, STORAGE 35, TABLETOP 13,
+FUNCTIONAL WALL 7; 75 of them are sample-stage items with a concept-approval
+date), 902 REVIEW, 409 unresolved, 492 blocked by status, 982 no matching
+category, 106 skipped.
 
 ## 4. Performing the moves later (not done yet)
 
