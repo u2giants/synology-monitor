@@ -19,6 +19,8 @@ no NAS required).
 
 ## 0. TL;DR for whoever picks this up
 
+**Update 2026-11-11:** the share-wide pass is done on every share (680 copies removed, 101 files recovered; see [pending-work](pending-work.md)). edgesynology2 is a read-only ShareSync mirror of edgesynology1, so it needed no separate pass. What remains is the newer-copy review list and prevention.
+
 One folder out of one share has been cleaned. The tools are written, tested, and
 proven on live data. What remains is running the same procedure over **~470
 remaining conflict artifacts** in `Character Licensed`, then over **every other
