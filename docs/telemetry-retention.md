@@ -1,3 +1,10 @@
+---
+summary: Telemetry retention state: policies, hourly cleanup procedure, drain results, database size and the open pg_partman backlog.
+kind: living
+status: current
+read-when: Database size, retention policies, cleanup cron or pg_partman work.
+---
+
 # Telemetry retention and database size
 
 ## Status

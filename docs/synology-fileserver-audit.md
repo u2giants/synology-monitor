@@ -1,3 +1,10 @@
+---
+summary: Open work order to resolve about 470 remaining _Conflict artifacts and case collisions across shares and on edgesynology2.
+kind: ops
+status: open
+read-when: Cleaning up _Conflict folders or auditing a share for case collisions.
+---
+
 # Synology file-server audit — find these problems everywhere
 
 **Status:** OPEN. Scoped 2026-07-16/17 from a single folder; never run share-wide.
@@ -5,7 +12,7 @@
 **Tooling:** [`scripts/synology/`](../scripts/synology/) — read its README first; it
 documents the traps. Tests: `bash scripts/synology/tests/run-tests.sh` (55 assertions,
 no NAS required).
-**Prerequisite reading:** AGENTS.md → "Moving or merging files inside a share" and the
+**Prerequisite reading:** [`nas-maintenance-safety.md`](nas-maintenance-safety.md) → "Moving or merging files inside a share" and the
 2026-07-16/17 critical incident.
 
 ---
@@ -30,7 +37,7 @@ Start here:
 ls /volume1/mac/#snapshot | grep -v desktop.ini | sort | tail
 find "/volume1/mac/#snapshot/<stamp>/Decor/Character Licensed" -maxdepth 1 | head
 #    Only if you need a fresh point, snapshot the SHARE SUBVOLUME, never the
-#    volume root (trap 3) — and record it in HANDOFF.md so nobody deletes it:
+#    volume root (trap 3) — and record it in your own HANDOFF.d/ file so nobody deletes it:
 #    sudo btrfs subvolume snapshot -r /btrfs/volume1/mac /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
 # 2. Report-only pass
 ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=1 sudo -E bash resolve-drive-conflicts.sh
@@ -282,7 +289,7 @@ find "/volume1/mac/#snapshot/<stamp>/Decor/…/<folder>" -type f \
 deleted by a *different* session that classified both stray `@prechange_*`
 subvolumes as accidental clutter. It was not wrong to delete — but a hand-made
 recovery point is an unlabelled artifact that another session may garbage-collect
-without knowing why it exists. If you do create one, record it in `HANDOFF.md`
+without knowing why it exists. If you do create one, record it in your own `HANDOFF.d/` file
 immediately, and prefer verifying an automatic share snapshot over minting a new
 subvolume. (No data was at risk here: the pre-merge state survives in the share
 snapshots above.)
@@ -407,7 +414,7 @@ Never run a transferred script whose checksum does not match.
 | Seafile library containing this share | `repo_id 177cf9de-3066-482e-956a-7ae8d8786c6d` |
 | Scripts + trap documentation | [`scripts/synology/README.md`](../scripts/synology/README.md) |
 | Tests | `bash scripts/synology/tests/run-tests.sh` — 55 assertions, no NAS needed |
-| Incident record | AGENTS.md → Critical incidents → 2026-07-16/17 |
+| Incident record | [`incident-log.md`](incident-log.md) → 2026-07-16/17 |
 
 A one-time Claude scheduled task (`ask-team-delete-dg-merged`, fires **Monday
 2026-07-20 15:00 America/New_York**) surfaces the question of whether `.merged` can

@@ -1,0 +1,594 @@
+# Synology Monitor — Active Work Handoff
+
+Updated: 2026-08-26 (America/New_York)
+
+This file exists because production operations remain unfinished. It contains
+continuation state only; completed implementation history belongs in `AGENTS.md`
+and topic docs.
+
+## 1. What this application is
+
+Synology Monitor operates POP Creations' two production Synology NAS units:
+`edgesynology1` and `edgesynology2`. A Go agent on each NAS sends telemetry to
+Supabase project `aaxtrlfpnoutziwhshlt` (Virginia). A Next.js dashboard at
+`https://mon.designflow.app` detects issues and runs a three-stage AI diagnostic
+pipeline. A Go NAS API on port `7734` executes guarded commands and native archive
+jobs. The FastMCP service at `https://nas-mcp.designflow.app/mcp` exposes NAS
+diagnostics and approval-gated repairs.
+
+Repository: `u2giants/synology-monitor`, local path `/worksp/monitor/app`, branch
+`main`. Normal deployment is GitHub Actions → GHCR → Coolify or NAS Watchtower.
+
+## 2. What active work is trying to accomplish, and why
+
+Four operational efforts remain:
+
+1. Restore nine incorrect directory mtimes in the archived `___OLD` tree on
+   `edgesynology1` using `edgesynology2` evidence.
+2. Finish and verify Seafile inotify remediation so seaf-cli cannot silently claim
+   synchronization after its filesystem monitor goes blind.
+3. Finish telemetry retention and restore pg_partman without overwhelming the
+   one-gigabyte Supabase database instance.
+4. Reconcile the live NAS compose files with the repository's durable archive-job
+   mount and `NAS_API_NAME`, which are still absent live even though other pending
+   compose improvements were applied.
+
+These are operational continuations, not unfinished application builds.
+
+## 3. Current state
+
+### A. Archive `___OLD` directory mtime repair — partial
+
+Completed:
+
+- Source directory mtimes under
+  `/volume1/mac/Decor/Character Licensed/___OLD` on `edgesynology1` were repaired
+  from `/tmp/edges2_dir_current_authority_20260615.csv`.
+- Verification returned `source_authority_mismatches_after_repair 0`,
+  `source_dirs_today_count=0`, and `source_files_today_count=0`.
+- Commit `eb253f25fc6d8e1bdab1f76133b290017e9a0d8a` preserves source directory
+  mtimes when a partial archive move leaves the source directory in place.
+
+Still required on `edgesynology1` under
+`/volume1/mac/Archive/Decor/Character Licensed/___OLD`:
+
+| Relative directory | Correct mtime | Current/wrong mtime recorded 2026-06-16 |
+|---|---|---|
+| `Decor/Character Licensed/___OLD` | `2023-02-24 15:38:42 -0500` | `2026-06-16 10:33:20 -0400` |
+| `.../Blinds - Paper Shades/Redi Order 1/Raw/Revised 36x78in` | `2024-12-06 08:10:42 -0500` | `2024-12-06 08:10:36 -0500` |
+| `.../CNV012 Nick 10x13.5 no LED` | `2026-04-05 12:51:27 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Cap` | `2026-04-05 12:51:25 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Iron Man` | `2026-04-05 12:51:32 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/Old/Hulk` | `2026-04-05 12:51:45 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Collage/Marvel AGE001/SpiderMan` | `2026-04-05 12:51:33 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Embossed PVC/WonderWoman` | `2026-04-05 12:51:21 -0400` | `2026-03-25 00:51:05 -0400` |
+| `.../Jojo Siwa/HIRES (1)` | `2026-04-05 12:51:31 -0400` | `2026-03-25 00:51:05 -0400` |
+
+The SSH user could not apply these with `os.utime`; it returned
+`PermissionError(1, 'Operation not permitted')`. The operation needs an approved
+root-capable path. Read `docs/timestamp-audit-2026-06-15.md` and
+`docs/layered-timestamp-audit-2026-06-15.md` before continuing.
+
+### B. Seafile inotify remediation — code live, operational verification partial
+
+Root cause and runbook: `docs/seafile-sync-inotify.md`.
+
+Code state:
+
+- `set_inotify_watches` and `write_seafile_ignore` are defined and enabled.
+- NAS API and NAS MCP builds containing them are deployed.
+- Validator tests cover their write classification.
+
+Live state verified 2026-07-17:
+
+| NAS | `max_user_watches` | `max_user_instances` | Meaning |
+|---|---:|---:|---|
+| `edgesynology1` | `1048576` | `1024` | Ceiling raise is live |
+| `edgesynology2` | `8192` | `128` | Default remains; change only if this NAS runs the affected seaf-cli workload |
+
+Unknown: whether every affected library root has `seafile-ignore.txt`, whether the
+seaf-cli daemon was restarted after the change, and whether logs stayed free of
+`No space left on device`. Those are the remaining verification gates.
+
+### C. Telemetry retention and pg_partman — partial, high risk
+
+Authoritative runbook and measurements: `docs/telemetry-retention.md`.
+
+Live project: `aaxtrlfpnoutziwhshlt`. The former Ohio project
+`qnjimovrsaacneqkggsn` is deleted; there is no rollback project.
+
+Completed as of 2026-07-16:
+
+- Migrations `00042` and `00043` are installed live.
+- Both retention indexes are installed.
+- 61,000 expired `process_snapshots` rows were deleted in staged tests.
+- The cleanup runner now requires explicit `SUPABASE_URL`, refuses the retired
+  project ref, and logs its target.
+- `disk_io_stats` retention is 35 days; partman-owned tables were removed from the
+  row-policy list.
+- Anonymous execution of the privileged SQL function was revoked live and recorded
+  in `00043`.
+- Agent backlog isolation shipped; observed lag on NAS 1 drained from about 4,950
+  seconds to 17 seconds.
+- `stop_grace_period: 90s` is present in both live NAS compose files as of
+  2026-07-17.
+
+Done 2026-07-17:
+
+- **Retention drain complete.** ~81.6M expired rows deleted across process_snapshots
+  (56M), disk_io_stats (11.3M), net_connections (10.2M), service_health (3M),
+  container_io + scheduled_tasks (~647k). Zero blocked sessions throughout; both agents
+  stayed under ~31s lag. `process_snapshots`: 58.7M → 1.64M live, 0 dead after autovacuum.
+  A plain `VACUUM` confirmed dead tuples reclaimed (space reusable, not returned to OS —
+  DB still reports 43 GB, expected).
+- **Hourly cron armed.** Migration `00044` replaced the single-transaction function with
+  `cleanup_high_volume_telemetry_proc` (commits per batch); cron now `CALL`s it at
+  `17 * * * *`. A full manual `CALL` ran clean across all 13 policies — proven, not assumed.
+
+Still open:
+
+- pg_partman has failed since 2026-05-29 because cron uses `SELECT` on a procedure.
+  Roughly 27 million rows / 8.4 GB were stranded in DEFAULT partitions at last
+  measure.
+- The first successful `CALL public.run_maintenance_proc()` must be run manually
+  and watched before cron is corrected.
+- The exposed AI key still needs owner-approved rotation through 1Password/Coolify.
+- Review `nas_logs` size on 2026-08-17 or four weeks after retention goes live,
+  whichever is later.
+
+### D. NAS compose reconciliation — partial
+
+Repository source: `deploy/synology/docker-compose.agent.yml`.
+Live path on each NAS:
+`/volume1/docker/synology-monitor-agent/compose.yaml`.
+
+Verified live 2026-07-17 on both NASes:
+
+- `stop_grace_period: 90s` is present.
+- `/etc/group:/host/etc/group:ro` is present and active in nas-api.
+- Both NAS APIs are healthy on build
+  `6dcf16c6a37412c92e209be944fa6b31ca452406`.
+
+Still absent from both live compose files at the last check:
+
+- `NAS_API_NAME`
+- `${NAS_API_JOBS_PATH:-...}:/app/data/jobs:rw`
+
+Consequently, archive `/jobs/*` endpoints may return 503 and native job state is
+not guaranteed durable. The two NAS compose files are not byte-identical and must
+not be overwritten blindly; preserve each `.env` and local device/share differences.
+
+### E. Two stray `@prechange_*` snapshots on edgesynology1 — DELETED 2026-07-17 ✅
+
+**Resolved.** Both accidental snapshots (ID 10393 `@prechange_20260716_154207`, ID 10394
+`mac/@prechange_20260716_154247`) were deleted 2026-07-17 after independent YES verdicts from
+Kimi K2.6 and real Kimi K3 (K3 via the local `~/.kimi-code` CLI; the OpenRouter path 404s K3 on
+a data-policy guardrail). K3's hardened checklist was applied fail-closed: each target's ID and
+`readonly` flag re-verified immediately before deletion, and the archive `mv_*` rollback
+snapshots counted before and after (**21, unchanged** — note the true count is 21, not the "6"
+an earlier truncated `head -6` implied; the before/after invariant caught that). Post-verified
+from a second independent path (MCP `run_command`): 0 prechange remain, both host paths gone, 21
+`mv_*` intact.
+
+Execution note: `sudo btrfs` needs a password on the NAS, so the delete ran unattended via the
+passwordless `sudo /usr/bin/python3` root path (operator-approved 2026-07-17). Nothing else to do.
+
+<details><summary>Original decision record (for history)</summary>
+
+Re-verified present 2026-07-17:
+
+```
+ID 10393 gen 9438608 top level 257 path @prechange_20260716_154207
+ID 10394 gen 9438622 top level 634 path mac/@prechange_20260716_154247
+```
+
+Host paths (confirmed over `ssh edgesynology1`): `/volume1/@prechange_20260716_154207` and
+`/volume1/mac/@prechange_20260716_154247`. Inside nas-api they appear under `/btrfs/volume1/...`.
+
+**Why they exist.** Nobody asked for them. `create_prechange_snapshot` was called with
+`confirmed: false` — "show me what you would do" — and the preview bug executed it for real.
+Fixed in `f4c8c7a`; these two are the residue. They protect no change and no rollback depends
+on them.
+
+**Not dangerous.** Read-only point-in-time images. They cannot corrupt anything and do not
+affect SMB users. The only cost is space: a snapshot pins blocks its parent has since changed,
+so its footprint grows as live data diverges.
+
+**Size: unknown, deliberately unmeasured.** `btrfs qgroup show` → `quotas not enabled`, so the
+cheap answer does not exist; `btrfs filesystem du` across 57 TB is the metadata storm § 7
+forbids while SMB users are active. Context makes the question small: `df -h /volume1` → **109T
+total, 57T used, 53T free, 52%**, and they are a day old. No pressure, no deadline.
+
+**Recommendation: delete when convenient.** No value, slowly growing cost, but genuinely low
+priority at 52% full.
+
+**How — operator only, from a terminal.** No MCP tool deletes snapshots (`tool_search
+"snapshot"` returns create/list/restore only) and `btrfs subvolume delete` is tier 3, so
+`run_command` refuses it by design. `btrfs` is **not** in the NOPASSWD sudoers list, so this
+**will prompt for your password** — expected, not an error:
+
+```sh
+ssh edgesynology1
+sudo btrfs subvolume list /volume1 | grep prechange     # expect exactly IDs 10393 and 10394
+sudo btrfs subvolume delete /volume1/@prechange_20260716_154207
+sudo btrfs subvolume delete /volume1/mac/@prechange_20260716_154247
+sudo btrfs subvolume list /volume1 | grep prechange     # expect NO output
+```
+
+**Do not blind-delete anything else matching the pattern.** The same volume holds
+`@archive_move_snapshots/mv_*` subvolumes (**21 of them**, 2026-06-11 onward). Those are the
+archive-move feature's documented rollback points — deleting one could remove the only way back
+from a move. Whether that set is stale is a separate open question (§ 9).
+
+</details>
+
+### H. Share-wide `*_Conflict` cleanup — one folder done, ~470 artifacts remain
+
+**Deferred to a fresh session by operator request, 2026-07-17.** The tooling is
+written, tested (55 assertions), and proven on live data. What remains is running
+the same procedure at wider scope.
+
+**Read [`docs/synology-fileserver-audit.md`](docs/synology-fileserver-audit.md)
+first — it is the full work order** (scope, measurements, policy, ground rules,
+conflict-name formats, script-transfer procedure). Tooling:
+[`scripts/synology/`](scripts/synology/).
+
+Completed 2026-07-16/17 on `…/Customer Adopted/Dollar General/`:
+
+- Merged `Dollar General Fall Winter 2026.wrong` into the live sibling: 995 files,
+  no data loss. Live folder 3,359 → 4,295 files. `.wrong` renamed `.merged` (~71 GB),
+  retained pending design-team sign-off.
+- Repaired the merge's own two defects: 63 case-collision conflict artifacts and 66
+  mode-000 directories (both defects now have named regression tests).
+- Resolved the 21 pre-existing conflict artifacts in that folder, which **recovered
+  81 files** — including an Oct 2025 product photo shoot that existed only inside the
+  `NCX04*` conflict forks while the live `PPS photos/` folders were empty.
+- Verified after: 0 conflict artifacts, 0 mode-000 dirs, 0 root-owned dirs, 0 lost.
+
+Remaining, in priority order:
+
+1. **~470 conflict artifacts across the rest of `Character Licensed`.** Same tool,
+   much larger blast radius. Needs its own snapshot and its own careful dry-run
+   review. **Never bulk-delete a `_Conflict` folder** — see audit §3.
+2. **4 live case-collision pairs** in `Dollar General Kids Summer 2027` (`_art.ai`
+   vs `_ART.ai` ×3, `_mockup_LED on.png` vs `_LED ON.png`). Conflicts that have not
+   happened yet; a human must choose the surviving name. Listed in audit §2.
+3. **Every other share** — `files`, `styleguides`, `users`, `homes`, `Coldlion`,
+   `Photography`, `freelancers`, `mgmt`, `oldStyleguides` — never measured.
+4. **edgesynology2 — never examined at all.** Also unanswered: does `mac` replicate
+   there, by what mechanism, in which direction? Audit §9.
+5. **Prevention is unsolved.** The scanner detects collisions before Drive forks
+   them, but the structural cause (case-sensitive NAS, case-insensitive clients)
+   still yields 10–15/month. Open questions in audit §2 — do not claim a fix without
+   testing it.
+
+Gate before applying anything: the dry run's `KEPT for review` must be `0`. If it
+is non-zero, those files are cases where a fork copy is newer than the live folder
+and a human must look first.
+
+**Recovery point — note the correction.** `mac/@prechange_20260716_154247` was
+created as this work's recovery point and then deleted on 2026-07-17 by the §3.E
+cleanup, which reasonably read both stray `@prechange_*` subvolumes as clutter.
+Nothing was at risk: the pre-merge state survives in DSM's automatic share
+snapshots, and two were verified on 2026-07-20 to hold it exactly —
+`/volume1/mac/#snapshot/GMT-04-2026.07.16-10.15.01` and `-14.15.01`
+(live folder 3,359 files, `.wrong` 2,592). `mac` carries 44 such snapshots
+(2026-05-29 → 2026-07-20, ~every 4h). **Lesson:** check `#snapshot` before minting
+a manual subvolume, and if you do mint one, record it here immediately — an
+unlabelled `@prechange_*` looks like litter to the next session.
+
+## 4. Everything tried that did not work
+
+| Attempt | Why it seemed reasonable | How it failed / lesson |
+|---|---|---|
+| Apply archive mtimes as the SSH user | The target directories were visible and ordinary `utime` works on owned files | DSM returned `EPERM`; use an approved privileged path, not repeated retries |
+| Restart seaf-cli without raising limits | Restart temporarily restores watches | It only masks exhaustion; the monitor goes blind again |
+| Lower inotify ceilings to reduce memory | A smaller ceiling sounds cheaper | It is only a ceiling, not preallocation; lowering removes needed headroom |
+| Install retention on the remembered Supabase project | The old project had been used as rollback | Work landed on Ohio, not production; always verify project ref first |
+| Run retention batches expecting independent commits | The procedure loops in batches | One function call is one transaction; dead tuples and locks accumulate until return |
+| Fix pg_partman cron immediately | The syntax defect is only `SELECT` versus `CALL` | First success must process a huge backlog on a small instance; observe manually first |
+| Set `ignore_default_data=true` to skip backlog | It sounds like a way to bypass DEFAULT rows | PostgreSQL must validate DEFAULT on attach; this causes partition creation to fail |
+| Assume repository compose changes reach NASes | Watchtower updates the related services | Watchtower updates images only; compose is a manual, NAS-specific copy |
+| Merge folders comparing paths case-sensitively | The filesystem is case-sensitive, so exact comparison looked correct | The *clients* are not; 39 files already present under another case were copied and Drive forked 63 `_Conflict` artifacts. Resolve each path component against what exists |
+| Mirror directory permissions with `chmod --reference` | It is the obvious GNU idiom and returned exit 0 | DSM has no such flag; it read `--reference=/path` as a symbolic mode whose `-` strips bits, making 66 dirs `d---------` **while reporting success**. Read the mode with `stat -c %a` |
+| Decide a merge by mtime alone | "Newest wins" was the agreed policy | 284 byte-identical files (29.6 GB) would have been rewritten for nothing, pushing needless work into Seafile. Compare content before writing |
+| `btrfs subvolume snapshot -r /btrfs/volume1` as a recovery point | It is the volume root, so it should cover everything | Snapshots do not recurse into nested subvolumes; each share is its own. The snapshot was **empty** and protected nothing. Snapshot `/btrfs/volume1/mac` |
+| Strip an "extension" with `${name%.*}` before matching conflict names | Conflict files have extensions | Conflict *directories* do not, and device names contain dots (`…MacBook-Pro.local`); it lopped the name and silently skipped 8 real conflict dirs holding 81 files |
+| Resolve a conflict directory by its top-level files | Flat conflict copies behave that way | Conflict dirs are divergent *subtrees*; the files sat in `PPS photos/`, `_SAMPLE/`. A non-recursive pass found zero and would have stranded all 81 |
+| Trust a script's own summary counts | The counters are simple and the totals looked plausible | Every bug in this effort was found by inspecting the filesystem afterwards, never by reading the summary. Verify the tree |
+| `VAR=x sudo bash script.sh` | Reads naturally as setting a variable for the run | `sudo` resets the environment and drops it silently — you get a dry run believing you applied. Use `sudo VAR=x bash …` or `sudo -E` |
+
+## 5. Root causes and key findings
+
+- Synology/Seafile worktrees contain roughly 541,000 directories; about 82% were
+  `@eaDir`, exhausting the default 8,192 inotify watch ceiling.
+- `edgesynology2` is evidence authority for timestamp repairs, but writes should
+  normally occur only on `edgesynology1` to avoid competing ShareSync metadata events.
+- Retention migration `00042` re-schedules its hourly cron when rerun. After any
+  rerun, explicitly check `cron.job` and unschedule it until commit-per-batch is fixed.
+- Row deletion does not immediately reduce reported database size; vacuum must reuse
+  or return space.
+- Direct Supabase database access is IPv6-only; the pooler rejects this tenant.
+  The `postgres` role has an approximately two-minute statement timeout; use the
+  documented `PGOPTIONS` override through a 1Password-backed command.
+- NAS compose is local state. The repo version is canonical intent, but deployment
+  must merge NAS-specific differences rather than copy blindly.
+- The NAS filesystem is case-sensitive while every client syncing it is not. This is
+  the root cause of ~492 `*_Conflict` + 49 `*_CaseConflict` artifacts in the
+  `Character Licensed` share, accruing ~10–15/month since Aug 2025. Cleanup is now
+  tooled; **prevention is unsolved**.
+- A `*_Conflict` artifact can hold the **only** copy of real content. Resolving 21 of
+  them recovered 81 files, including product photography whose live folders were
+  empty. Merge them; never bulk-delete.
+- On DSM an unsupported flag may not fail — it may do something else and return 0
+  (`chmod --reference`). Prefer explicit values read via `stat` over clever flags.
+- Parked duplicate folders (`.wrong`) can hold the only artwork for SKUs whose live
+  folders are empty skeletons. A folder tree with subfolders but zero files is a
+  signal its content lives elsewhere.
+
+## 6. Exact next steps
+
+1. **Archive mtime repair:** schedule a quiet window; read both timestamp audit docs;
+   verify the nine current mtimes; apply only the listed directory mtimes on
+   `edgesynology1` through an approved root-capable operation; rerun the authority
+   comparison. Success means zero mismatches and no file-content/ownership changes.
+2. **Seafile verification:** on each affected edge1 library root, confirm
+   `seafile-ignore.txt` contains the standard ignore set; restart the seaf-cli stack
+   through DSM Container Manager; monitor logs and watch consumption. Success means
+   no new `No space left on device` and stable synchronization after restart.
+3. **Retention decision:** choose a controlled one-pass drain or corrected scheduled
+   drain using `docs/telemetry-retention.md`; run batches with blocking/latency checks;
+   `ANALYZE` afterward. Success means expired estimates approach zero without agent lag.
+4. **pg_partman:** run `CALL public.run_maintenance_proc()` manually with the documented
+   timeout override and watch locks, disk, and ingestion; only then fix cron. Success
+   means maintenance completes, DEFAULT rows relocate, and subsequent cron succeeds.
+5. **Compose reconciliation:** diff each live compose against the repo; merge only
+   `NAS_API_NAME` and the durable jobs mount plus any other explicitly approved missing
+   settings; run targeted `docker compose up -d nas-api`. Success means `/app/data/jobs`
+   is writable/persistent, health is current, and `/jobs/*` no longer returns 503.
+6. **Credential follow-up:** obtain owner approval, rotate the AI key in 1Password and
+   Coolify, restart the affected service, and verify provider health. Never print the key.
+7. **Scheduled review:** on 2026-08-17 (or four live-retention weeks later), run the
+   `nas_logs` size/severity queries in the retention doc and decide whether row-level
+   low-severity retention is worth its cost.
+8. **Stray prechange snapshots:** gated on operator/designer sign-off, not urgent — see
+   §3.E for why they exist, why they are harmless, and the operator-terminal delete
+   procedure (no MCP tool deletes snapshots; `btrfs subvolume delete` is tier 3 and
+   `run_command` refuses it). Before deleting, confirm with the designers that the archive
+   move looks correct and nothing needs to be recovered from these two. A one-time Claude
+   scheduled task (`ask-designers-remove-prechange-snapshots`, fires 2026-07-24) surfaces
+   this so it is not tracked only in an ephemeral place.
+
+9. **Share-wide `*_Conflict` cleanup (fresh session; see §3.H):** read
+   `docs/synology-fileserver-audit.md` end to end first. Then, on `edgesynology1`:
+   snapshot the **share subvolume** (`/btrfs/volume1/mac`, not the volume root) and
+   verify the snapshot contains files; transfer `resolve-drive-conflicts.sh` via the
+   base64+md5 procedure in audit §11 (never run a script whose checksum does not
+   match); run report-only over one subtree at a time, widening scope gradually:
+
+   ```bash
+   ROOT="/volume1/mac/Decor/Character Licensed" DRY_RUN=1 sudo -E bash ~/resolve-drive-conflicts.sh
+   ```
+
+   **Gate: `KEPT for review` must be `0` before applying.** Non-zero means a fork copy
+   is newer than the live folder and a human must inspect those files. Apply with
+   `DRY_RUN=0`, then verify the *filesystem* (not the summary): artifact count 0,
+   mode-000 count 0, root-owned dirs 0, and per-folder file counts moving by exactly
+   the reported moved/deleted amounts. Success means artifacts resolved with every
+   deletion having a proven surviving counterpart and every unique file relocated into
+   its live folder. Separately, have a human resolve the 4 live case-collision pairs
+   listed in audit §2, then repeat the whole procedure for the other shares and for
+   `edgesynology2` (never examined).
+10. ~~**Shell injection in ~23 read tools (HIGHEST PRIORITY)**~~ — **DONE 2026-08-26.** All three
+   fixes are merged and deployed (PRs #5, #6, #7). See §3.G for the record. No action remains.
+   The one thing not done: a live probe on the NAS confirming a payload in a read-tool filter
+   creates no file. The unit and contract tests cover it, but an end-to-end check was never run.
+
+## 7. Constraints and gotchas
+
+- No large NAS crawl or recursive metadata write while SMB users are active.
+- Use `/opt/bin/ionice -c3 nice -n 19` for metadata-heavy NAS work.
+- Do not repair both NAS sides by default.
+- Do not re-enable retention cron merely because migration `00042` exists.
+- Do not run plain `CREATE INDEX` on large live telemetry tables; use
+  `CONCURRENTLY` outside a transaction.
+- Do not use `version.json` to verify Coolify deploys; use live HTML build SHA.
+- Do not use routine SSH as a deployment system.
+- Do not expose 1Password values in commands, logs, files, or transcripts.
+
+## 8. Access and environment
+
+- GitHub CLI, `supabase`, `op`, and SSH aliases are available on this workstation.
+- SSH: `edgesynology1` (port 22) and `edgesynology2` (port 1904), both over Tailscale.
+- Docker under non-interactive NAS sudo must use
+  `/var/packages/ContainerManager/target/usr/bin/docker`.
+- Secrets live in 1Password vault `vibe_coding`; the database password item is
+  `Supabase DB Password - synology-monitor (aaxtrlfpnoutziwhshlt, Virginia)`.
+- Production web/MCP runtime variables live in Coolify; NAS runtime variables live
+  in each stack's untracked `.env`; CI values live in GitHub Secrets.
+- Branch/environment: `main`, production NASes and production Virginia Supabase.
+
+### F. `repair_path_ownership` (6dcf16c) — shipped and enabled, but an independent review says not done
+
+An independent Codex review (read-only, 2026-07-17) of the shipped implementation found defects
+that a second pair of eyes caught and the original pass did not.
+
+**Two were confirmed by measurement and are now FIXED (`fe0186c`):**
+
+1. ~~**The ACL safety warning can never fire — it fails open.**~~ **FIXED.**
+   `synoacltool -get "$path" 2>&1 | head -8 || echo 'WARNING...'` reported `head`'s exit status
+   (0), so a failed ACL read passed silently and the chown proceeded with unknown ACL state. Now
+   the read is captured with its own exit status (`acl_out=$(...); acl_rc=$?`) and the warning
+   fires on non-zero, before the write. A regression test asserts both directions and was
+   confirmed to fail on the old code.
+2. ~~**The symlink test does not test symlinks.**~~ **FIXED.** The misnamed test was split; a new
+   test executes the generated command against an actual symlink through the temp-dir harness and
+   asserts it aborts before the chown. Confirmed to fail when the runtime `[ ! -L ]` guard is
+   removed.
+
+**Still open (the deeper items — not addressed by `fe0186c`):**
+
+- **Only the final path component is symlink-checked.** `[ ! -L "$path" ]` does not protect a
+  symlinked *parent*; the path is never canonicalised against a share boundary.
+- **Check-to-write race.** Between `[ ! -L ]`, `stat` and `chown`, an SMB client can replace the
+  object; nothing binds device/inode identity across the gap.
+- **Hard links** are not considered — chowning one name changes ownership for every link.
+- **The preview is not informed consent for a non-developer.** It shows a Bash program;
+  `Current ownership` and `=== ACL MODE ===` are echoed from *inside* that script, so they only
+  appear at execution — after approval. The facts that should drive the decision arrive too late
+  to inform it.
+- **MCP approval binding gap.** The confirmation path rebuilds the command on the second call
+  and mints a fresh token without requiring a hash/receipt of the command the human actually
+  saw (`apps/nas-mcp/src/index.ts:173`). The web issue workflow executes a persisted approved
+  command and does not have this gap.
+- **On a Synology-ACL path an ACE can override POSIX ownership**, so `VERIFIED: ownership is
+  153742:100` can be true and still change nothing an SMB user experiences. Recommendation:
+  **fail closed on ACL paths** until `synoacltool -set-owner` semantics are proven, rather than
+  merely reporting the mode.
+
+**Nothing has been run against a real NAS path.** The included test is a synthetic temp-dir
+no-op. The one thing the plan insisted on — a no-op chown proven on a scratch path, on **both**
+NASes (es1 is Linux mode, es2 has a real ACL) — has still not happened. That is exactly how all
+three of these tools stayed broken for months.
+
+Risk is bounded meanwhile: tier 3, one path, non-recursive, human-approved, reversible. Not an
+emergency; not done either.
+
+**Two preconditions confirmed 2026-07-17 (privilege-hardening session), deeper items still open:**
+The `/host/etc/group` mount is now LIVE on both NASes, so name→gid resolution works
+(`SynologyDrive`→153742 verified in-container on both). And the shipped command clears the
+validator (`IsHardBlocked`=false, tier 3) — the `pass??` glob dodges the `\bpasswd\s+\S` block.
+So the tool is now *runnable*; the "no-op chown on a real scratch path on both NASes" proof still
+has not been done (chown is tier 3, so the only chown surface is the tool itself once approved),
+and every deeper item above (symlinked parent, check-to-write race, hard links, ACL-override,
+MCP approval binding) remains untouched.
+
+### G. Shell injection in ~23 read tools — RESOLVED 2026-08-26 ✅
+
+Kept as a short record because this section previously described the highest-priority
+live exposure in this file, and a reader who remembers that needs to know it is closed.
+
+All three fixes are merged to `main`, built, and deployed:
+
+| What | PR | Merged as |
+|---|---|---|
+| `echoMsg()` escaping across the ~23 read tools, PID validation, web CI gate | [#5](https://github.com/u2giants/synology-monitor/pull/5) | `83b40a3` |
+| nas-mcp write-approval preview escaping (was `9346469`) | [#6](https://github.com/u2giants/synology-monitor/pull/6) | `364bd4c` |
+| nas-api declared minimum tiers + exec token v2 (was `cd073d1`) | [#7](https://github.com/u2giants/synology-monitor/pull/7) | `be63347` |
+
+The uncommitted worktree this section pointed at (`recursing-volhard-7bd463`) no longer
+exists; its work was committed, rebased onto current `main`, and merged. The two named
+branches are merged and deleted. Nothing here is actionable.
+
+Notes worth keeping:
+
+- The same flaw was found in `inspect_effective_permissions`, which was added to `main`
+  after the original audit. It is fixed in the same merge.
+- The duplicated literal path in the rename tools is gone: `EffectiveTier` now takes
+  `max(ClassifyTier, declared minimum)` from `nas_tool_minimum_tiers.json`, so tier no
+  longer depends on what the regex can see. Unknown tools fail closed.
+- Old-format approval tokens are rejected on purpose, so a mixed nas-api/nas-mcp
+  deployment fails closed for writes rather than losing enforcement. Deploy both.
+- Deploying this exposed a separate CI defect — the Coolify redeploy step used GET
+  against an endpoint that now requires POST, and passed green while deploying nothing.
+  Fixed in [#8](https://github.com/u2giants/synology-monitor/pull/8); see
+  `docs/deployment.md`.
+## 9. Open questions and risks
+
+- Is `seafile-ignore.txt` installed on every affected library, and does seaf-cli
+  avoid allocating watches for ignored directories? Verify live; do not assume.
+- Which controlled retention-drain strategy does the owner approve?
+- How long will the first successful pg_partman maintenance run, and will the
+  36-GB database disk need preemptive expansion? Observe before cron.
+- Why were the nine archive directory mtimes changed? Repair evidence is strong,
+  but the original actor/event remains unknown.
+- Do both NASes need the archive jobs system enabled immediately, or should compose
+  reconciliation wait for an operator maintenance window?
+- Have the designers confirmed the archive move looks correct, so the two stray
+  `@prechange_20260716_1542*` snapshots on `edgesynology1` can be deleted? (See step 8.)
+- Database deletes are irreversible because the Ohio rollback project is gone.
+
+## Handoff self-audit
+
+Passed 2026-07-17: a new senior engineer can identify the application, reproduce
+the current state, avoid documented dead ends, execute each next step with a
+verification gate, locate required access, and understand every active risk without
+the prior chat transcript.
+
+Re-audited 2026-08-26: §3.G is closed — all three injection/tier fixes are merged and
+deployed, and the worktree and branches it pointed at are gone. The section is kept as a
+short resolved record. The remaining four operational efforts in this file are unchanged
+and still belong to whoever picks them up.
+
+Risks / watchouts:
+- ~~§3.G root-RCE surface~~ — closed 2026-08-26, merged and deployed (see §3.G). The one
+  gap: the end-to-end live probe (payload in a read-tool filter creates no file on the NAS)
+  was never run. Unit and Go contract tests cover the behaviour; a live confirmation does not.
+- Leftover test artifact on `edgesynology1`: `/volume1/mac/mcp-selftest/delete-me.txt.old`
+  (from the 2026-07-20 live proof that the fixed rename tool works end-to-end). Harmless;
+  delete the `mcp-selftest` directory whenever. No MCP tool renames it back — that reverse
+  tool deliberately does not exist (it would be new injection surface; use File Station).
+- `edgesynology1` is fixed and verified on `ff05281`. `edgesynology2` will come up on
+  whatever image it last pulled, so **until Watchtower updates it after someone starts the
+  container**, its `run_command` executes `btrfs`, `smartctl -t`/`-X` and
+  `synoacltool -add/-del/-replace/-set-owner` unattended as tier 1. It is not exploitable
+  while the container is down (nothing is listening), so the exposure window opens the
+  moment it starts and closes ~5 min later — worth watching, not panicking over. `setfacl`
+  is moot in practice: it is not installed on either NAS. The `nas-mcp` fix is
+  already live and covers the **named** write tools on both NASes (it does not depend on
+  nas-api's tier), but it cannot cover free-form `run_command`, which takes no
+  `confirmed` argument and gates only on the classifier.
+- Do not "simplify" the two layers back into one. They are independent on purpose: the
+  MCP gate cannot protect `run_command`, and the classifier cannot be trusted to have no
+  gaps. Background: AGENTS.md §12 and `docs/architecture.md`.
+
+## NAS-API privilege hardening — APPLIED both NASes, 2026-07-17
+
+Full record: **[docs/nas-privilege-hardening.md](docs/nas-privilege-hardening.md)**.
+
+Done and verified live via the MCP on edgesynology1 and edgesynology2:
+- Removed `privileged: true` + `/dev:/dev` (edge1); replaced with `cap_add:
+  [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]` + an explicit read-only `devices:` key on both
+  boxes. `SYS_RAWIO` is required for SCSI `smartctl -a -d scsi` on the DSM 4.4 kernel
+  (proven with a zero-restart disposable-container test; `SYS_ADMIN` alone hits SG_IO
+  EPERM). edge2's SMART was silently broken (devices were under `volumes:`, no cgroup
+  access) and is now fixed. edge1 NVMe SMART reads full health de-privileged
+  (overall-health PASSED).
+- Restart policy: `synology-monitor-agent` + `synology-monitor-nas-api` set to
+  `restart: always` on both boxes — live via `docker update` (no recreate) AND in each
+  NAS compose.yaml (durable). Fixes edge1's `on-failure:10` (gave up after 10 failures,
+  no restart on daemon restart).
+
+**Exact proven target config for the nas-api service (both boxes, live-verified 2026-07-17):**
+`privileged: false`, no `- /dev:/dev`, `cap_add: [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]`,
+`restart: always`, and a read-only `devices:` key (NOT `volumes:`), enumerating only the
+nodes that exist on that box:
+- edge1: `/dev/sda`–`/dev/sdf`, `/dev/md0`–`/dev/md9`, `/dev/nvme0`, `/dev/nvme1`,
+  `/dev/nvme0n1`, `/dev/nvme1n1`  (each `- /dev/X:/dev/X:r`)
+- edge2: `/dev/sda`–`/dev/sde`, `/dev/md0`–`/dev/md3`
+Live compose backups on each NAS: `compose.yaml.bak-deprivilege-*` (edge1),
+`compose.yaml.bak-devrawio-*` + `.bak-restart-*` (both). Rollback = restore backup +
+`docker compose up -d nas-api`.
+
+Open follow-ups:
+- **Repo drift NOT reconciled.** `deploy/synology/docker-compose.agent.yml` still has
+  devices under `volumes:` and lists `/dev/sdf–sdh` (absent on edge2) — would break both
+  boxes if applied. The AGREED reconciliation (debated with Kimi K3) is a generator that
+  emits two byte-exact per-box files (`docker-compose.nas-1.yml` / `.nas-2.yml`) from one
+  base + two device fragments, CI-verified with `git diff --exit-code`, plus a FUNCTIONAL
+  `/drift` endpoint (probe each device openable, caps present, privileged absent). Full
+  spec: [docs/nas-config-drift.md §8](docs/nas-config-drift.md). NOT built yet.
+- ~~**strace / hdparm missing from the image**~~ — **DONE 2026-07-17.** `strace` and
+  `hdparm` added to `apps/nas-api/Dockerfile`; both tools stay enabled. Proven on
+  edgesynology1 with disposable containers using the LIVE cap set (`SYS_ADMIN`,
+  `SYS_PTRACE`, `SYS_RAWIO`): `strace -c` returns a syscall summary and `hdparm -I`
+  returns full ATA identity. The `/dev` mount comment now credits smartctl first.
+  Two carry-overs: (1) `hdparm -t` throughput still returns no number — it needs
+  `IPC_LOCK`, a compose change, so fold it into the drift reconciliation below rather
+  than an image rebuild; (2) reaching the NASes, this only takes effect once CI builds
+  the image and Watchtower pulls it. WATCH OUT: the repo compose understates the live
+  caps (it omits `SYS_RAWIO`); reasoning from it led to a wrong "hdparm can never work"
+  conclusion. Always read caps with
+  `docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`.
+- Per-NAS compose is hand-maintained and drifts; there is no sync mechanism. See
+  [docs/nas-config-drift.md](docs/nas-config-drift.md).

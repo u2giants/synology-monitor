@@ -1,3 +1,10 @@
+---
+summary: Read-only layered-evidence audit of false-fresh file modified times under /volume1/mac on edgesynology2, 2026-06-15.
+kind: proof
+status: done
+read-when: Repairing file timestamps on edgesynology1 before an archive move.
+---
+
 # Layered Timestamp Audit: edgesynology2
 
 Date: 2026-06-15

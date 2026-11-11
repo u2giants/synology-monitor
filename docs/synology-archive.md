@@ -1,3 +1,10 @@
+---
+summary: Design and behaviour specification for archive inventory and archive move: rules, safety guarantees, UI, verification.
+kind: spec
+status: done
+read-when: You need why archive inventory or move behaves as it does.
+---
+
 # Synology Archive Inventory Plan
 
 > **Implementation status (2026-06-07):** **Both phases are implemented.**

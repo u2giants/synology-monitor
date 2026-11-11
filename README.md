@@ -18,7 +18,8 @@ Live at **[mon.designflow.app](https://mon.designflow.app)**.
 | [docs/configuration.md](docs/configuration.md) | All environment variables |
 | [docs/deployment.md](docs/deployment.md) | CI/CD and release workflow |
 | [docs/1password.md](docs/1password.md) | Pull secrets from 1Password via the MCP server or `op` CLI |
-| [HANDOFF.md](HANDOFF.md) | Current unfinished operations work; read only when continuing it |
+| [docs/INDEX.md](docs/INDEX.md) | Generated index of every document with a one-line summary; search it first |
+| [HANDOFF.md](HANDOFF.md) | Static pointer; open unfinished work is one file per session under `HANDOFF.d/` |
 | [PLAN.md](PLAN.md) | Historical issue-agent rebuild plan; current behavior is documented in `docs/architecture.md` |
 
 ## Prerequisites
@@ -50,7 +51,7 @@ pnpm build
 | Add a new agent telemetry collector | `apps/agent/internal/collector/` + wire in `cmd/agent/main.go` |
 | Change how issues are detected or diagnosed | `apps/web/src/lib/server/issue-detector.ts`, `ai/pipeline-v2.ts` |
 | Allow a new NAS shell command | `apps/nas-api/internal/validator/validator.go` + `validator_test.go` |
-| Continue unfinished production work | `HANDOFF.md`, then only the topic docs it names |
+| Continue unfinished production work | Open files in `HANDOFF.d/` (newest first) and `docs/pending-work.md`, then only the topic docs they name |
 
 ## Deployment
 

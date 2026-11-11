@@ -1,3 +1,10 @@
+---
+summary: June 2026 findings on folders that looked missing, permission and ownership corruption on edgesynology1, snapshot evidence.
+kind: proof
+status: done
+read-when: Users report missing folders or wrong permissions on a share.
+---
+
 # Synology Incident Notes — June 2026
 
 This document consolidates the Synology file-visibility, sync, and snapshot findings established during live MCP investigation in late April through early June 2026.

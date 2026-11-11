@@ -1,3 +1,10 @@
+---
+summary: Superseded plan for the phantom MCP degrades-after-10-calls problem; merged into the MCP v2 plan as Phase 0.
+kind: plan
+status: done
+read-when: Only for the investigation history behind the MCP degradation myth.
+---
+
 # SUPERSEDED: implementation plan for the phantom "MCP degrades after ~10–15 tool calls"
 
 > **Do not implement from this file.** On 2026-08-05 this work was merged into

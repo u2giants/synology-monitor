@@ -1,3 +1,10 @@
+---
+summary: Evidence that fresh MCP clients handle a NAS command refusal correctly (REFUSAL-009 and 010): final result PASS.
+kind: proof
+status: done
+read-when: Checking whether a blocked NAS command is a refusal or a degraded session.
+---
+
 # NAS MCP refusal behavior evaluation, 2026-08-05
 
 Final status on 2026-08-06: **PASS**. The initial failure and its evidence remain

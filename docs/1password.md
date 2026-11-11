@@ -1,3 +1,10 @@
+---
+summary: How to read secrets from the 1Password vibe_coding vault with the MCP server or the op CLI, using op:// references.
+kind: ops
+status: current
+read-when: You need a secret value, or are wiring a script or CI job to read one.
+---
+
 # Using 1Password in this repo
 
 Two ways to pull secrets from 1Password instead of hardcoding them:

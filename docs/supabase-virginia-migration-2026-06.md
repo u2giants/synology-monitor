@@ -1,3 +1,10 @@
+---
+summary: Record of moving the Supabase backend from the deleted Ohio project to Virginia aaxtrlfpnoutziwhshlt; no rollback exists.
+kind: proof
+status: done
+read-when: Confirming which Supabase project is live or tracing a stale project reference.
+---
+
 # Supabase backend migration: Ohio → Virginia (2026-06-21)
 
 ## Summary

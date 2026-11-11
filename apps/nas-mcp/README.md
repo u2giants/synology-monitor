@@ -1,3 +1,10 @@
+---
+summary: NAS MCP server: connection, auth, the seven-tool lazy surface over the shared tool registry, enabling tools, deploy path.
+kind: living
+status: current
+read-when: Adding, enabling or debugging a NAS MCP tool, or connecting a client to the server.
+---
+
 # NAS MCP Server
 
 FastMCP server that exposes Synology NAS diagnostic + remediation tools to AI chat clients (claude.ai, Claude Desktop, Codex) via the Model Context Protocol over Streamable HTTP at `/mcp`.

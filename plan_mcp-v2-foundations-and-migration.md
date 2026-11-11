@@ -1,3 +1,10 @@
+---
+summary: Cross-repository plan for MCP reliability foundations and the official SDK v2 migration; STATUS table is the source of truth.
+kind: plan
+status: open
+read-when: Continuing MCP v2 foundations or protocol migration work.
+---
+
 # MCP Reliability Foundations, Degradation-Myth Fix, and `2026-07-28` Official SDK v2 Migration Plan
 
 Updated: 2026-08-05 (America/New_York)

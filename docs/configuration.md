@@ -1,3 +1,10 @@
+---
+summary: Every environment variable and runtime setting by service: agent, NAS API, NAS MCP, web, relay, and AI model settings.
+kind: living
+status: current
+read-when: Adding or changing an env var, secret, feature flag or AI model setting.
+---
+
 # Configuration
 
 ## Overview

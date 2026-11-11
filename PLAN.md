@@ -1,3 +1,10 @@
+---
+summary: Historical design for the completed 3-stage issue-agent rebuild; code comments cite its section numbers. Not current guidance.
+kind: plan
+status: done
+read-when: A code comment cites a PLAN.md section and you need the original design reasoning.
+---
+
 # PLAN — Issue-Agent AI Rebuild (3-stage, cached, live-tool)
 
 Status: **BUILT, deployed, and live as the only issue-agent pipeline** (2026-05-30).

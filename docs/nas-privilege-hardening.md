@@ -1,3 +1,10 @@
+---
+summary: Plan and record for running nas-api non-privileged while keeping SMART and NVMe health working on both NASes.
+kind: living
+status: current
+read-when: Changing container privileges, capabilities, device mounts or disk-health checks.
+---
+
 # NAS nas-api privilege & device hardening — plan
 
 **Status:** DRAFT — proceed only after the open questions below are closed. Nothing here has been

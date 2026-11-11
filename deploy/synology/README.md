@@ -1,3 +1,10 @@
+---
+summary: NAS-side deployment contract: compose stack path, env files, private DSM certificate renewal, monitor-stack controls.
+kind: ops
+status: current
+read-when: Changing NAS compose, mounts, env keys or DSM certificate renewal.
+---
+
 # Synology Agent Deployment
 
 Last verified: 2026-04-09 UTC

@@ -1,3 +1,10 @@
+---
+summary: NAS relay: public HTTPS proxy that turns named actions from the frontend into guarded calls to the private NAS APIs.
+kind: living
+status: current
+read-when: Changing relay actions, auth or how external clients reach the NAS APIs.
+---
+
 # NAS Relay
 
 This app is the public HTTPS relay that sits between a Lovable-hosted frontend and the private NAS APIs.

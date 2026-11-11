@@ -1,3 +1,10 @@
+---
+summary: Why each NAS runs a compose file that differs from the repo, what has drifted, and the unbuilt plan to make drift visible.
+kind: living
+status: open
+read-when: Editing NAS compose files or reconciling repo and live NAS configuration.
+---
+
 # NAS compose drift — investigation and plan
 
 Last verified: 2026-07-16 UTC (live on `edgesynology1` / `192.168.3.100` via the NAS MCP).

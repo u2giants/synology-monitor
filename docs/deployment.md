@@ -1,3 +1,10 @@
+---
+summary: Real deploy path: GitHub Actions to GHCR, Coolify for web and MCP, Watchtower on the NASes, live-version proof, rollback.
+kind: ops
+status: current
+read-when: Shipping, rolling back, or checking what is live; changing workflows or compose.
+---
+
 # Deployment
 
 ## Architecture overview

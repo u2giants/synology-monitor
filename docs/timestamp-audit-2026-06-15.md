@@ -1,3 +1,10 @@
+---
+summary: Read-only audit on edgesynology2 of bumped file and directory modified times, as evidence for repairing edgesynology1.
+kind: proof
+status: done
+read-when: Repairing directory or file modified times on edgesynology1.
+---
+
 # Timestamp Audit: edgesynology2 Evidence for Later edgesynology1 Repair
 
 Date: 2026-06-15

@@ -1,3 +1,10 @@
+---
+summary: Runbook and filing rule for proposing moves of item folders into the Concept Approved Designs tree, all departments.
+kind: ops
+status: current
+read-when: Albert asks to re-file item folders into Concept Approved Designs.
+---
+
 # Concept Approved Designs re-filing runbook
 
 Rare, owner-requested job: find item-number folders scattered around
@@ -166,7 +173,7 @@ can set. Never use copy-then-delete, Synology File Station "copy", or a
 cross-share move — those rewrite birth times.
 
 **How.** Run on the NAS as root through Python (`ahazan`/`ai` has passwordless
-sudo only for `/usr/bin/python3`; see AGENTS "Direct NAS maintenance safety"):
+sudo only for `/usr/bin/python3`; see `docs/nas-maintenance-safety.md`):
 
 1. Confirm a recent `mac` snapshot holds real data (`scripts/synology/README.md`,
    "Before running anything that writes") and record it in the handoff.

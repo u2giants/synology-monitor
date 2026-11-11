@@ -1,3 +1,10 @@
+---
+summary: May 2026 NAS MCP and NAS API failures: the 4-minute tool-call hang, its stateless-GET fix, and related regressions.
+kind: proof
+status: done
+read-when: MCP sessions hang or fail and you need the earlier root causes.
+---
+
 # MCP Incident Notes — May 2026
 
 This document is a dedicated handoff for the `nas-mcp` / `nas-api` failures and regressions that occurred in May 2026. It is intended for a fresh session with no prior context.

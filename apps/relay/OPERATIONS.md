@@ -1,3 +1,10 @@
+---
+summary: Relay operations: deployed status, required environment variables, the manual deploy path and recovery steps.
+kind: ops
+status: current
+read-when: Deploying, restarting or recovering the relay service.
+---
+
 # Relay Operations
 
 ## Status

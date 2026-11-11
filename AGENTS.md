@@ -1,8 +1,8 @@
 # Synology Monitor — Agent and Developer Operating Guide
 
-This is the canonical operating guide and documentation router for
-`u2giants/synology-monitor`. Read it before changing the repository. Load deeper
-documentation only for the task at hand.
+The complete document index is [`docs/INDEX.md`](docs/INDEX.md), generated from document headers. Search it for your topic's keywords (or read it) before opening or searching any other document. Open a document only when its summary matches your task.
+
+This file is the canonical operating guide and a router for `u2giants/synology-monitor`: it routes, it does not contain. Quirks, incidents, pending work, NAS maintenance safety and credential detail live under `docs/` (pointers below). Every new Markdown file opens with the four-key header (`summary`, `kind`, `status`, `read-when`); then run `ai-doc-health --repo . --fix-index` and never hand-edit the index.
 
 ## Project summary
 
@@ -44,21 +44,24 @@ Then load additional docs only when relevant:
 | Change local setup, scripts, tests, lint, or package tooling | `docs/development.md`, relevant package files | Production deployment docs |
 | Change deployment, Docker, CI/CD, hosting, rollback, or runtime environment | `docs/deployment.md`, `docs/configuration.md`, relevant workflow/compose files | Local debugging sections |
 | Change database schema, migrations, models, auth/RLS, or data flow | `docs/architecture.md`, `docs/configuration.md`, relevant migration, `docs/telemetry-retention.md` when applicable | Unrelated NAS docs |
-| Continue unfinished work | `HANDOFF.md` plus only the docs it names | Completed historical plans |
-| Investigate an incident | Relevant file under `docs/*incident*`, `HANDOFF.md` if active, topic doc | Other incident files |
+| Continue unfinished work | `HANDOFF.md` (static pointer) → open files in `HANDOFF.d/` newest first, `docs/pending-work.md`, plus only the docs they name | Completed historical plans |
+| Investigate an incident | `docs/incident-log.md`, then the relevant dated incident file, open `HANDOFF.d/` files if active, topic doc | Other incident files |
 | Continue the MCP v2 foundations or protocol migration | `plan_mcp-v2-foundations-and-migration.md`, then `apps/nas-mcp/README.md`, `docs/architecture.md`, `docs/development.md`, `docs/deployment.md`, and `docs/mcp-incident-2026-05.md` | Unrelated NAS incident and archive docs |
 | Archive inventory or move | `docs/synology-archive.md`, `docs/synology-archive-implementation.md`, `docs/archive-move-runbook.md` | AI pipeline details |
-| Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, AGENTS "Moving or merging files inside a share" | Web/AI docs |
+| Merge/move files in a share, or clean up `*_Conflict` artifacts | `scripts/synology/README.md`, `docs/synology-fileserver-audit.md`, `docs/nas-maintenance-safety.md` | Web/AI docs |
 | Re-file item folders into Concept Approved Designs (size/licensor/status rule) | `docs/concept-approved-refile-runbook.md` | Web/AI docs |
 | Seafile/inotify work | `docs/seafile-sync-inotify.md` | Archive and web docs |
 | Telemetry retention or pg_partman | `docs/telemetry-retention.md`, `docs/supabase-virginia-migration-2026-06.md` | NAS filesystem docs |
 | Relay behavior or recovery | `apps/relay/README.md`, `apps/relay/OPERATIONS.md`, `docs/architecture.md` relay section | Unrelated NAS MCP internals |
+| Direct NAS SSH maintenance | `docs/nas-maintenance-safety.md`, `docs/deployment.md` | Web/AI docs |
+| Something looks wrong or odd on purpose | `docs/idiosyncrasies.md` | Incident histories |
 | Work in a folder with its own README | That README and only the broader docs it links | Other folder READMEs |
 | Claude Code session | `CLAUDE.md`, then this file | All docs by default |
 | Documentation-only cleanup | This file, `README.md`, affected topic docs | Source except what verifies facts |
 
 `PLAN.md` is historical context for the completed issue-agent rebuild. It is not
-current implementation guidance.
+current implementation guidance. It stays at the repository root because code
+comments and applied migrations cite it by that name.
 
 ## Repository structure
 
@@ -121,13 +124,13 @@ listed above.
 | Change AI stages | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts`, guard tests | Historical `PLAN.md` as implementation source |
 | Tune model capabilities | `packages/shared/src/ai-capabilities.ts` | Hard-coded dropdown lists; provider models are fetched live |
 | Add a config value | Relevant `.env.example`, code reader, `docs/configuration.md`; deployment doc if runtime changes | Production secrets in repository files |
-| Add a migration | New `supabase/migrations/000NN_*.sql`; next number after `00043` | Any existing migration that may have run |
+| Add a migration | New `supabase/migrations/000NN_*.sql`; next number after `00045` | Any existing migration that may have run |
 | Change archive jobs | `apps/nas-api/internal/jobs/`, NAS routes, shared archive contract, MCP/web clients | Generic shell `/exec` path for native jobs |
 | Change CI/deploy | Matching `.github/workflows/*.yml`, Dockerfile/compose, `docs/deployment.md` | Direct production host edits |
 
 Any shared Supabase schema, RLS, RPC, trigger, or cross-app data-contract change
 must also be authored/mirrored in `u2giants/shared-db` under its branch-and-PR
-workflow. This documentation-only overhaul makes no database change.
+workflow.
 
 ## Data model and external identifiers
 
@@ -179,329 +182,33 @@ Do not load or index these unless the task explicitly needs them:
 
 ## Intentional quirks and non-obvious decisions
 
-### Seven MCP tools expose a 132-definition registry
-
-Looks like:
-Most NAS tools are missing because MCP `tools/list` shows only seven.
-
-Actually:
-`tool_search`, `get_capability_details`, and `invoke_tool` lazy-load enabled
-definitions from `packages/shared/src/nas-tools.ts`.
-
-Why:
-Eagerly loading every schema consumed roughly 50k tokens per client session.
-
-Do not change because:
-Registering every definition eagerly recreates the context and reliability problem.
-
-### A NAS command refusal is not MCP session degradation
-
-Looks like:
-A command works early in a session but a later blocked command means NAS MCP has
-degraded or reached a 10-to-15-call limit.
-
-Actually:
-The two historical 10-to-15-call failures were fixed by the seven-tool lazy
-surface and `Connection: close`. The NAS validator is stateless. A command it
-blocks is permanently refused because of that command pattern, regardless of
-call count or session.
-
-Why:
-The safety validator deliberately blocks dangerous or overly broad commands and
-returns an actionable explanation. Retrying the same text or starting a new
-session cannot change its classification.
-
-Do not change because:
-Do not weaken the validator, raise timeouts, or retry the same command. Preserve
-the NAS API summary and choose the bounded alternative it recommends. For active
-MCP foundation work, start at the STATUS table in
-`plan_mcp-v2-foundations-and-migration.md`.
-
-### Write approval and NAS API classification are separate gates
-
-Looks like:
-`write: true` completely enforces write safety.
-
-Actually:
-NAS MCP uses it to require preview/confirmation. NAS API independently classifies
-the generated shell string into tiers; `run_command` depends on that classifier.
-
-Why:
-The two entry paths have different trust boundaries. A 2026-07-16 audit found
-mutating commands that classified as read-only.
-
-Do not change because:
-Removing either layer reopens unattended write paths. Every new write command needs
-builder tests plus real validator tests.
-
-### Tier comes from the declared minimum, not from what the regex can see
-
-Resolved 2026-08-26 (PR #7). This entry used to say the opposite — that `mv`/`chown`
-lines must repeat a literal `/btrfs/volumeN/...` path so `ClassifyTier` would rate them
-tier 3, and must not be "cleaned up" into a shell variable. That constraint is gone.
-
-Now:
-`EffectiveTier(command, toolName)` returns `max(ClassifyTier, declared minimum)`, with
-the minimum owned by `apps/nas-api/internal/validator/nas_tool_minimum_tiers.json`
-(embedded at build time, generated from the shared registry by
-`packages/shared/src/nas-tool-tiers.golden.test.ts`). Both `/preview` and `/exec` use it,
-so the rename tools request tier 3 regardless of what the line looks like, and the
-tier-2 user-data rejection in `validator.go` cannot fire for them.
-
-Still true:
-- An **unknown** tool name fails closed — a new write tool that forgets to declare a
-  minimum errors instead of auto-executing at tier 1.
-- Free-form `run_command` passes an empty tool name and keeps pure lexical
-  classification, deliberately.
-- The tier is signed into the v2 exec token along with the tool name, so a caller
-  cannot weaken enforcement by editing or omitting either. Old-format tokens are
-  rejected, so a mixed nas-api/nas-mcp deployment fails closed for writes — deploy
-  both together.
-
-### Per-share mounts are read-only; writes use `/btrfs/volumeN`
-
-Looks like:
-A tool receiving `/volume1/share/file` should write that exact path.
-
-Actually:
-Per-share NAS API binds are read-only. Guarded writers validate the logical path
-and map it to `/btrfs/volume1/share/file`.
-
-Why:
-The full Btrfs bind is the explicit writable route for approved operations.
-
-Do not change because:
-Writing `/volumeN` fails; widening every share mount to read-write broadens risk.
-
-### There is no ACL-write tool
-
-Looks like:
-The removed `repair_path_acl` should be restored with `setfacl`.
-
-Actually:
-DSM uses `synoacltool`; `setfacl` is absent and does not model Synology ACLs.
-`repair_path_ownership` changes one exact path, resolves NAS principals numerically,
-refuses recursion/symlinks, reports ACL mode, and verifies the result.
-
-Why:
-The two NASes can expose different ACL modes for equivalent paths.
-
-Do not change because:
-An ACL writer is a new, separately designed capability—not a command substitution.
-
-### Domain users must be resolved through DSM, not container-local `id`
-
-Looks like:
-`id 'DOMAIN\user'` inside nas-api should prove whether a DSM domain account exists.
-
-Actually:
-The nas-api container has its own NSS database. It cannot see DSM's live domain
-users, so the old `inspect_effective_permissions` implementation falsely reported
-active accounts such as `IML\mzabo` as missing on both NASes.
-
-Why:
-DSM's SMBService/winbind daemon is the authoritative identity source. The nas-api
-entrypoint exposes its host socket through the existing read-only `/host/proc`
-bind. The tool uses `wbinfo` for the UID and complete group list, then `setpriv`
-plus `synoacltool -check` to measure actual path permissions under those numeric
-credentials. Local DSM accounts retain a read-only `/host/etc/pass??` and
-`/host/etc/group` fallback.
-
-Do not change because:
-Returning to container-local `id`, `getent`, or name-based `synoacltool -get-perm`
-recreates the false “user not found” result. If winbind is unavailable, report an
-identity-service failure loudly; never infer that the DSM account does not exist.
-Regression coverage is in
-`packages/shared/src/inspect-effective-permissions.test.ts`.
-
-### Block devices need `devices:`, not `volumes:` — and SMART needs `SYS_RAWIO`
-
-Looks like:
-`- /dev/sda:/dev/sda:ro` under `volumes:` gives the container access to the disk,
-and `privileged: true` (edge1 until 2026-07-17) is a gratuitous over-grant to remove.
-
-Actually:
-A device under `volumes:` mounts the node WITHOUT a device-cgroup allow rule, so
-`smartctl`/`hdparm` get EPERM and SMART monitoring silently fails — the repo file and
-edge2 both shipped this bug, and edge2's SMART was dead without anyone noticing. Block
-devices must be under a `devices:` key (which grants node + cgroup). And on the DSM 4.4
-kernel `smartctl -a -d scsi` needs `CAP_SYS_ADMIN` **plus** `CAP_SYS_RAWIO` (LOG SENSE
-hits SG_IO EPERM without RAWIO — proven with a zero-restart disposable-container test);
-`SYS_ADMIN` alone is not enough for SCSI SMART but IS what the NVMe admin ioctl needs.
-NVMe nodes are **character-major 250** — a block-major cgroup rule would miss them, so
-they must be listed explicitly (`/dev/nvme0`, `/dev/nvme1`, + namespaces on edge1).
-
-Why:
-Both NASes now run `privileged: false` with `cap_add: [SYS_ADMIN, SYS_PTRACE, SYS_RAWIO]`
-and an explicit read-only `devices:` list (verified live 2026-07-17). `privileged: true`
-had been masking the whole thing on edge1. Full record: `docs/nas-privilege-hardening.md`.
-
-Do not change because:
-Reverting to `volumes:`-mounted devices silently kills SMART; dropping `SYS_RAWIO`
-silently kills SCSI SMART; a correct `devices:` list also couples a dead/pulled disk to
-container start-up (loud by design — remove the line for a removed bay). Prove any change
-against `check_smart_detail` on a real `/dev/sdX` and `/dev/nvme0`, not a container that
-merely starts.
-
-### Validator hard-blocks match a tool's own error prose
-
-Looks like:
-Quoting a path in a built command is enough to keep it clear of the validator.
-
-Actually:
-Two permanent, every-tier blocks in `validator.go` match the raw command STRING with no
-quote-stripping, so a write tool's own echoed error/remediation text can get that tool's
-command rejected: `\bpasswd\s+\S` (meant for `passwd <user>`) matches any mention of the
-account FILE followed by whitespace — and since `buildCommand` joins lines with `\n`, a
-bare trailing `... /host/etc/passwd` matches via the next line; and
-`strings.Contains(cmd, "docker compose")` blocks any command whose text names the compose
-command, including inside an echoed hint. `repair_path_ownership` dodges the first by
-globbing (`/host/etc/pass??`); remediation prose must say "recreate via DSM Container
-Manager", never name the compose command.
-
-Why:
-Both fired while building the ownership tools. Pinned by
-`TestPasswdBlockDoesNotCatchAccountFileReads` and `TestRemediationProseIsNotSelfBlocking`.
-
-Do not change because:
-A tool that type-checks can still be dead-on-arrival at the NAS. Run any new built
-command through `IsHardBlocked`/`ClassifyTier` before trusting it.
-
-### `strace`/`hdparm` needed the binary, not the cap — and `-t` still needs `IPC_LOCK`
-
-Looks like:
-`hdparm_device_info` and `strace_process` are enabled, so they work; or (the previous
-note here) both are equally fixed by adding the apt package.
-
-Actually:
-Both were enabled but dead because `strace` and `hdparm` were absent from
-`apps/nas-api/Dockerfile` — the same class as the removed `setfacl` tool. Both binaries
-are now installed and BOTH TOOLS ARE ENABLED. Proven on edgesynology1 2026-07-17 with
-disposable containers using the LIVE cap set (`SYS_ADMIN`, `SYS_PTRACE`, `SYS_RAWIO`,
-`privileged: false`): `strace -c` returns a real syscall-count summary, and `hdparm -I`
-returns full ATA identity (model/serial/firmware/transport). One partial limitation:
-`hdparm -t` (buffered-read throughput) prints `mlock() failed on timing buf` and NO
-number, because it needs `IPC_LOCK`, which is not granted. `hdparm -I` is unaffected.
-
-Why:
-`SYS_RAWIO` is what makes `hdparm -I` work, and it is ALREADY granted live (added by the
-privilege hardening). Do not reason about caps from
-`deploy/synology/docker-compose.agent.yml` — that file is DRIFTED and still lists only
-`SYS_ADMIN`/`SYS_PTRACE`, so it understates the live grant and led one session to wrongly
-conclude hdparm was unfixable and disable it. Read the live set with
-`docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`.
-
-Do not change because:
-Dropping either binary re-breaks a tool that is advertised as enabled. The `/dev` device
-mounts are for `smartctl` (smartmontools) FIRST — it is the consumer that would silently
-lose SMART if they regress — and hdparm second. To make `hdparm -t` produce a number, add
-`IPC_LOCK` to `cap_add`; that is a compose change (Watchtower ships images, not caps) and
-belongs to the drift-reconciliation task in `docs/nas-config-drift.md`, not to an image
-rebuild. Apply the four-point check before trusting any tool: binary in the Dockerfile?
-path/device on an accessible mount? caps and identifiers resolve in the container? proven
-by one real run? `write: true` and "enabled" check none of these.
-
-### Watchtower cannot apply compose changes
-
-Looks like:
-Pushing a compose edit updates the NAS automatically.
-
-Actually:
-Watchtower replaces images only. The live NAS file is
-`/volume1/docker/synology-monitor-agent/compose.yaml` and is a manual copy of
-`deploy/synology/docker-compose.agent.yml`.
-
-Why:
-No workflow distributes NAS compose files.
-
-Do not change because:
-New mounts, capabilities, and env keys require a deliberate one-time compose
-recreation on each NAS. Preserve each NAS's `.env` and local compose differences.
-There is no sync mechanism and the two NAS files have genuinely diverged (line
-endings, restart policy, device lists); reconciliation is designed in
-`docs/nas-config-drift.md` (a generator emitting two byte-exact per-box files) but
-not yet built. Do NOT copy `deploy/synology/docker-compose.agent.yml` onto a NAS as-is
-— it still lists `/dev/sdf–sdh` absent on edge2 and would fail `compose up`.
-
-### The two monitor services now use `restart: always`
-
-Looks like:
-`unless-stopped` (the repo default) is the policy for every service.
-
-Actually:
-As of 2026-07-17 `synology-monitor-agent` and `synology-monitor-nas-api` are
-`restart: always` on BOTH NASes — set live via `docker update` (no recreate) and
-persisted in each NAS compose. `always` returns the monitoring control-plane after a
-NAS/Docker restart even if it was previously recorded as stopped; `unless-stopped`
-preserves a stopped state across a daemon restart, and edge1's prior `on-failure:10`
-gave up after 10 failures and did not cover daemon restarts. (seaf-cli/watchtower keep
-their existing policies.)
-
-Why:
-A control-plane that stays down after a reboot is worse than one that resurrects. Note
-a related reachability trap: `192.168.3.101` (edge2's LAN IP) is NOT reachable from the
-`hetz` VPS — a refused connection there is not evidence a NAS is down. Reach the NASes
-by Tailscale (`100.107.131.35` / `100.107.131.36`) or the MCP.
-
-Do not change because:
-Reverting the two monitors to a policy that can stay stopped reintroduces the
-silent-outage risk. A deliberate `docker stop` will not survive a daemon restart under
-`always` — that trade-off is accepted for the monitors.
-
-### Agent WAL sender isolates bad rows
-
-Looks like:
-One Supabase insert failure should fail the whole batch.
-
-Actually:
-The sender bisects a rejected batch and quarantines the bad row so good telemetry
-continues draining.
-
-Why:
-A single schema/type mismatch previously froze ingestion silently.
-
-Do not change because:
-Whole-batch retry recreates an unbounded backlog.
-
-More component-level constraints are in `docs/architecture.md`; operational traps
-are in the relevant incident or subsystem document.
+Full text: [`docs/idiosyncrasies.md`](docs/idiosyncrasies.md). Read it before "fixing" any of these:
+
+- Seven MCP tools expose a 132-definition registry (lazy loading is deliberate).
+- A NAS command refusal is permanent for that command; it is not session degradation.
+- `write: true` and the NAS API tier classifier are two separate gates.
+- Tier is `max(classifier, declared minimum)`; unknown tool names fail closed.
+- Per-share mounts are read-only; writes go through `/btrfs/volumeN`.
+- There is no ACL-write tool; DSM uses `synoacltool`, not `setfacl`.
+- Domain users resolve through DSM winbind, never container-local `id`.
+- Block devices go under `devices:`; SCSI SMART needs `SYS_RAWIO`.
+- Validator hard-blocks match a tool's own error prose (`passwd`, the compose command).
+- `strace`/`hdparm` need their binaries; `hdparm -t` still needs `IPC_LOCK`.
+- Watchtower ships images only; compose changes are manual and the two NAS files differ.
+- The two monitor services use `restart: always`.
+- The agent WAL sender bisects and quarantines bad rows.
 
 ## Credentials and environment
 
 Never commit secret values. Production runtime values live in Coolify or each NAS's
 untracked `.env`; CI values live in GitHub Secrets; human-accessible secrets live in
-1Password vault `vibe_coding`.
+1Password vault `vibe_coding`. NAS `.env` plaintext is an accepted owner decision
+(2026-10-01): do not flag it and do not rotate NAS passwords over it.
 
-**NAS `.env` plaintext is accepted — do not "fix" it.** Each NAS agent's
-`/volume1/docker/synology-monitor-agent/.env` (and its `.env.bak.*` copies) holds
-`DSM_PASSWORD` and other secrets as plain text. This is an accepted owner decision
-(Albert, 2026-10-01): the files are `root:root` mode `600`, so only the NAS
-administrator can read them. Do not flag this as a finding, and do not rotate or
-change NAS account passwords on that basis. History: on 2026-10-01 a session treated
-it as a problem, the `ai` and `popdam` DSM passwords were changed, the agents on both
-NAS units crash-looped (DSM login error 400/407), and DSM auto-blocked `::1`. Any
-future change of the `popdam` DSM password must update `DSM_PASSWORD` in both `.env`
-files, then `docker compose up -d --force-recreate` (a plain `docker restart` keeps the old
-environment), and clear `::1` from DSM's auto-block list if it was added.
-
-| Variable/group | Purpose | Stored where | Required in dev | Required in prod |
-|---|---|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Browser Supabase access | Local web env / Coolify; also GitHub build secrets | yes for web | yes |
-| `SUPABASE_SERVICE_ROLE_KEY` | Privileged web/server DB access | Local web env / Coolify | yes for full web | yes |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Agent/scripts DB writes | NAS `.env` / 1Password-backed command env | for agent/scripts | yes on NAS |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, optional provider keys/base URLs | AI providers | Local web env / Coolify | at least one for AI | as configured |
-| `NAS_EDGE{1,2}_API_URL`, `_SECRET`, `_SIGNING_KEY` | Web/MCP/relay access and tier-3 approval | Local env / Coolify | yes for live NAS calls | yes |
-| `NAS_API_SECRET`, `NAS_API_APPROVAL_SIGNING_KEY`, `NAS_API_NAME`, `NAS_API_PORT` | Per-NAS API auth and identity | NAS `.env` | no | yes |
-| `NAS_ID`, `NAS_NAME`, `DSM_*`, `AGENT_IMAGE_TAG`, `TZ` | Agent identity, DSM access, image/runtime | NAS `.env` | agent only | yes |
-| `MCP_BEARER_TOKEN`, `MCP_PORT` | Public NAS MCP auth/listen port | Coolify and client secret config | MCP only | yes |
-| `ISSUE_WORKER_*`, `RUN_ISSUE_WORKER` | Background issue processing | Local web env / Coolify | optional | deployment-specific |
-| `COPILOT_ACTION_SIGNING_KEY`, `COPILOT_ADMIN_EMAILS` | Dashboard copilot action authorization | Local web env / Coolify | optional | when feature enabled |
-| `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Browser push subscription | Local web env / Coolify/build | optional | when push enabled |
-| `RELAY_*`, relay `NAS_EDGE*` values | Relay auth, origins, upstreams | Relay runtime env | relay only | relay only |
-| `COOLIFY_TOKEN`, `COOLIFY_WEBHOOK_UUID`, GitHub `GITHUB_TOKEN` | CI publish/redeploy | GitHub Secrets | no | CI only |
-
-The exhaustive variable-by-service reference is `docs/configuration.md`. Secret
-retrieval procedures are in `docs/1password.md`.
+The variable summary table and the full plaintext ruling are in
+[`docs/agents-reference.md`](docs/agents-reference.md); the exhaustive
+variable-by-service reference is `docs/configuration.md`; secret retrieval is in
+`docs/1password.md`.
 
 ## Deployment
 
@@ -526,233 +233,37 @@ rollback, health checks, and compose exceptions are in `docs/deployment.md`.
 
 ## Direct NAS maintenance safety
 
-- Use SSH aliases `edgesynology1` and `edgesynology2` (user `ahazan`; edge2 SSH is on
-  port **1904**, in `~/.ssh/config`); do not hand-build addresses.
-- **As of 2026-11-08, sudo on edge2 (and edge1) asks for a password** — the SSH alias logs in as `ai`; feed the `edgesynologyN NAS - ai service account` 1Password login to `sudo -S` via 1Password `op_run`, never on the command line. Historical note: `ahazan` had passwordless sudo for `/usr/bin/python3` ONLY (`(ALL) NOPASSWD:
-  /usr/bin/python3` on both NASes — effectively passwordless root). Plain `sudo docker`,
-  `sudo sed`, `sudo cp` HANG on a password prompt with no answer available. Do every
-  privileged action as `sudo -n /usr/bin/python3 -c '...'` — edit files with Python I/O,
-  run docker via `subprocess`. `docker` is at `/usr/local/bin/docker` (also
-  `/var/packages/ContainerManager/target/usr/bin/docker`), not on `ahazan`'s PATH.
-- Change compose/containers backup-first and one service at a time
-  (`docker compose up -d nas-api`, never a bare `up -d` which recreates everything).
-  Restart policy can be changed live with `docker update --restart=...` (no recreate).
-- `scp`/sftp is disabled on the NASes; move file contents with `base64` over `ssh`.
-- Note edge1's compose is LF and edge2's is CRLF — a `sed` tuned for one silently
-  matches nothing on the other. Re-measure before editing either.
-- For metadata-heavy reads use `/opt/bin/ionice -c3 nice -n 19 <command>`.
-- Avoid large crawls, recursive ownership changes, archive moves, or timestamp work
-  while SMB users are active.
-- For cross-NAS timestamp repair, use `edgesynology2` as evidence and write only
-  `edgesynology1` unless the operator explicitly authorizes both.
-- Timeout means the route/host may be unreachable; connection refused means the
-  host answered but no service listens. Check DSM and `docker ps -a` before calling
-  a NAS down.
-
-### Moving or merging files inside a share — four traps that have already caused damage
-
-Tooling: [`scripts/synology/`](scripts/synology/) (merge, conflict resolver, collision
-scanner, 55 tests that run without a NAS). Read its README before reusing any of it.
-Work order for the unfinished share-wide pass: [`docs/synology-fileserver-audit.md`](docs/synology-fileserver-audit.md).
-
-1. **The filesystem is case-sensitive; every client syncing it is not.** Btrfs holds
-   `PPS photos` and `PPS Photos` in one folder; macOS/Windows cannot. Synology Drive
-   resolves it by renaming one side to `*_Conflict` and pushing that to everyone.
-   Never build a destination path from a string — resolve each component against
-   what already exists (`nas_resolve_path`). A merge that compared paths
-   case-sensitively created 63 conflict artifacts in a single run.
-2. **`chmod --reference` silently destroys permissions on DSM.** DSM's `chmod` does
-   not support the flag; it parses `--reference=/path` as a *symbolic mode* whose
-   leading `-` removes bits, then **exits 0**. It made 66 directories `d---------`
-   while reporting success. Read the mode with `stat -c %a` and apply it literally.
-   Generalise: on DSM an unsupported flag may not fail — it may do something else
-   and claim success.
-3. **Btrfs snapshots do not recurse into nested subvolumes.** Each share is its own
-   subvolume and `/btrfs/volume1` is already `@syno`. `btrfs subvolume snapshot -r
-   /btrfs/volume1 …` produces a recovery point containing **none of your shares**.
-   Snapshot the share: `/btrfs/volume1/mac`. Always verify by counting files inside
-   the snapshot before trusting it. Delete with `btrfs subvolume delete`, never `rm -rf`.
-4. **A `*_Conflict` artifact is not necessarily junk.** It can be a divergent copy
-   holding the ONLY instance of real content. Resolving 21 artifacts in one folder
-   on 2026-07-17 *recovered* 81 files, including an October 2025 product photo shoot
-   whose live SKU folders were empty. Merge conflict directories; never bulk-delete them.
-
-Also: `/volume1/mac/Decor/Character Licensed` and `/volume1/mac/Art Library` are
-**seaf-cli worktree roots** — writes there sync to the Seafile server on Linode.
-Compare content before rewriting a file; an mtime-only merge would have rewritten
-284 byte-identical files (29.6 GB) for nothing. Never "hide" an already-synced folder
-via `seafile-ignore.txt` — ignoring a synced path can read as a deletion server-side.
+Read [`docs/nas-maintenance-safety.md`](docs/nas-maintenance-safety.md) before any SSH
+session on a NAS or any move, merge or permission change inside a share. In short:
+use the SSH aliases `edgesynology1`/`edgesynology2`; sudo needs the service-account
+password through 1Password; change one service at a time, backup first; the
+filesystem is case-sensitive but its clients are not; `chmod --reference` destroys
+permissions on DSM; snapshot the share, not the volume; a `*_Conflict` folder may
+hold the only copy of real content.
 
 ## Critical incidents
 
-### 2026-07-16/17 — a folder merge created 63 sync conflicts and 66 unreadable directories
+Full records: [`docs/incident-log.md`](docs/incident-log.md).
 
-What happened:
-Merging `Dollar General Fall Winter 2026.wrong` into its live sibling copied 39
-files that already existed under a different case, and created 66 directories with
-mode `000`.
-
-Impact:
-Synology Drive forked the case-colliding files into 63 `*_Conflict` artifacts and
-pushed them to every SeaDrive client; users could not enter the 66 directories.
-No data was lost.
-
-Root cause:
-Two defects in the merge script. It compared paths case-sensitively on a
-case-sensitive filesystem serving case-insensitive clients. And it mirrored
-directory permissions with `chmod --reference`, which DSM parses as a symbolic
-mode that strips all bits and returns success.
-
-Recovery:
-A repair pass restored the 66 directories to `777`, deleted 40 redundant/stale
-copies (each with a verified surviving counterpart), and moved 23 stranded files
-back. A later recursive pass resolved 21 pre-existing conflict artifacts, which
-*recovered* 81 files — including product photography that existed only inside the
-conflict forks. Recovery point: Btrfs snapshot of the `mac` subvolume.
-
-Rule added to prevent recurrence:
-See "Moving or merging files inside a share" above. Tooling and 55 regression tests
-live in `scripts/synology/`; both defects have named tests. The share still holds
-~470 unresolved conflict artifacts — work order in
-`docs/synology-fileserver-audit.md`.
-
-### 2026-07-16 — anonymous SQL execution exposed the AI key
-
-What happened:
-A `SECURITY DEFINER` SQL executor retained default execute grants.
-
-Impact:
-The anonymous role could run arbitrary SQL and read stored AI credentials.
-
-Root cause:
-Function ownership was hardened without revoking default grants.
-
-Recovery:
-Live grants were revoked and migration `00043` records the fix.
-
-Rule added to prevent recurrence:
-Every privileged function needs explicit role tests and revoked `PUBLIC`/`anon`
-execute grants. Rotation follow-up remains in `HANDOFF.md`.
-
-### 2026-07-16 — agent ingestion fell roughly 80 minutes behind
-
-What happened:
-Large mixed inserts repeatedly retried one bad row and shutdown truncated flushing.
-
-Impact:
-Telemetry looked current enough to trust while lag kept growing.
-
-Root cause:
-Whole-batch retry and a ten-second container stop window.
-
-Recovery:
-Batch isolation shipped and `stop_grace_period: 90s` was materialized on both NASes.
-
-Rule added to prevent recurrence:
-Alert on ingestion age, isolate rejected rows, and verify compose-only changes live.
-
-### 2026-06-22 — retention work targeted the deleted Ohio project
-
-What happened:
-Stale repository references pointed database work at the rollback project.
-
-Impact:
-The live Virginia backend received none of the intended retention work.
-
-Root cause:
-Stashed stale project references and an unsafe script fallback.
-
-Recovery:
-All active references now use `aaxtrlfpnoutziwhshlt`; the runner requires an
-explicit URL and rejects the retired ref.
-
-Rule added to prevent recurrence:
-Log and verify the project ref before database work. See the migration and retention docs.
-
-### 2026-05-29 — ingestion freeze and pg_partman failure
-
-What happened:
-One invalid log row stalled a batch, while pg_partman cron called a procedure with
-`SELECT` and failed repeatedly.
-
-Impact:
-Logs/alerts froze and partition defaults accumulated millions of rows.
-
-Root cause:
-Silent batch retry and an invalid maintenance invocation.
-
-Recovery:
-Sender isolation fixed ingestion; pg_partman recovery remains active work.
-
-Rule added to prevent recurrence:
-No silent fallback, monitor freshness/cron results, and run maintenance manually
-under observation before re-enabling cron. See `docs/telemetry-retention.md`.
-
-### 2026-05 — secrets committed and MCP/NAS diagnostics overloaded production
-
-What happened:
-Recovery/example files contained live credentials; separate recursive diagnostics
-ran for days and MCP sessions hung.
-
-Impact:
-Credential rotation and production NAS load were required.
-
-Root cause:
-Inadequate ignore/secret discipline and unbounded recursive commands.
-
-Recovery:
-Secrets were rotated, `.mcp.json` is ignored, recursive internal-store scans are
-hard-blocked, and MCP became stateless/lazy-loaded.
-
-Rule added to prevent recurrence:
-Use 1Password references, never commit runtime env, and bound NAS diagnostics.
-Detailed evidence is in `docs/mcp-incident-2026-05.md` and the Synology incident docs.
+- 2026-07-16/17 — a folder merge created 63 sync conflicts and 66 unreadable directories.
+- 2026-07-16 — anonymous SQL execution exposed the AI key.
+- 2026-07-16 — agent ingestion fell roughly 80 minutes behind.
+- 2026-06-22 — retention work targeted the deleted Ohio project.
+- 2026-05-29 — ingestion freeze and pg_partman failure.
+- 2026-05 — secrets committed and MCP/NAS diagnostics overloaded production.
 
 ## Pending work
 
-`HANDOFF.md` is required because work remains unfinished. Treat it as current over
-older plan/incident prose.
-
-| Status | Item | Owner / next action |
-|---|---|---|
-| partial | Repair nine archive directory mtimes | Follow the exact authority-only procedure in `HANDOFF.md`; write only NAS 1 |
-| partial | Complete Seafile inotify remediation | Run and verify `docs/seafile-sync-inotify.md` on the live worktree |
-| partial | Drain expired telemetry and repair pg_partman | Owner decision plus watched procedures in `docs/telemetry-retention.md` |
-| open | Rotate the AI key exposed by the former anonymous SQL path | Owner-approved rotation through 1Password/Coolify |
-| scheduled | Review `nas_logs` database share | Run the documented check on 2026-08-17 or four weeks after retention goes live |
-
-Remove completed items from `HANDOFF.md`; delete the file only when every remaining
-continuation item is truly complete.
+The board is [`docs/pending-work.md`](docs/pending-work.md). Open handoffs are the
+files in `HANDOFF.d/` (`HANDOFF.md` is only a static pointer); treat them as current
+over older plan or incident prose.
 
 ## Non-negotiable rules
 
-1. **The operator is not a programmer. Hand him runnable commands, never verbs.**
-     "Deploy nas-mcp", "enable the tool in `tools-config.json`", "recreate the
-     container", "run the migration" are not instructions — they are the task,
-     restated. They only look actionable because *you* can already see the host, the
-     path, and the command behind them; he cannot. Every hand-off step must be:
-     1. The literal command, copy-pasteable, one per line, with `sudo` where needed
-        and the real host and path filled in (`ssh ahazan@100.107.131.35` for
-        edgesynology1, `ssh ahazan@100.107.131.36` port **1904** for edgesynology2 —
-        both are SSH-config aliases `edgesynology1`/`edgesynology2`; not `ssh <nas>`).
-     2. What correct output looks like, so he can judge success without asking —
-        "you should see `74:      - /etc/group:/host/etc/group:ro`", not "verify it
-        applied". **Mark which parts of the expected output vary.** A made-up file
-        size in an example gets compared literally: on 2026-07-16 a sample line with
-        an invented `1234` had him report a mismatch against his real `1396` when the
-        step had in fact succeeded. Say "the size and date will differ — only the
-        filename matters", or show real captured output and label it as shape-only.
-     3. A command you have actually run, or whose exact form you have tested. Do not
-        hand over a command you composed but never executed — the quoting, the flag,
-        or the path will be wrong, and he has no way to tell your typo from his. The
-        `sed` that worked on edgesynology1 matched **zero** lines on edgesynology2
-        (CRLF endings) and would have silently done nothing.
-     4. Named clicks if it is a UI action (DSM → Container Manager → Project → …).
-     If you cannot produce a runnable command because a value is unknown or you lack
-     access, say exactly which value is missing and ask. Do not paper over the gap
-     with a verb. This is the most repeated complaint in this project's history.
-
-
+1. **The operator is not a programmer.** Any step handed to him must be a literal,
+   tested, copy-pasteable command with the real host and path, the expected output
+   (marking what varies), or named clicks. Full rule and its history:
+   [`docs/agents-reference.md`](docs/agents-reference.md).
 2. GitHub `main` is code truth. Check for concurrent work before pull/commit/push.
 3. Root-cause fixes only; loud failures instead of silent fallback.
 4. Add tests for code created and visually verify UI work.

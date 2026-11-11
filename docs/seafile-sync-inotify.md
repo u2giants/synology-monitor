@@ -1,3 +1,10 @@
+---
+summary: Seafile client falsely reporting synchronized after inotify watch exhaustion: diagnosis, two MCP capabilities, runbook.
+kind: ops
+status: open
+read-when: Seafile on the NAS looks synced but files differ, or inotify limits are involved.
+---
+
 # Seafile sync: inotify watch exhaustion (false-"synchronized" incident)
 
 Incident + fix recorded 2026-06-19. This documents a silent data-divergence class in

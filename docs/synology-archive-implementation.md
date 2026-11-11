@@ -1,3 +1,10 @@
+---
+summary: Build guide for the archive inventory and move feature: files to edit, locked design decisions, tests and shipping steps.
+kind: spec
+status: done
+read-when: Changing archive inventory or archive move code.
+---
+
 # Synology Archive Inventory — Implementation Plan (Build Guide)
 
 > **Audience:** an engineer or AI session with **zero prior context**. Read this
