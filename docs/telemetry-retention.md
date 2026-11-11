@@ -101,7 +101,11 @@ The cron block in `00044` schedules `CALL public.cleanup_high_volume_telemetry_p
 at `'17 * * * *'`. Capacity is ample: `process_snapshots` accrues ~22k rows/hour (≈1.6M
 surviving / 72h), and the job can do 250k/hour — ~11× production.
 
-## 🚨 pg_partman has been dead since 2026-05-29 — read this first
+## pg_partman: dead 2026-05-29 → repaired 2026-11-11
+
+**Repaired 2026-11-11.** Method: per table, in one short transaction, detach the DEFAULT and rename it `*_olddefault`, attach a new empty DEFAULT, create weekly partitions from the retention cutoff to now+3 weeks; then backfill from `*_olddefault` one day per committed `INSERT`, gated on disk free ≥ 12 GiB; drop `*_olddefault` only when moved rows equal the expected count. Rows older than partman retention were not moved. Then `CALL run_maintenance_proc()` manually, then migration `00047` repointed the cron at `CALL`. Everything below is the history that led there.
+
+### Original finding
 
 Found 2026-07-16 while installing retention. **This is the bigger cause of database
 growth, and it invalidates the naive reading of the partman decision below.**

@@ -73,7 +73,7 @@ comments and applied migrations cite it by that name.
 | `apps/web/` | Project-owned Next.js dashboard and AI pipeline; runs in Coolify |
 | `apps/relay/` | Project-owned narrow named-action relay; exceptional/manual deployment |
 | `packages/shared/src/` | Shared TypeScript types, AI capabilities, archive contracts, and 132 NAS tool definitions |
-| `supabase/migrations/` | Append-only database migrations, currently `00000` through `00045` |
+| `supabase/migrations/` | Append-only database migrations, currently `00000` through `00047` |
 | `supabase/functions/` | Project-owned Supabase Edge Functions |
 | `deploy/synology/` | Canonical NAS compose and environment examples |
 | `.github/workflows/` | Image build/publish and deploy triggers |
@@ -124,7 +124,7 @@ listed above.
 | Change AI stages | `apps/web/src/lib/server/ai/stage{1,2,3}-*.ts`, `pipeline-v2.ts`, guard tests | Historical `PLAN.md` as implementation source |
 | Tune model capabilities | `packages/shared/src/ai-capabilities.ts` | Hard-coded dropdown lists; provider models are fetched live |
 | Add a config value | Relevant `.env.example`, code reader, `docs/configuration.md`; deployment doc if runtime changes | Production secrets in repository files |
-| Add a migration | New `supabase/migrations/000NN_*.sql`; next number after `00045` | Any existing migration that may have run |
+| Add a migration | New `supabase/migrations/000NN_*.sql`; next number after `00047` | Any existing migration that may have run |
 | Change archive jobs | `apps/nas-api/internal/jobs/`, NAS routes, shared archive contract, MCP/web clients | Generic shell `/exec` path for native jobs |
 | Change CI/deploy | Matching `.github/workflows/*.yml`, Dockerfile/compose, `docs/deployment.md` | Direct production host edits |
 
