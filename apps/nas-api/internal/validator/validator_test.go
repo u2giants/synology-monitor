@@ -54,7 +54,7 @@ func TestReadOnlyDiagnosticsStayTierRead(t *testing.T) {
 			command: strings.Join([]string{
 				"echo '=== RAID SYNC STATUS (/proc/mdstat) ==='",
 				"cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
-				"echo 'No btrfs volumes found - deploy update required (see docker-compose.agent.yml)'",
+				"echo 'No btrfs volumes found - deploy update required (see docker-compose.nas-{1,2}.yml)'",
 				"grep -iE 'scrub|check|sync' /host/log/synolog/synostorage.log 2>/dev/null | tail -20 || true",
 			}, "\n"),
 		},
@@ -405,7 +405,7 @@ func TestBlockExplanationIsActionableAndStateless(t *testing.T) {
 }
 
 func TestDockerAllowlistStillAppliesToActualDockerCommands(t *testing.T) {
-	if err := Validate("echo 'docker-compose.agent.yml is documentation text'", TierRead); err != nil {
+	if err := Validate("echo 'docker-compose.nas-{1,2}.yml is documentation text'", TierRead); err != nil {
 		t.Fatalf("quoted docker text should not trigger docker allowlist: %v", err)
 	}
 
@@ -511,11 +511,11 @@ func TestPasswdBlockDoesNotCatchAccountFileReads(t *testing.T) {
 // a bare strings.Contains(cmd, "docker compose") with no quote-stripping.
 //
 // If you are writing remediation text that has to tell an operator to recreate a
-// container, point at DSM Container Manager and the docker-compose.agent.yml
+// container, point at DSM Container Manager and the docker-compose.nas-{1,2}.yml
 // filename (hyphenated, safe) rather than naming the command.
 func TestRemediationProseIsNotSelfBlocking(t *testing.T) {
 	safe := []string{
-		`echo "Fix: add '/etc/group:/host/etc/group:ro' to the nas-api service in deploy/synology/docker-compose.agent.yml, then recreate the container on this NAS via DSM Container Manager."`,
+		`echo "Fix: add '/etc/group:/host/etc/group:ro' to the nas-api service in deploy/synology/docker-compose.nas-{1,2}.yml, then recreate the container on this NAS via DSM Container Manager."`,
 		`echo "see docs/synology-archive-implementation.md for the one-time mount rollout"`,
 	}
 	for _, cmd := range safe {

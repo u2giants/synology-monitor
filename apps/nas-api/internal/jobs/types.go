@@ -38,7 +38,7 @@ var ErrBusy = errors.New("an inventory job is already queued or running on this 
 
 // AllowedShares is the canonical allowlist of top-level shared folders the
 // scanner may walk. It MUST mirror the read-only share mounts in
-// deploy/synology/docker-compose.agent.yml and the ARCHIVE_SHARES constant in
+// deploy/synology/docker-compose.nas-{1,2}.yml and the ARCHIVE_SHARES constant in
 // packages/shared/src/archive.ts (Go cannot import the TS list; keep both in
 // sync — see Appendix C of docs/synology-archive-implementation.md).
 var AllowedShares = []string{

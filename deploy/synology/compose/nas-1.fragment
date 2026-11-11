@@ -1,0 +1,37 @@
+# edgesynology1 per-box data. Pure data: each "## KEY" block is spliced verbatim.
+# Hardware: sda-sdf, md0-md9, two NVMe. A pulled or dead disk blocks container
+# start after a reboot until its devices line is removed (loud, by design).
+## NAS_API_NAME
+edgesynology1
+## AGENT_EXTRA_VOLUMES
+      - /usr/syno:/host/usr/syno:ro
+## NASAPI_DEVICES
+      - /dev/sda:/dev/sda:r
+      - /dev/sdb:/dev/sdb:r
+      - /dev/sdc:/dev/sdc:r
+      - /dev/sdd:/dev/sdd:r
+      - /dev/sde:/dev/sde:r
+      - /dev/sdf:/dev/sdf:r
+      - /dev/md0:/dev/md0:r
+      - /dev/md1:/dev/md1:r
+      - /dev/md2:/dev/md2:r
+      - /dev/md3:/dev/md3:r
+      - /dev/md4:/dev/md4:r
+      - /dev/md5:/dev/md5:r
+      - /dev/md6:/dev/md6:r
+      - /dev/md7:/dev/md7:r
+      - /dev/md8:/dev/md8:r
+      - /dev/md9:/dev/md9:r
+      - /dev/nvme0:/dev/nvme0:r
+      - /dev/nvme1:/dev/nvme1:r
+      - /dev/nvme0n1:/dev/nvme0n1:r
+      - /dev/nvme1n1:/dev/nvme1n1:r
+## NASAPI_VOLUMES_AFTER_PACKAGES
+## NASAPI_VOLUMES_AFTER_STACK
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+## WATCHTOWER_RESTART
+    restart: always
+## WATCHTOWER_EXTRA_VOLUMES
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+## WATCHTOWER_COMMAND
+    command: synology-monitor-agent synology-monitor-nas-api seaf-cli

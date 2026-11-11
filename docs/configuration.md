@@ -303,7 +303,7 @@ capabilities and identifiers resolve? proven by one real run? In 2026-07-17
 Adding `strace` and `hdparm` to the Dockerfile fixed both.
 
 **Verify capabilities against the live container, not the repo compose.**
-`deploy/synology/docker-compose.agent.yml` is drifted and understates what the NASes
+`deploy/synology/docker-compose.nas-{1,2}.yml` is drifted and understates what the NASes
 actually grant (see `docs/nas-config-drift.md`). Reasoning from it caused one session
 to wrongly conclude `hdparm` could never work and disable the tool; in reality
 `SYS_RAWIO` was already granted and `hdparm -I` works. Read the real set with

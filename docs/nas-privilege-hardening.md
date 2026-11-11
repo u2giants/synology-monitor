@@ -96,7 +96,7 @@ already-broken box (edge2).**
   archive, strace. If anything regresses, one-command rollback to the backup.
 
 **Step 3 — repo.**
-- Rewrite `deploy/synology/docker-compose.agent.yml` nas-api to the canonical shape: `devices:` key,
+- Rewrite `deploy/synology/docker-compose.nas-{1,2}.yml` nas-api to the canonical shape: `devices:` key,
   agreed caps, no privileged, no whole-`/dev`. Comment that the device list is per-NAS and how to
   regenerate it. Remove/fix the dead `hdparm` tool and its false "required for hdparm" comment.
 - Update AGENTS.md §12 (the `/dev` quirk rationale is now the cgroup explanation, not hdparm) and §15
@@ -150,7 +150,7 @@ declared by design for `strace_process`; the fix is adding `strace` to the image
 `hdparm`, or dropping/​disabling the tool), not removing the cap. Filed as a follow-up.
 
 ### Repo drift NOT yet reconciled
-`deploy/synology/docker-compose.agent.yml` still declares devices under `volumes:` and
+`deploy/synology/docker-compose.nas-{1,2}.yml` still declares devices under `volumes:` and
 lists `/dev/sdf–sdh` (nonexistent on edge2) — it would break BOTH boxes if applied. The
 proven config above must be back-ported to the repo (per-box device lists) before any
 repo→NAS sync. Separate step; not done here.
