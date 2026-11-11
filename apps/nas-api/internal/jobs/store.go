@@ -15,7 +15,7 @@ import (
 // Each job lives in its own subdirectory holding status.json plus result CSVs.
 //
 // The base directory must survive a Watchtower container recreate, so it is the
-// bind-mounted /app/data/jobs (see docker-compose.agent.yml). If the mount is
+// bind-mounted /app/data/jobs (see docker-compose.nas-{1,2}.yml). If the mount is
 // missing, Ready() reports false and the HTTP layer returns 503.
 type Store struct {
 	base     string // <root>/file-inventory

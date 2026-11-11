@@ -151,14 +151,14 @@ Docker build and nas-mcp can silently deploy an old tool catalog.
 
 > **Important — compose config changes are NOT auto-deployed by Watchtower.**
 > Watchtower only pulls a new image and restarts with the existing compose state. If
-> `deploy/synology/docker-compose.agent.yml` changes (new capabilities, new volume
+> `deploy/synology/docker-compose.nas-{1,2}.yml` changes (new capabilities, new volume
 > mounts, new env vars), the NAS containers will not see those changes until you run
 > `docker compose up -d` manually on each NAS. Examples of changes that require this:
 > - Adding or removing `cap_add` entries (e.g. `SYS_PTRACE`)
 > - Adding or removing bind-mount entries (e.g. `/dev/sda:/dev/sda:ro`)
 > - Adding new environment keys that were not in the original container spec
 >
-> **Procedure:** Copy the new `deploy/synology/docker-compose.agent.yml` to
+> **Procedure:** Copy the new `deploy/synology/docker-compose.nas-{1,2}.yml` to
 > `/volume1/docker/synology-monitor-agent/compose.yaml` on the NAS, then:
 > ```sh
 > DOCKER=/var/packages/ContainerManager/target/usr/bin/docker
@@ -234,7 +234,7 @@ config-application or recovery cases in this doc.
 1. Install Docker via Synology Container Manager package.
 2. Enable SSH on the NAS temporarily for initial setup (DSM > Control Panel > Terminal).
 3. Create `/volume1/docker/synology-monitor-agent/`.
-4. Copy `deploy/synology/docker-compose.agent.yml` to `/volume1/docker/synology-monitor-agent/compose.yaml`.
+4. Copy `deploy/synology/docker-compose.nas-{1,2}.yml` to `/volume1/docker/synology-monitor-agent/compose.yaml`.
 5. Create `/volume1/docker/synology-monitor-agent/.env` from `deploy/synology/nas-1.env.example` (or `nas-2.env.example`) and fill in all required values (see `docs/configuration.md`).
 6. Authenticate Docker with GHCR:
    ```sh

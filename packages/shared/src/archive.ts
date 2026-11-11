@@ -1,6 +1,6 @@
 // Canonical allowlist of top-level shared folders the archive file-inventory may
 // scan. This is the SAME set as nas-api's jobs.AllowedShares (Go) and the
-// read-only share mounts in deploy/synology/docker-compose.agent.yml. Go cannot
+// read-only share mounts in deploy/synology/docker-compose.nas-{1,2}.yml. Go cannot
 // import this TS list, so when the set changes update all three in lockstep
 // (see Appendix C of docs/synology-archive-implementation.md).
 export const ARCHIVE_SHARES = [

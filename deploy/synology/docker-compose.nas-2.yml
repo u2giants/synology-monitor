@@ -1,20 +1,12 @@
+# GENERATED for edgesynology2 — DO NOT EDIT. Change deploy/synology/compose/base.yml
+# or compose/nas-2.fragment, then run: python3 deploy/synology/generate-compose.py
 services:
   synology-monitor-agent:
     image: ghcr.io/u2giants/synology-monitor-agent:${AGENT_IMAGE_TAG:-latest}
     container_name: synology-monitor-agent
-    network_mode: host
-    restart: unless-stopped
-    # The agent buffers telemetry in a SQLite WAL and flushes it to Supabase on
-    # shutdown (sender.go Run() -> final bounded flush). Docker's default grace
-    # period is 10s, which SIGKILLed the agent mid-flush on every Watchtower
-    # redeploy — making the ambiguous-commit case (server committed, client
-    # killed before the response) routine rather than rare. No data is lost (the
-    # WAL is durable on the agent-data volume and rows are retried next start),
-    # but the final flush never completed. 90s comfortably exceeds the shutdown
-    # budget (MAX_FLUSH_DURATION * 3 = 72s at the 24s default).
-    # NOTE: Watchtower does NOT apply this — it recreates the container with the
-    # existing config. Needs a one-time `docker compose up -d` per NAS.
     stop_grace_period: 90s
+    network_mode: host
+    restart: always
     env_file:
       - .env
     environment:
@@ -61,47 +53,46 @@ services:
   nas-api:
     image: ghcr.io/u2giants/synology-monitor-nas-api:${AGENT_IMAGE_TAG:-latest}
     container_name: synology-monitor-nas-api
-    network_mode: host         # must see the same network interfaces as the NAS
-    pid: host                  # share host PID namespace so pkill/ps can reach DSM processes
-    restart: unless-stopped
+    pid: host
     security_opt:
-      - "apparmor=unconfined"  # Synology DSM rejects default apparmor profile on container init
+      - "apparmor=unconfined"
     cap_add:
-      - SYS_ADMIN              # required for btrfs subvolume list, scrub, and snapshot operations
-      - SYS_PTRACE             # strace on D-state/hung processes — code-injection vectors (gdb, lldb) are hard-blocked in the NAS-API validator
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - SYS_RAWIO
+    devices:
+      - /dev/sda:/dev/sda:r
+      - /dev/sdb:/dev/sdb:r
+      - /dev/sdc:/dev/sdc:r
+      - /dev/sdd:/dev/sdd:r
+      - /dev/sde:/dev/sde:r
+      - /dev/md0:/dev/md0:r
+      - /dev/md1:/dev/md1:r
+      - /dev/md2:/dev/md2:r
+      - /dev/md3:/dev/md3:r
+    network_mode: host         # must see the same network interfaces as the NAS
+    restart: always
     env_file:
       - .env
     environment:
+      NAS_API_NAME: edgesynology2
       TZ: ${TZ:-UTC}
-      # Logical name of THIS NAS (edgesynology1 / edgesynology2). Stamped into
-      # file-inventory result CSVs and into the signed canonical op string, so it
-      # MUST equal the name the web/MCP target this NAS by — which is hardcoded to
-      # "edgesynology1"/"edgesynology2" in nas-api-client.ts / nas-client.ts.
-      # NOTE: this is intentionally NOT the agent's NAS_NAME env (that is a
-      # heartbeat display name like "Synology NAS 1"); reusing it would make every
-      # tier-2 approval signature mismatch. Falls back to the container hostname.
-      NAS_API_NAME: ${NAS_API_NAME:-}
     volumes:
       - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
       - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
       - /usr/syno:/host/usr/syno:ro
-      # Host system libraries — required for glibc Synology binaries (synopkg, synoacltool, etc.)
-      # Tools call them with LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib
       - /lib:/host/lib:ro
       - /usr/lib:/host/usr/lib:ro
       - /etc/passwd:/host/etc/passwd:ro
-      - /etc/group:/host/etc/group:ro  # NAS group names for uid/gid resolution in repair tools
+      - /etc/group:/host/etc/group:ro
+      - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
       - /etc/VERSION:/host/etc/VERSION:ro
       - /etc/synoinfo.conf:/host/etc/synoinfo.conf:ro
       - /etc.defaults:/host/etc.defaults:ro
       - /var/log:/host/log:ro
       - /var/packages:/host/packages:ro
       - /var/packages/Tailscale:/var/packages/Tailscale:ro
-      # Full btrfs volume mount — required for btrfs subvolume list, scrub, and snapshot ops.
-      # CAP_SYS_ADMIN (above) is also required. Defaults to /volume1.
-      # For a second volume set BTRFS_VOLUME2_PATH=/volume2 and uncomment the next line.
       - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
-      # - ${BTRFS_VOLUME2_PATH:-/volume2}:/btrfs/volume2:rw
       - ${SHARE_FILES_PATH:-/volume1/files}:/volume1/files:ro
       - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/volume1/styleguides:ro
       - ${SHARE_USERS_PATH:-/volume1/users}:/volume1/users:ro
@@ -116,37 +107,7 @@ services:
       - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/volume1/@SynologyDriveShareSync:ro
       - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/volume1/@appdata/HyperBackup:ro
       - ${MONITOR_STACK_PATH:-/volume1/docker/synology-monitor-agent}:/volume1/docker/synology-monitor-agent:ro
-      # Durable job state for the file-inventory scanner (read-only inventory jobs).
-      # Host-path bind so the operator can inspect/recover results directly. The
-      # NAS API's writable-layer would be wiped when Watchtower recreates the
-      # container on a new image, so job state MUST live on a persistent mount.
-      # NOTE: Watchtower applies new images, not compose changes — after this lands
-      # the operator must run `docker compose up -d` once on each NAS to materialize
-      # this mount (until then the /jobs/inventory endpoints return 503).
-      - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
       - /var/run/docker.sock:/var/run/docker.sock
-      # Block devices (read-only) — required FIRST for smartctl (smartmontools), which
-      # reads per-device SMART attributes/identity from /dev/sdX and silently loses SMART
-      # if these regress; and second for hdparm -I (device identity), which also needs
-      # CAP_SYS_RAWIO. hdparm -t (throughput) additionally needs CAP_IPC_LOCK, which is
-      # NOT granted, so -t returns no number — see AGENTS.md. NOTE: this file is drifted
-      # from the live NASes (they also run cap_add SYS_RAWIO and use a `devices:` key);
-      # read live caps with `docker inspect synology-monitor-nas-api`, not this file.
-      # See docs/nas-config-drift.md. Individual named mounts only — NOT the full /dev tree.
-      # Docker bind-mounts fail if the source device doesn't exist. Comment out empty bays.
-      # Typical Synology layout: sda–sdh are drive bays; md0–md3 are RAID arrays.
-      - /dev/sda:/dev/sda:ro
-      - /dev/sdb:/dev/sdb:ro
-      - /dev/sdc:/dev/sdc:ro
-      - /dev/sdd:/dev/sdd:ro
-      - /dev/sde:/dev/sde:ro
-      - /dev/sdf:/dev/sdf:ro
-      - /dev/sdg:/dev/sdg:ro
-      - /dev/sdh:/dev/sdh:ro
-      - /dev/md0:/dev/md0:ro
-      - /dev/md1:/dev/md1:ro
-      - /dev/md2:/dev/md2:ro
-      - /dev/md3:/dev/md3:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
       interval: 30s
@@ -161,9 +122,6 @@ services:
 
   # Watchtower polls GHCR every 5 minutes and restarts updated containers
   # automatically when new images are available.
-  # Scope is by explicit container name (the command: line) — NOT label mode,
-  # so a container only auto-updates if its name is listed there. seaf-cli was
-  # missing from this list before 2026-06-21, so its image fixes never deployed.
   watchtower:
     image: containrrr/watchtower
     container_name: synology-monitor-watchtower
@@ -175,7 +133,7 @@ services:
       WATCHTOWER_POLL_INTERVAL: "300"
       WATCHTOWER_CLEANUP: "true"
       WATCHTOWER_NO_STARTUP_MESSAGE: "true"
-    command: synology-monitor-agent synology-monitor-nas-api seaf-cli
+    command: synology-monitor-agent synology-monitor-nas-api
 
 volumes:
   agent-data:

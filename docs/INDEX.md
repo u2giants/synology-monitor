@@ -18,7 +18,7 @@ Read the summary; open a document only when it matches your task.
 | [docs/incident-log.md](incident-log.md) | current | Critical incidents since 2026-05: merge conflicts, anonymous SQL exposure, ingestion lag, wrong Supabase project, leaked secrets. | Investigating a failure, or about to repeat an operation that has gone wrong before. |
 | [docs/nas-config-drift.md](nas-config-drift.md) | open | Why each NAS runs a compose file that differs from the repo, what has drifted, and the unbuilt plan to make drift visible. | Editing NAS compose files or reconciling repo and live NAS configuration. |
 | [docs/nas-privilege-hardening.md](nas-privilege-hardening.md) | current | Plan and record for running nas-api non-privileged while keeping SMART and NVMe health working on both NASes. | Changing container privileges, capabilities, device mounts or disk-health checks. |
-| [docs/pending-work.md](pending-work.md) | current | Board of unfinished operational work: archive mtimes, Seafile inotify, pg_partman, AI key rotation, nas_logs review. | Asking what is still open, or finishing an item and needing to update the board. |
+| [docs/pending-work.md](pending-work.md) | current | Board of operational work from the legacy handoff: archive mtimes, Seafile, pg_partman, AI key, nas_logs, NAS compose, ownership repair, Drive conflict cleanup. | Asking what is still open, or finishing an item and needing to update the board. |
 | [docs/telemetry-retention.md](telemetry-retention.md) | current | Telemetry retention state: policies, hourly cleanup procedure, drain results, database size and the open pg_partman backlog. | Database size, retention policies, cleanup cron or pg_partman work. |
 
 ## ops

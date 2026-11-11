@@ -329,7 +329,7 @@ not granted. `hdparm -I` is unaffected. Granting `IPC_LOCK` is a compose change 
 belongs to the drift work in `docs/nas-config-drift.md`, not an image rebuild.
 
 **Do not read the live capability set from
-`deploy/synology/docker-compose.agent.yml`** — that file is drifted and still lists
+`deploy/synology/docker-compose.nas-{1,2}.yml`** — that file is drifted and still lists
 only `SYS_ADMIN`/`SYS_PTRACE`, understating the live grant. Reasoning from it caused
 one session to wrongly conclude hdparm was unfixable and disable it; the live set is
 `docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`. The `/dev/sdX`
@@ -387,7 +387,7 @@ requires adding it to the `EAGER_TOOLS` constant in `src/index.ts`.
 
 Predefined NAS tools run inside the `synology-monitor-nas-api` container, not in
 the telemetry agent container. The most important mounts from
-`deploy/synology/docker-compose.agent.yml` are:
+`deploy/synology/docker-compose.nas-{1,2}.yml` are:
 
 | Host path | NAS API path | Notes |
 |---|---|---|

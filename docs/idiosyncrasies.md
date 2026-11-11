@@ -216,7 +216,7 @@ number, because it needs `IPC_LOCK`, which is not granted. `hdparm -I` is unaffe
 Why:
 `SYS_RAWIO` is what makes `hdparm -I` work, and it is ALREADY granted live (added by the
 privilege hardening). Do not reason about caps from
-`deploy/synology/docker-compose.agent.yml` — that file is DRIFTED and still lists only
+`deploy/synology/docker-compose.nas-{1,2}.yml` — that file is DRIFTED and still lists only
 `SYS_ADMIN`/`SYS_PTRACE`, so it understates the live grant and led one session to wrongly
 conclude hdparm was unfixable and disable it. Read the live set with
 `docker inspect -f '{{.HostConfig.CapAdd}}' synology-monitor-nas-api`.
@@ -239,7 +239,7 @@ Pushing a compose edit updates the NAS automatically.
 Actually:
 Watchtower replaces images only. The live NAS file is
 `/volume1/docker/synology-monitor-agent/compose.yaml` and is a manual copy of
-`deploy/synology/docker-compose.agent.yml`.
+`deploy/synology/docker-compose.nas-{1,2}.yml`.
 
 Why:
 No workflow distributes NAS compose files.
@@ -250,7 +250,7 @@ recreation on each NAS. Preserve each NAS's `.env` and local compose differences
 There is no sync mechanism and the two NAS files have genuinely diverged (line
 endings, restart policy, device lists); reconciliation is designed in
 `docs/nas-config-drift.md` (a generator emitting two byte-exact per-box files) but
-not yet built. Do NOT copy `deploy/synology/docker-compose.agent.yml` onto a NAS as-is
+not yet built. Do NOT copy `deploy/synology/docker-compose.nas-{1,2}.yml` onto a NAS as-is
 — it still lists `/dev/sdf–sdh` absent on edge2 and would fail `compose up`.
 
 ### The two monitor services now use `restart: always`

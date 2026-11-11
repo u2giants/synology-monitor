@@ -1,0 +1,24 @@
+# edgesynology2 per-box data. Pure data: each "## KEY" block is spliced verbatim.
+# Hardware: sda-sde, md0-md3, no NVMe. No seaf-cli on this box.
+## NAS_API_NAME
+edgesynology2
+## AGENT_EXTRA_VOLUMES
+## NASAPI_DEVICES
+      - /dev/sda:/dev/sda:r
+      - /dev/sdb:/dev/sdb:r
+      - /dev/sdc:/dev/sdc:r
+      - /dev/sdd:/dev/sdd:r
+      - /dev/sde:/dev/sde:r
+      - /dev/md0:/dev/md0:r
+      - /dev/md1:/dev/md1:r
+      - /dev/md2:/dev/md2:r
+      - /dev/md3:/dev/md3:r
+## NASAPI_VOLUMES_AFTER_PACKAGES
+      - /var/packages/Tailscale:/var/packages/Tailscale:ro
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+## NASAPI_VOLUMES_AFTER_STACK
+## WATCHTOWER_RESTART
+    restart: unless-stopped
+## WATCHTOWER_EXTRA_VOLUMES
+## WATCHTOWER_COMMAND
+    command: synology-monitor-agent synology-monitor-nas-api

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/synology-monitor/nas-api/internal/auth"
+	"github.com/synology-monitor/nas-api/internal/drift"
 	"github.com/synology-monitor/nas-api/internal/executor"
 	"github.com/synology-monitor/nas-api/internal/jobs"
 	"github.com/synology-monitor/nas-api/internal/validator"
@@ -72,7 +73,7 @@ func main() {
 	// File-inventory job system (Phase 1). State persists under the durable
 	// /app/data/jobs bind mount; nasName is the logical NAS name the web/MCP
 	// target this box by (edgesynology1/2) — deliberately separate from the
-	// agent's NAS_NAME (see docker-compose.agent.yml).
+	// agent's NAS_NAME (see docker-compose.nas-{1,2}.yml).
 	jobsDir := envOr("NAS_API_JOBS_DIR", "/app/data/jobs")
 	nasName := envOr("NAS_API_NAME", hostnameOrEmpty())
 	store := jobs.NewStore(jobsDir)
@@ -87,6 +88,16 @@ func main() {
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", requireAuth(v, handleExec(v)))
 	mux.HandleFunc("POST /preview", requireAuth(v, handlePreview))
+	// Functional config check (docs/nas-config-drift.md §8): 200 when every probe
+	// passes, 409 when any fails; the body lists each probe.
+	mux.HandleFunc("GET /drift", requireAuth(v, func(w http.ResponseWriter, r *http.Request) {
+		rep := drift.Run(drift.Default())
+		code := http.StatusOK
+		if !rep.OK {
+			code = http.StatusConflict
+		}
+		writeJSON(w, code, rep)
+	}))
 
 	mux.HandleFunc("POST /jobs/inventory", requireAuth(v, requireApproval(v, jobs.OpStart, 2, nasName, handleInventoryStart(mgr))))
 	mux.HandleFunc("POST /jobs/inventory/schedule", requireAuth(v, requireApproval(v, jobs.OpSchedule, 2, nasName, handleInventorySchedule(mgr))))

@@ -1,0 +1,151 @@
+# GENERATED for edgesynology1 — DO NOT EDIT. Change deploy/synology/compose/base.yml
+# or compose/nas-1.fragment, then run: python3 deploy/synology/generate-compose.py
+services:
+  synology-monitor-agent:
+    image: ghcr.io/u2giants/synology-monitor-agent:${AGENT_IMAGE_TAG:-latest}
+    container_name: synology-monitor-agent
+    stop_grace_period: 90s
+    network_mode: host
+    restart: always
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /proc:/host/proc:ro          # per-process CPU/mem/IO and disk stats
+      - /sys:/host/sys:ro            # cgroup IO stats, btrfs counters, thermal data
+      - /usr/syno:/host/usr/syno:ro
+      - /etc/passwd:/host/etc/passwd:ro  # UID→username resolution
+      - /var/log:/host/log:ro
+      - /var/packages:/host/packages:ro
+      # Synology Container Manager rejects top-level volume binds such as
+      # /volume1 during compose/UI recreates. Mount explicit shared folders.
+      # Set SHARED_*_PATH env vars or use defaults.
+      - ${SHARE_FILES_PATH:-/volume1/files}:/host/shares/files:ro
+      - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/host/shares/styleguides:ro
+      - ${SHARE_USERS_PATH:-/volume1/users}:/host/shares/users:ro
+      - ${SHARE_HOMES_PATH:-/volume1/homes}:/host/shares/homes:ro
+      - ${SHARE_COLDLION_PATH:-/volume1/Coldlion}:/host/shares/Coldlion:ro
+      - ${SHARE_PHOTOGRAPHY_PATH:-/volume1/Photography}:/host/shares/Photography:ro
+      - ${SHARE_FREELANCERS_PATH:-/volume1/freelancers}:/host/shares/freelancers:ro
+      - ${SHARE_MGMT_PATH:-/volume1/mgmt}:/host/shares/mgmt:ro
+      - ${SHARE_MAC_PATH:-/volume1/mac}:/host/shares/mac:ro
+      - ${SHARE_OLDSTYLEGUIDES_PATH:-/volume1/oldStyleguides}:/host/shares/oldStyleguides:ro
+      # System folders for ShareSync monitoring
+      - ${SHARE_SYNO_DRIVE_PATH:-/volume1/@synologydrive}:/host/shares/@synologydrive:ro
+      - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/host/shares/@SynologyDriveShareSync:ro
+      - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/host/appdata/HyperBackup:ro
+      - agent-data:/app/data
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/data/wal.db"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # NAS API — three-tier HTTP shell execution service used by the issue agent.
+  # The web app (running in the cloud) calls this to investigate and remediate issues.
+  # Tier 1 commands auto-execute; Tier 2/3 require an HMAC-signed approval token.
+  nas-api:
+    image: ghcr.io/u2giants/synology-monitor-nas-api:${AGENT_IMAGE_TAG:-latest}
+    container_name: synology-monitor-nas-api
+    pid: host
+    security_opt:
+      - "apparmor=unconfined"
+    cap_add:
+      - SYS_ADMIN
+      - SYS_PTRACE
+      - SYS_RAWIO
+    devices:
+      - /dev/sda:/dev/sda:r
+      - /dev/sdb:/dev/sdb:r
+      - /dev/sdc:/dev/sdc:r
+      - /dev/sdd:/dev/sdd:r
+      - /dev/sde:/dev/sde:r
+      - /dev/sdf:/dev/sdf:r
+      - /dev/md0:/dev/md0:r
+      - /dev/md1:/dev/md1:r
+      - /dev/md2:/dev/md2:r
+      - /dev/md3:/dev/md3:r
+      - /dev/md4:/dev/md4:r
+      - /dev/md5:/dev/md5:r
+      - /dev/md6:/dev/md6:r
+      - /dev/md7:/dev/md7:r
+      - /dev/md8:/dev/md8:r
+      - /dev/md9:/dev/md9:r
+      - /dev/nvme0:/dev/nvme0:r
+      - /dev/nvme1:/dev/nvme1:r
+      - /dev/nvme0n1:/dev/nvme0n1:r
+      - /dev/nvme1n1:/dev/nvme1n1:r
+    network_mode: host         # must see the same network interfaces as the NAS
+    restart: always
+    env_file:
+      - .env
+    environment:
+      NAS_API_NAME: edgesynology1
+      TZ: ${TZ:-UTC}
+    volumes:
+      - /proc:/host/proc:ro    # mounted as /host/proc to avoid shadowing container's own /proc
+      - /sys:/host/sys:ro      # same pattern: keep container /sys intact for apparmor init
+      - /usr/syno:/host/usr/syno:ro
+      - /lib:/host/lib:ro
+      - /usr/lib:/host/usr/lib:ro
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - ${NAS_API_JOBS_PATH:-/volume1/docker/synology-monitor-agent/nas-api-jobs}:/app/data/jobs:rw
+      - /etc/VERSION:/host/etc/VERSION:ro
+      - /etc/synoinfo.conf:/host/etc/synoinfo.conf:ro
+      - /etc.defaults:/host/etc.defaults:ro
+      - /var/log:/host/log:ro
+      - /var/packages:/host/packages:ro
+      - ${SHARE_FILES_PATH:-/volume1/files}:/volume1/files:ro
+      - ${SHARE_STYLEGUIDES_PATH:-/volume1/styleguides}:/volume1/styleguides:ro
+      - ${SHARE_USERS_PATH:-/volume1/users}:/volume1/users:ro
+      - ${SHARE_HOMES_PATH:-/volume1/homes}:/volume1/homes:ro
+      - ${SHARE_COLDLION_PATH:-/volume1/Coldlion}:/volume1/Coldlion:ro
+      - ${SHARE_PHOTOGRAPHY_PATH:-/volume1/Photography}:/volume1/Photography:ro
+      - ${SHARE_FREELANCERS_PATH:-/volume1/freelancers}:/volume1/freelancers:ro
+      - ${SHARE_MGMT_PATH:-/volume1/mgmt}:/volume1/mgmt:ro
+      - ${SHARE_MAC_PATH:-/volume1/mac}:/volume1/mac:ro
+      - ${SHARE_OLDSTYLEGUIDES_PATH:-/volume1/oldStyleguides}:/volume1/oldStyleguides:ro
+      - ${SHARE_SYNO_DRIVE_PATH:-/volume1/@synologydrive}:/volume1/@synologydrive:ro
+      - ${SHARE_SYNO_DRIVE_SYNC_PATH:-/volume1/@SynologyDriveShareSync}:/volume1/@SynologyDriveShareSync:ro
+      - ${HYPERBACKUP_APPDATA_PATH:-/volume1/@appdata/HyperBackup}:/volume1/@appdata/HyperBackup:ro
+      - ${MONITOR_STACK_PATH:-/volume1/docker/synology-monitor-agent}:/volume1/docker/synology-monitor-agent:ro
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${NAS_API_PORT:-7734}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # Watchtower polls GHCR every 5 minutes and restarts updated containers
+  # automatically when new images are available.
+  watchtower:
+    image: containrrr/watchtower
+    container_name: synology-monitor-watchtower
+    restart: always
+    volumes:
+      - ${BTRFS_VOLUME1_PATH:-/volume1}:/btrfs/volume1:rw
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      TZ: ${TZ:-UTC}
+      WATCHTOWER_POLL_INTERVAL: "300"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_NO_STARTUP_MESSAGE: "true"
+    command: synology-monitor-agent synology-monitor-nas-api seaf-cli
+
+volumes:
+  agent-data:

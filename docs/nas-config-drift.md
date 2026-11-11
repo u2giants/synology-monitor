@@ -20,7 +20,7 @@ There is **no sync mechanism at all**. Not a broken one — none.
   `nas-api-image.yml`, `nas-mcp-image.yml`, `web-image.yml`) build and push images to GHCR.
   None reference the NAS, SSH, Tailscale, or `deploy/`.
 - No agent or nas-api code fetches or writes compose. `MONITOR_STACK_PATH` appears exactly
-  **once** in the entire repo — `deploy/synology/docker-compose.agent.yml:113`, the mount
+  **once** in the entire repo — `deploy/synology/docker-compose.nas-{1,2}.yml:113`, the mount
   declaration itself. No Go file reads it.
 - The only "mechanism" is a sentence. `deploy/synology/README.md:22` says the NAS copy
   *"should be kept in sync with"* the repo file. That is aspiration, not automation.
@@ -49,8 +49,8 @@ The NAS is not simply "behind" the repo. Each side has things the other lacks.
 
 | Item | Repo | Live NAS | Consequence |
 |---|---|---|---|
-| `/app/data/jobs` mount | `docker-compose.agent.yml:121` | absent from file **and** container | `/jobs/*` returns 503 |
-| `NAS_API_NAME` env | `docker-compose.agent.yml:72` | absent | jobs cannot identify the box |
+| `/app/data/jobs` mount | `docker-compose.nas-{1,2}.yml:121` | absent from file **and** container | `/jobs/*` returns 503 |
+| `NAS_API_NAME` env | `docker-compose.nas-{1,2}.yml:72` | absent | jobs cannot identify the box |
 
 **NAS has, repo lacks** (repo is behind — a naive repo→NAS copy would *delete* these):
 
@@ -65,7 +65,7 @@ The NAS is not simply "behind" the repo. Each side has things the other lacks.
 
 | Item | Repo | Live NAS |
 |---|---|---|
-| `/dev` | 12 individual `:ro` mounts, `docker-compose.agent.yml:127-138` | **`/dev:/dev` — full tree, read-write** |
+| `/dev` | 12 individual `:ro` mounts, `docker-compose.nas-{1,2}.yml:127-138` | **`/dev:/dev` — full tree, read-write** |
 
 `AGENTS.md:524-525` documents the deliberate decision: *"mounting the full `/dev` tree
 read-only would still expose `/dev/mem`, `/dev/kmem`, and other sensitive kernel
@@ -302,7 +302,7 @@ Phase 2 succeeds — one of them may be needed. Prune them afterwards, keeping o
 
 ## 8. Reconciliation design — how the repo becomes true again (agreed Claude + Kimi K3, 2026-07-17)
 
-Debated because a single `docker-compose.agent.yml` cannot be byte-exact deployable to
+Debated because a single `docker-compose.nas-{1,2}.yml` cannot be byte-exact deployable to
 two boxes with different hardware (edge1: sda–sdf, md0–9, nvme0/1+namespaces; edge2:
 sda–sde, md0–7, no NVMe), and Compose has **no** single-file mechanism for count/presence
 variance — env substitution only substitutes values, merge keys don't touch sequences,
@@ -357,4 +357,4 @@ nothing changes. The generator was over-engineering only at N=2 *until* we accep
 the hand-maintained alternative needs equal CI machinery — at which point the generator is
 strictly better.
 
-Not yet implemented — this section is the agreed spec for that follow-up.
+**Implemented 2026-11-11** (generator, fragments, CI check `nas-compose-generated`; live files on both NASes replaced by the generated ones after `docker compose config` proved them identical). The functional `/drift` endpoint below is still not built — tracked in [pending-work](pending-work.md).

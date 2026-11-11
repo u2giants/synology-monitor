@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FastMCP } from "fastmcp";
@@ -44,7 +45,7 @@ a capability, call invoke_tool with the exact returned name, target, and args. U
 target "edgesynology1", "edgesynology2", or "both".
 
 Write tools require a preview first. To execute after reviewing the preview,
-call invoke_tool again with confirmed: true inside args. Do not invent or expose
+call invoke_tool again with confirmed: true and the preview's approved_hash inside args. Do not invent or expose
 bearer tokens.
 
 This server has no per-session call limit. A command blocked by the NAS validator
@@ -64,7 +65,7 @@ const TOOL_SEARCH_DESCRIPTION = [
 const INVOKE_TOOL_DESCRIPTION = [
   "Execute a hidden NAS operation discovered via tool_search.",
   "Pass the exact operation name, target NAS, and tool-specific args.",
-  "For write operations, omit confirmed or set confirmed:false first to receive a preview; call again with confirmed:true inside args only after approval.",
+  "For write operations, omit confirmed or set confirmed:false first to receive a preview; call again with confirmed:true and approved_hash (from the preview) inside args only after approval.",
   "If you do not know the exact operation name or args, call tool_search first.",
 ].join(" ");
 
@@ -177,17 +178,39 @@ export async function executePredefinedToolOnNas(tool: McpToolDef, input: Record
     // Every write tool previews first, whatever tier nas-api assigns the command.
     // Tier drives the approval-token requirement, not whether confirmation is
     // needed: a tier-1 classification still means real side effects on the NAS.
-    if (!input.confirmed) {
-      return [
-        `[${config.name}] This action requires your approval before it runs.`,
+    // Bind the approval to the exact command the human saw: the preview prints a
+    // short hash of the command, and execution requires it back. The command is
+    // rebuilt on the confirm call, so without this a changed input (or catalog)
+    // could execute something other than what was approved (legacy handoff §3.F).
+    const commandHash = createHash("sha256").update(command).digest("hex").slice(0, 16);
+    const approvedHash = typeof input.approved_hash === "string" ? input.approved_hash.trim() : "";
+    if (!input.confirmed || approvedHash !== commandHash) {
+      const lines = [
+        input.confirmed
+          ? `[${config.name}] Not executed: approved_hash is missing or does not match the command below. Review it and confirm again with this hash.`
+          : `[${config.name}] This action requires your approval before it runs.`,
+      ];
+      if (tool.buildPreflight) {
+        let factsText: string;
+        try {
+          const facts = await nasExec(config, tool.buildPreflight(input), 1, undefined, undefined, { signal, toolName: tool.name });
+          factsText = [facts.stdout, facts.stderr].filter(Boolean).join("\n") || "(no output)";
+        } catch (err) {
+          factsText = `Preflight could not run: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        lines.push(``, `Current state on the NAS (read-only preflight, nothing changed):`, ...renderUntrustedBlock(factsText));
+      }
+      lines.push(
         ``,
         `Command that will execute (tier ${preview.tier}).`,
         QUOTE_LEGEND,
         ...renderUntrustedBlock(command),
         ``,
-        `Call this tool again with confirmed: true to approve and execute.`,
+        `Approval hash: ${commandHash}`,
+        `Call this tool again with confirmed: true and approved_hash: "${commandHash}" to approve and execute.`,
         `If you do not want to proceed, do nothing — no changes have been made.`,
-      ].join("\n");
+      );
+      return lines.join("\n");
     }
 
     let approvalToken: string | undefined;
@@ -320,6 +343,11 @@ function capabilityParams(tool: McpToolDef): {
       default: false,
       description: "Set true only after reviewing the preview. Omit or false to preview.",
     });
+    optional.push({
+      name: "approved_hash",
+      type: "string",
+      description: "The approval hash printed by the preview; required with confirmed:true.",
+    });
   }
   return { required, optional };
 }
@@ -373,7 +401,7 @@ function capabilityContract(tool: McpToolDef, includeRelated = false): Record<st
       "wrong operation name; call tool_search or list_capabilities",
       "missing or wrong arg shape; call get_capability_details",
       "target NAS unreachable or nas-api down",
-      tool.write ? "write operation preview returned; call again with args.confirmed=true after approval" : "read command timed out on a loaded NAS; retry one target instead of both",
+      tool.write ? "write operation preview returned; call again with args.confirmed=true and args.approved_hash after approval" : "read command timed out on a loaded NAS; retry one target instead of both",
     ],
   };
   if (includeRelated) {
@@ -425,6 +453,7 @@ function validationSchemaForTool(tool: McpToolDef): z.ZodObject<Record<string, z
     ? {
         ...tool.params,
         confirmed: z.boolean().optional().default(false),
+        approved_hash: z.string().optional(),
       }
     : tool.params;
   return z.object(params);
@@ -448,6 +477,7 @@ function registerToolDef(server: FastMCP, tool: McpToolDef): void {
     ? {
         ...tool.params,
         confirmed: z.boolean().optional().default(false).describe("Set to true to execute after reviewing the command preview. Omit or set false to see what will happen first."),
+        approved_hash: z.string().optional().describe("Approval hash shown in the preview; required together with confirmed: true."),
       }
     : tool.params;
 

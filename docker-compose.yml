@@ -1,5 +1,5 @@
 # Legacy local compose kept for development only.
-# For Synology deployment, use deploy/synology/docker-compose.agent.yml
+# For Synology deployment, use deploy/synology/docker-compose.nas-{1,2}.yml
 # with a published image instead of building on the NAS.
 
 services:

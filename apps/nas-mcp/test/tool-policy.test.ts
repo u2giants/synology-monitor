@@ -49,9 +49,15 @@ test("NAS-007 write operation previews, confirms, and carries approval token", a
   const preview = await runPredefinedTool(tool, { target: "edgesynology1" });
   assert.match(preview.content[0].text, /requires your approval/);
   assert.equal(execs, 0);
+  const unbound = await runPredefinedTool(tool, { target: "edgesynology1", confirmed: true });
+  assert.match(unbound.content[0].text, /approved_hash is missing or does not match/);
+  assert.equal(execs, 0);
+  const hash = /Approval hash: ([0-9a-f]{16})/.exec(preview.content[0].text)?.[1];
+  assert.ok(hash);
   const executed = await runPredefinedTool(tool, {
     target: "edgesynology1",
     confirmed: true,
+    approved_hash: hash,
   });
   assert.match(executed.content[0].text, /ok/);
   assert.equal(execs, 1);

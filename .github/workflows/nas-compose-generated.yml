@@ -1,0 +1,23 @@
+name: nas-compose-generated
+
+# Advisory check: the per-NAS compose files must equal the generator's output
+# (docs/nas-config-drift.md section 8). Never a required check.
+on:
+  pull_request:
+    paths:
+      - "deploy/synology/**"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/synology/**"
+
+permissions:
+  contents: read
+
+jobs:
+  generated-up-to-date:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 deploy/synology/generate-compose.py
+      - run: git diff --exit-code -- deploy/synology/

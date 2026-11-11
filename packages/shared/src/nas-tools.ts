@@ -18,6 +18,11 @@ export interface McpToolDef {
   /** Builds the shell command. Optional: native job tools (see `job`) dispatch
    *  to nas-api REST endpoints instead and have no command. */
   buildCommand?: (input: Record<string, unknown>) => string;
+  /** Optional read-only fact-gathering command for a write tool. The MCP runs it
+   *  at tier 1 BEFORE asking for approval, so the human sees the facts that should
+   *  drive the decision (current ownership, ACL mode, link count) in the preview,
+   *  not only after execution. Must contain no state-changing command. */
+  buildPreflight?: (input: Record<string, unknown>) => string;
   /** Present on native job tools; selects the nas-api /jobs operation. When set,
    *  the MCP dispatcher routes through job-client.ts instead of /preview→/exec. */
   job?: { op: JobOp };
@@ -154,7 +159,7 @@ function echoMsg(message: string): string {
 }
 
 // Maps a caller-supplied share path to the nas-api writable Btrfs mount. The
-// per-share /volumeN binds are :ro (docker-compose.agent.yml), so a write to
+// per-share /volumeN binds are :ro (docker-compose.nas-{1,2}.yml), so a write to
 // /volume1/... returns EROFS; only /btrfs/volumeN is rw (compose line 102; the
 // volume2 bind on line 103 is commented out but designed to be uncommented,
 // which is why this accepts /volumeN rather than hard-coding volume1 — an
@@ -292,6 +297,80 @@ function buildDsmPackageRestart(packageId: string): string {
 }
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
+
+/**
+ * repair_path_ownership script. `write=false` yields the read-only preflight
+ * (every safety check, no chown) shown in the approval preview; `write=true`
+ * repeats the checks, then chowns and verifies. Guards (independent review,
+ * 2026-07-17, legacy handoff §3.F):
+ *  - canonical path must equal the requested path and stay under /btrfs/volumeN,
+ *    so a symlinked PARENT is refused, not only a symlinked final component;
+ *  - files with more than one hard link are refused (chown would change every name);
+ *  - Synology-ACL paths fail closed (an ACE can override POSIX ownership), and an
+ *    unreadable ACL state fails closed too;
+ *  - device:inode is captured before the write and re-checked after, and
+ *    `chown -h` never follows a link swapped in during the gap. Shell cannot make
+ *    check-and-chown atomic; a swap is detected and reported as FAILED.
+ */
+function ownershipScript(input: Record<string, unknown>, write: boolean): string {
+  const logicalPath = (input.exactPath as string | undefined)?.trim();
+  if (!logicalPath) throw new Error("repair_path_ownership: exactPath is required.");
+  const writablePath = toWritableVolumePath(logicalPath, "repair_path_ownership");
+  const f = (input.filter as string | undefined)?.trim() || "";
+  if (f.startsWith("recursive:")) throw new Error("repair_path_ownership: recursive ownership changes are disabled; repair one exact path at a time.");
+  const ownerGroup = f;
+  if (!/^[A-Za-z0-9_\-]+:[A-Za-z0-9_\-]+$/.test(ownerGroup)) throw new Error("repair_path_ownership: filter must be 'owner:group'.");
+  const [owner, group] = ownerGroup.split(":");
+  const qp = quote(writablePath);
+  const volRoot = /^\/btrfs\/volume\d+/.exec(writablePath)?.[0];
+  if (!volRoot) throw new Error("repair_path_ownership: path does not map to a /btrfs/volumeN share.");
+  const lines = [
+    `path=${qp}`,
+    `owner=${quote(owner)}`,
+    `group=${quote(group)}`,
+    `echo ${quote(`Logical path: ${logicalPath}`)}`,
+    `echo ${quote(`Writable path: ${writablePath}`)}`,
+    `[ -e "$path" ] || { echo "ERROR: no such path: $path"; exit 1; }`,
+    `[ ! -L "$path" ] || { echo "ERROR: symbolic links are refused: $path"; exit 1; }`,
+    `real=$(readlink -f -- "$path") || { echo "ERROR: cannot canonicalise $path"; exit 1; }`,
+    `[ "$real" = "$path" ] || { echo "ERROR: path resolves elsewhere through a symbolic link (parent folder?): $real"; exit 1; }`,
+    `vol=${quote(volRoot)}`,
+    `case "$real" in "$vol"/?*) ;; *) echo "ERROR: path is outside a /btrfs/volumeN share: $real"; exit 1;; esac`,
+    `links=$(stat -c '%h' -- "$path") || exit 1`,
+    `if [ ! -d "$path" ] && [ "$links" -gt 1 ]; then echo "ERROR: file has $links hard links; changing it would change every linked name. Refused."; exit 1; fi`,
+    `[ -r /host/etc/pass?? ] || { echo "ERROR: NAS user database is not mounted under /host/etc"; exit 1; }`,
+    `[ -r /host/etc/group ] || { echo "ERROR: NAS group database is not mounted at /host/etc/group (apply the compose update on this NAS)"; exit 1; }`,
+    `case "$owner" in *[!0-9]*) uid=$(awk -F: -v n="$owner" '$1==n{print $3; exit}' /host/etc/pass??);; *) uid=$owner;; esac`,
+    `case "$group" in *[!0-9]*) gid=$(awk -F: -v n="$group" '$1==n{print $3; exit}' /host/etc/group);; *) gid=$group;; esac`,
+    `[ -n "$uid" ] || { echo "ERROR: user '$owner' not found in NAS user database"; exit 1; }`,
+    `[ -n "$gid" ] || { echo "ERROR: group '$group' not found in NAS group database"; exit 1; }`,
+    `ident=$(stat -c '%d:%i' -- "$path") || exit 1`,
+    `current=$(stat -c '%u:%g' -- "$path") || exit 1`,
+    `echo "Current ownership: $current"`,
+    `echo "Requested ownership: $owner:$group ($uid:$gid)"`,
+    `[ "$current" = "$uid:$gid" ] && echo "NOTE: ownership already matches; the change is a no-op."`,
+    `echo '=== ACL MODE ==='`,
+    `acl_out=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get "$path" 2>&1); acl_rc=$?`,
+    // Live DSM 7 contract (edgesynology1, 2026-11-11): on a POSIX-mode path
+    // synoacltool prints "(synoacltool.c, 596)It's Linux mode" AND exits 255, so
+    // "Linux mode" is the success signal; any other non-zero exit is a failed read.
+    `printf '%s\\n' "$acl_out" | head -8`,
+    `case "$acl_out" in *"Linux mode"*) ;; *) [ "$acl_rc" -eq 0 ] || { echo "REFUSED: ACL mode could not be read (synoacltool exit $acl_rc)"; exit 1; }; echo "REFUSED: this path uses Synology ACLs, where an ACL entry can override ownership. Fix it through the ACL instead."; exit 1;; esac`,
+  ];
+  if (!write) {
+    lines.push(`echo "PREFLIGHT OK: approval will change ownership $current -> $uid:$gid on this one path."`);
+    return lines.join("\n");
+  }
+  lines.push(
+    `chown -h "$uid:$gid" -- ${qp} || { echo "FAILED: chown returned an error"; exit 1; }`,
+    `after=$(stat -c '%d:%i' -- "$path") || exit 1`,
+    `[ "$after" = "$ident" ] || { echo "FAILED: the object at $path was replaced during the change (identity $ident -> $after)"; exit 1; }`,
+    `actual=$(stat -c '%u:%g' -- "$path") || exit 1`,
+    `[ "$actual" = "$uid:$gid" ] || { echo "FAILED: ownership is $actual after chown; expected $uid:$gid"; exit 1; }`,
+    `echo "VERIFIED: ownership is $actual"`,
+  );
+  return lines.join("\n");
+}
 
 export const ALL_TOOL_DEFS: McpToolDef[] = [
 
@@ -1656,7 +1735,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "  btrfs scrub status \"$v\" 2>&1",
       "  echo ''",
       "done 2>/dev/null",
-      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'",
+      "[ \"$found\" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.nas-{1,2}.yml)'",
       "echo ''",
       "echo '=== RAID SYNC STATUS (/proc/mdstat) ==='",
       "cat /proc/mdstat 2>/dev/null || echo 'mdstat not available'",
@@ -3089,7 +3168,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `  btrfs scrub start "$v" 2>&1`,
         `  echo ''`,
         `done 2>/dev/null`,
-        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'`,
+        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.nas-{1,2}.yml)'`,
       ].join("\n");
     },
   },
@@ -3134,7 +3213,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
           echoMsg(`=== CREATING PRECHANGE SNAPSHOT: ${btrfsPath} ===`),
           `ts=$(date +%Y%m%d_%H%M%S)`,
           `snap=${qb}"/@prechange_\${ts}"`,
-          `btrfs subvolume snapshot -r ${qb} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.agent.yml)'`,
+          `btrfs subvolume snapshot -r ${qb} "$snap" 2>&1 && echo "Snapshot created: $snap" || echo 'Snapshot FAILED — btrfs mount at /btrfs/volumeN needed (see docker-compose.nas-{1,2}.yml)'`,
         ].join("\n");
       }
       return [
@@ -3148,7 +3227,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `  echo "Snapshotting $v -> $snap"`,
         `  btrfs subvolume snapshot -r "$v" "$snap" 2>&1 && echo '  OK' || echo '  FAILED'`,
         `done 2>/dev/null`,
-        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.agent.yml)'`,
+        `[ "$found" -eq 0 ] && echo 'No btrfs volumes found at /btrfs/volume* — deploy update required (see docker-compose.nas-{1,2}.yml)'`,
       ].join("\n");
     },
   },
@@ -3413,49 +3492,11 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   // live SMB share needs a separate, count-bounded capability and approval contract.
   {
     name: "repair_path_ownership",
-    description: "WRITE (tier 3) — Changes ownership of one exact /volumeN path. Pass 'owner:group' in filter; names are resolved from the NAS account files and numeric ids are accepted. Recursion is refused. Shows logical and writable paths, current ACL/ownership, and verifies the result after approval.",
+    description: "WRITE (tier 3) — Changes ownership of one exact /volumeN path. Pass 'owner:group' in filter; names are resolved from the NAS account files and numeric ids are accepted. Recursion is refused. Refuses symlinks (including symlinked parent folders), hard-linked files, and Synology-ACL paths (fails closed). The preview runs a read-only preflight that shows current ownership and ACL mode before approval; execution re-checks object identity and verifies the result.",
     write: true,
     params: { target, filter, exactPath },
-    buildCommand: (input) => {
-      const logicalPath = (input.exactPath as string | undefined)?.trim();
-      if (!logicalPath) throw new Error("repair_path_ownership: exactPath is required.");
-      const writablePath = toWritableVolumePath(logicalPath, "repair_path_ownership");
-      const f = (input.filter as string | undefined)?.trim() || "";
-      if (f.startsWith("recursive:")) throw new Error("repair_path_ownership: recursive ownership changes are disabled; repair one exact path at a time.");
-      const ownerGroup = f;
-      if (!/^[A-Za-z0-9_\-]+:[A-Za-z0-9_\-]+$/.test(ownerGroup)) throw new Error("repair_path_ownership: filter must be 'owner:group'.");
-      const [owner, group] = ownerGroup.split(":");
-      const qp = quote(writablePath);
-      return [
-        `path=${qp}`,
-        `owner=${quote(owner)}`,
-        `group=${quote(group)}`,
-        `echo ${quote(`Logical path: ${logicalPath}`)}`,
-        `echo ${quote(`Writable path: ${writablePath}`)}`,
-        `[ -e "$path" ] || { echo "ERROR: no such path: $path"; exit 1; }`,
-        `[ ! -L "$path" ] || { echo "ERROR: symbolic links are refused: $path"; exit 1; }`,
-        `[ -r /host/etc/pass?? ] || { echo "ERROR: NAS user database is not mounted under /host/etc"; exit 1; }`,
-        `[ -r /host/etc/group ] || { echo "ERROR: NAS group database is not mounted at /host/etc/group (apply the compose update on this NAS)"; exit 1; }`,
-        `case "$owner" in *[!0-9]*) uid=$(awk -F: -v n="$owner" '$1==n{print $3; exit}' /host/etc/pass??);; *) uid=$owner;; esac`,
-        `case "$group" in *[!0-9]*) gid=$(awk -F: -v n="$group" '$1==n{print $3; exit}' /host/etc/group);; *) gid=$group;; esac`,
-        `[ -n "$uid" ] || { echo "ERROR: user '$owner' not found in NAS user database"; exit 1; }`,
-        `[ -n "$gid" ] || { echo "ERROR: group '$group' not found in NAS group database"; exit 1; }`,
-        `current=$(stat -c '%u:%g' "$path") || exit 1`,
-        `echo "Current ownership: $current"`,
-        `echo "Requested ownership: $owner:$group ($uid:$gid)"`,
-        `echo '=== ACL MODE ==='`,
-        // Capture synoacltool's own exit status. A `... | head -8 || echo WARNING`
-        // pipeline reports head's status (0), so the warning could never fire and a
-        // failed ACL read passed silently — see the § 12 note. Assign-then-test so a
-        // failure is actually surfaced before the write.
-        `acl_out=$(LD_LIBRARY_PATH=/host/lib:/host/usr/lib:/host/usr/syno/lib /host/usr/syno/bin/synoacltool -get "$path" 2>&1); acl_rc=$?`,
-        `if [ "$acl_rc" -eq 0 ]; then printf '%s\\n' "$acl_out" | head -8; else echo "WARNING: ACL mode could not be read (synoacltool exit $acl_rc): $acl_out"; fi`,
-        `chown "$uid:$gid" ${qp} || { echo "FAILED: chown returned an error"; exit 1; }`,
-        `actual=$(stat -c '%u:%g' "$path") || exit 1`,
-        `[ "$actual" = "$uid:$gid" ] || { echo "FAILED: ownership is $actual after chown; expected $uid:$gid"; exit 1; }`,
-        `echo "VERIFIED: ownership is $actual"`,
-      ].join("\n");
-    },
+    buildPreflight: (input) => ownershipScript(input, false),
+    buildCommand: (input) => ownershipScript(input, true),
   },
 
   // repair_path_acl (setfacl-based) was removed on 2026-07-16: it could never
@@ -3741,7 +3782,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
   // These do NOT build a shell command; the MCP server routes them through
   // job-client.ts to the nas-api /jobs/inventory/* REST endpoints. Allowlisted
   // shares are validated server-side by nas-api (jobs.AllowedShares); the list
-  // is mirrored in deploy/synology/docker-compose.agent.yml and the web
+  // is mirrored in deploy/synology/docker-compose.nas-{1,2}.yml and the web
   // ARCHIVE_SHARES constant.
   {
     name: "start_file_inventory",

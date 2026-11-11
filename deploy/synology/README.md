@@ -52,8 +52,18 @@ Live directory:
   .env
 ```
 
-`compose.yaml` should be kept in sync with:
-- [docker-compose.agent.yml](/worksp/monitor/app/deploy/synology/docker-compose.agent.yml)
+`compose.yaml` on each NAS is a byte-exact copy of its generated repo file
+(installed and verified 2026-11-11; `md5sum` matched on both):
+- edgesynology1: [docker-compose.nas-1.yml](docker-compose.nas-1.yml)
+- edgesynology2: [docker-compose.nas-2.yml](docker-compose.nas-2.yml)
+
+Never edit those two files. Change [compose/base.yml](compose/base.yml) (shared) or
+[compose/nas-1.fragment](compose/nas-1.fragment) / [compose/nas-2.fragment](compose/nas-2.fragment)
+(per-box data: devices, extra mounts, Watchtower targets), then run
+`python3 deploy/synology/generate-compose.py`. CI fails if the generated files are stale.
+To deploy: back up `compose.yaml` on the NAS, copy the generated file over it (base64
+over ssh; scp is disabled), then `docker compose -p synology-monitor-agent up -d --no-deps <service>`.
+Check first with `docker compose config` that only the intended service changes.
 
 `.env` is generated from the per-NAS example file:
 - NAS 1: [nas-1.env.example](/worksp/monitor/app/deploy/synology/nas-1.env.example)
@@ -91,7 +101,7 @@ and safe to inspect or delete.
 
 ## Host account-group mount (`/host/etc/group`) — one-time, per NAS
 
-Added to `docker-compose.agent.yml` 2026-07-16 so the ownership tools can resolve a
+Added to `docker-compose.nas-{1,2}.yml` 2026-07-16 so the ownership tools can resolve a
 NAS group name to a numeric gid. Without it `repair_path_ownership` and
 `repair_drive_db_permissions` refuse to run (by design — they will not guess a gid).
 
@@ -101,10 +111,10 @@ changes, reusing the existing container's configuration. A new bind mount is a
 *configuration* change and is invisible to it. Same reason the archive-jobs mount
 above needed a manual step.
 
-**The compose file that runs on the NAS is not this repo's file.** Each NAS has its
-own hand-maintained `/volume1/docker/synology-monitor-agent/compose.yaml` (note the
-`.bak-*` history beside it). Editing `deploy/synology/docker-compose.agent.yml` in
-the repo does **not** change what runs. The NAS copy must be edited on the NAS.
+**Historical (before 2026-11-11):** each NAS ran its own hand-maintained
+`compose.yaml` that had drifted from the repo. Since 2026-11-11 the NAS files are the
+generated repo files above; editing the repo still does not change what runs until
+the file is copied to the NAS.
 
 Run on **edgesynology1** (`192.168.3.100`). DSM Container Manager cannot do this —
 the project was not created through it.

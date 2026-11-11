@@ -123,7 +123,7 @@ Add a small job manager to the NAS API container.
 
 Persistent job storage is required before any long-running scan is implemented. The NAS API container currently does not have a named Docker volume mounted at `/app/data`; only the agent has `agent-data:/app/data`. Because Watchtower recreates `synology-monitor-nas-api` when a new image is published, job state stored only in the container writable layer would be lost on update or restart.
 
-First add a durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`.
+First add a durable NAS API jobs mount in `deploy/synology/docker-compose.nas-{1,2}.yml`.
 
 Preferred host-path mount:
 
@@ -204,7 +204,7 @@ Allowed share roots should match the existing compose mounts:
 /volume1/oldStyleguides
 ```
 
-There is an intentional coupling here: the scanner can only walk shares mounted into the NAS API container. If a new share is added to `docker-compose.agent.yml`, the scanner allowlist or share-discovery logic must be updated too. Prefer deriving the allowlist from a single shared config or from the actual mounted paths; if hardcoding is used, add a code comment and test that make this dependency obvious.
+There is an intentional coupling here: the scanner can only walk shares mounted into the NAS API container. If a new share is added to `docker-compose.nas-{1,2}.yml`, the scanner allowlist or share-discovery logic must be updated too. Prefer deriving the allowlist from a single shared config or from the actual mounted paths; if hardcoding is used, add a code comment and test that make this dependency obvious.
 
 Skip:
 
@@ -478,7 +478,7 @@ set of files that would move before anything happens.
 
 Build the read-only inventory:
 
-- Durable NAS API jobs mount in `deploy/synology/docker-compose.agent.yml`
+- Durable NAS API jobs mount in `deploy/synology/docker-compose.nas-{1,2}.yml`
 - NAS API local file inventory job manager
 - Mtime-year scanner with date protection and the activity overlay
 - Status/result/cancel/schedule endpoints

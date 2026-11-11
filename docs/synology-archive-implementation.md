@@ -34,7 +34,7 @@ two Synology NAS units, **edgesynology1** and **edgesynology2**. Relevant apps:
 | **agent** | `apps/agent` | Go | Pushes metrics/logs to Supabase. Not touched by this work. |
 | **relay** | `apps/relay` | Node | Not in the web→nas-api path for this feature. Not touched. |
 
-Deploy config for the NAS-side containers: `deploy/synology/docker-compose.agent.yml`.
+Deploy config for the NAS-side containers: `deploy/synology/docker-compose.nas-{1,2}.yml`.
 
 ### 0.2 How the pieces connect (the flow we are building)
 
@@ -206,7 +206,7 @@ is already made here.
 
 ## 4. Phase 1 — Deploy: durable jobs mount
 
-**File:** `deploy/synology/docker-compose.agent.yml`
+**File:** `deploy/synology/docker-compose.nas-{1,2}.yml`
 
 Under the `nas-api:` service `volumes:` list, **add** (place it right after the
 `agent`-stack mount line `…/synology-monitor-agent:ro`, around line 98):
@@ -908,7 +908,7 @@ with **zero file moves** — it only removes empty dirs (the fix for the existin
 
 Notes:
 - The nas-api container already has `CAP_SYS_ADMIN` and the full
-  `/btrfs/volume1:rw` mount (see `docker-compose.agent.yml`) — required for
+  `/btrfs/volume1:rw` mount (see `docker-compose.nas-{1,2}.yml`) — required for
   `btrfs subvolume` operations and for writing into shares. **Phase 2 needs the
   share mounts to be writable for the targeted share.** They are currently `:ro`
   in compose. Add a writable mount (or remount) for the share(s) being archived,
@@ -1022,7 +1022,7 @@ overlay.csv: nas,share,source,first_seen,last_seen,event_count      # source: dr
 
 `files, styleguides, users, homes, Coldlion, Photography, freelancers, mgmt, mac,
 oldStyleguides` → `/volume1/<share>` (each already a read-only mount in
-`docker-compose.agent.yml`). Reject any share not in this set with `400`. If a
+`docker-compose.nas-{1,2}.yml`). Reject any share not in this set with `400`. If a
 new share is added to the compose mounts later, update this list **and** the web
 `ARCHIVE_SHARES` constant (§7.5).
 
