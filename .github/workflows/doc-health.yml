@@ -1,0 +1,183 @@
+name: Documentation health
+
+# Advisory documentation upkeep (popcre/designflow-backend issue 391).
+# Never add this workflow to required checks (owner ruling 2026-10-30).
+# Tool and rules: popcre/ai-devops docs/doc-health.md
+
+on:
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.doc-health.json'
+      - '.doc-reachability.json'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.md'
+      - '.doc-health.json'
+      - '.doc-reachability.json'
+      - '.github/workflows/doc-health.yml'
+  schedule:
+    - cron: '0 11 * * 1' # Mondays 6:00 AM EST
+  workflow_dispatch:
+
+concurrency:
+  group: doc-health-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOC_HEALTH_TOOLKIT_REF: 97292fe727755841523a75a7b6a5cc3585245225
+
+jobs:
+  pull-request:
+    name: Advisory check
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the documentation health tool
+        uses: actions/checkout@v4
+        with:
+          repository: popcre/ai-devops
+          ref: ${{ env.DOC_HEALTH_TOOLKIT_REF }}
+          path: .doc-health-toolkit
+          persist-credentials: false
+
+      - name: Run ai-doc-health and comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set +e -uo pipefail
+          marker='<!-- doc-health-comment -->'
+          if [ ! -f .doc-health.json ]; then
+            echo "No .doc-health.json in this branch; nothing to check."
+            exit 0
+          fi
+          python3 .doc-health-toolkit/bin/ai-doc-health --repo . > "$RUNNER_TEMP/faults.txt" 2> "$RUNNER_TEMP/err.txt"
+          status=$?
+          cat "$RUNNER_TEMP/faults.txt" "$RUNNER_TEMP/err.txt"
+          # Old handoffs are the weekly keeper's business, not this pull request's.
+          grep -v '^handoff-old ' "$RUNNER_TEMP/faults.txt" > "$RUNNER_TEMP/shown.txt" || true
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n 1)"
+          if [ "$status" -eq 2 ]; then
+            body="$(printf '%s\n**Documentation health (advisory):** the check could not run.\n\n```\n%s\n```' "$marker" "$(cat "$RUNNER_TEMP/err.txt")")"
+          elif [ -s "$RUNNER_TEMP/shown.txt" ]; then
+            body="$(printf '%s\n**Documentation health (advisory — does not block merging).** Fix what this pull request caused; a new document needs its header, then run `ai-doc-health --fix-index`.\n\n```\n%s\n```' "$marker" "$(head -n 100 "$RUNNER_TEMP/shown.txt")")"
+          else
+            body=""
+          fi
+          if [ -n "$body" ]; then
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$body" > /dev/null
+            else
+              gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+            fi
+          elif [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$marker
+          **Documentation health (advisory):** clean." > /dev/null
+          fi
+          exit 0
+
+  keeper:
+    name: Weekly keeper
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Check out the branch under watch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Check out the documentation health tool
+        uses: actions/checkout@v4
+        with:
+          repository: popcre/ai-devops
+          ref: ${{ env.DOC_HEALTH_TOOLKIT_REF }}
+          path: .doc-health-toolkit
+          persist-credentials: false
+
+      - name: Run ai-doc-health and keep one rolling issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e -uo pipefail
+          title='Documentation health'
+          tool=".doc-health-toolkit/bin/ai-doc-health"
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          if [ ! -f .doc-health.json ]; then
+            echo "No .doc-health.json on $branch; nothing to keep."
+            exit 0
+          fi
+          python3 "$tool" --repo . > "$RUNNER_TEMP/faults.txt" 2> "$RUNNER_TEMP/err.txt"
+          status=$?
+          cat "$RUNNER_TEMP/faults.txt" "$RUNNER_TEMP/err.txt"
+          if [ "$status" -eq 2 ]; then
+            printf 'config-error .doc-health.json %s\n' "$(tr '\n' ' ' < "$RUNNER_TEMP/err.txt")" > "$RUNNER_TEMP/faults.txt"
+          fi
+
+          # Only the index is stale: regenerate it and offer a documentation-only pull request.
+          if [ "$status" -eq 1 ] && ! grep -qv '^index-stale ' "$RUNNER_TEMP/faults.txt"; then
+            python3 "$tool" --repo . --fix-index > /dev/null 2>&1 || true
+            index="$(python3 -c "import json;print(json.load(open('.doc-health.json')).get('index','docs/INDEX.md'))")"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -q -B doc-health/regenerate-index
+            git add -- "$index"
+            if git commit -q -m "docs: regenerate document index (ai-doc-health keeper)" \
+              && git push -q --force origin doc-health/regenerate-index \
+              && { gh pr view doc-health/regenerate-index --json state --jq .state 2>/dev/null | grep -q OPEN \
+                   || gh pr create --base "$branch" --head doc-health/regenerate-index \
+                        --title "docs: regenerate document index" \
+                        --body "Opened by the weekly documentation keeper. Documentation only: the index is rebuilt from the document headers. Merge it in the next session that sees it."; }; then
+              : > "$RUNNER_TEMP/faults.txt"
+              echo "Index pull request is open."
+            else
+              echo "Could not open the index pull request; reporting through the issue instead."
+            fi
+            git checkout -q "$branch" 2>/dev/null || true
+          fi
+
+          number="$(gh issue list --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+          if [ -s "$RUNNER_TEMP/faults.txt" ]; then
+            when="$(TZ=America/New_York date '+%A %B %-d, %Y %-I:%M %p %Z')"
+            count="$(wc -l < "$RUNNER_TEMP/faults.txt" | tr -d ' ')"
+            {
+              printf 'Kept by the weekly documentation keeper; this text is replaced on every run. Last run: %s on `%s` — %s fault(s).\n\n' "$when" "$branch" "$count"
+              printf 'Each line is `<check> <path> <reason>`. Fix them in any session (`ai-doc-health --repo .` shows the same list); this issue closes itself when a run is clean.\n\n```\n'
+              head -n 300 "$RUNNER_TEMP/faults.txt"
+              printf '```\n'
+            } > "$RUNNER_TEMP/body.md"
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file "$RUNNER_TEMP/body.md" > /dev/null
+              echo "Updated issue #$number"
+            else
+              gh issue create --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "The weekly documentation keeper found no faults on \`$branch\`."
+            echo "Closed issue #$number"
+          else
+            echo "Clean; no issue open."
+          fi

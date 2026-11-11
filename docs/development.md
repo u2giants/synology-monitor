@@ -1,3 +1,10 @@
+---
+summary: Local setup, build, test, lint and debug commands for the Go agent and NAS API, the web app, NAS MCP and shared package.
+kind: living
+status: current
+read-when: Setting up locally, running tests, or changing scripts and tooling.
+---
+
 # Development
 
 ## Prerequisites

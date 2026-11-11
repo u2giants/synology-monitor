@@ -1,3 +1,10 @@
+---
+summary: Operator runbook for the first live archive-move test on a small share, driven from the dashboard Archive Move page.
+kind: ops
+status: current
+read-when: Running or validating an archive move on real NAS data.
+---
+
 # Archive Move — First Live Validation Runbook
 
 Last updated: 2026-06-16

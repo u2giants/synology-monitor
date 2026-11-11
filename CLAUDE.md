@@ -9,7 +9,8 @@ and AI tool; this file contains Claude Code-specific notes only.
   caches, lockfiles, backups, or `evals/` unless the task requires them.
 - The working copy is normally `/worksp/monitor/app`, repository
   `u2giants/synology-monitor`, branch `main`.
-- `HANDOFF.md` is required reading only when continuing unfinished work.
+- `HANDOFF.md` is a static pointer; the open files in `HANDOFF.d/` are required
+  reading only when continuing unfinished work.
 
 ## MCP discovery
 

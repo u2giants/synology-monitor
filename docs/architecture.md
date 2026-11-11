@@ -1,3 +1,10 @@
+---
+summary: System design: agent, NAS API, NAS MCP, web dashboard, relay, Supabase data flow, the 3-stage AI issue agent and approval gates.
+kind: living
+status: current
+read-when: Changing how components talk to each other, the data model, or the AI pipeline.
+---
+
 # Architecture
 
 ## System purpose

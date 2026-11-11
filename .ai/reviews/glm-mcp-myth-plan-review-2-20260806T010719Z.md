@@ -1,3 +1,10 @@
+---
+summary: GLM review of the MCP degradation-myth plan, 2026-08-06: verdict and the gaps it found.
+kind: proof
+status: done
+read-when: Only when tracing why the MCP degradation plan changed.
+---
+
 # GLM review — mcp-myth-plan-review-2
 
 | field | value |

@@ -1,3 +1,10 @@
+---
+summary: Record of restoring the deleted ___OLD and Color-your-hero folders on edgesynology1 from the 2026-05-29 mac snapshot.
+kind: proof
+status: done
+read-when: A folder vanished from the mac share and may need a snapshot restore.
+---
+
 # Synology `mac` deleted-folder recovery — 2026-09-10
 
 ## Outcome

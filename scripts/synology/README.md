@@ -1,3 +1,10 @@
+---
+summary: Bash tools that run on the NAS to merge folders, resolve _Conflict artifacts and scan case collisions, and their traps.
+kind: ops
+status: current
+read-when: Before running or reusing any share merge, conflict or collision script.
+---
+
 # Synology file-server scripts
 
 Small, dependency-free bash tools for repairing and maintaining the NAS shares.
@@ -62,7 +69,7 @@ Only mint your own if you need a point at an exact moment — and snapshot the
 btrfs subvolume snapshot -r /btrfs/volume1/mac /btrfs/volume1/mac/@prechange_$(date +%Y%m%d_%H%M%S)
 ```
 
-If you do, **record it in `HANDOFF.md` immediately**. On 2026-07-17 a manual
+If you do, **record it in your own `HANDOFF.d/` file immediately**. On 2026-07-17 a manual
 `@prechange_*` created as a live recovery point was deleted by a different session
 that read it as stray clutter — correctly, given it was unlabelled. Nothing was
 lost (the share snapshots covered it), but an unrecorded recovery point is not one.
