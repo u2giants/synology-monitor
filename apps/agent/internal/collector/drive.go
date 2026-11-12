@@ -79,6 +79,8 @@ type DriveCollector struct {
 	// attributionCycle counts collect() calls so attribution runs every 10th cycle
 	// to avoid repeated heavy SQLite opens. At a 5-minute interval that is every ~50 min.
 	attributionCycle int
+	// seenConflicts holds Drive node IDs already alerted as conflict copies.
+	seenConflicts map[string]bool
 }
 
 // NewDriveCollector creates a new Drive collector
@@ -119,6 +121,9 @@ func (c *DriveCollector) collect() {
 	// Low-impact anomaly scan over recent Drive sync logs including
 	// delete/rename event matching and churn classification.
 	c.collectDriveLogSignals()
+
+	// One alert per new *_Conflict copy (who, device, share, path).
+	c.collectDriveConflicts()
 
 	// Drive client attribution — reads SQLite DBs and conflict filenames.
 	// Runs every 10th cycle to limit SQLite open frequency.
