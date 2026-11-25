@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS smb_saves(
 INSERT OR IGNORE INTO smb_saves
   SELECT time, username, cmd, coalesce(filesize,0), coalesce(filename,'') FROM src.logs
   WHERE time >= (SELECT coalesce(max(time),0) - 3600 FROM main.smb_saves)
-    AND time IS NOT NULL AND cmd IN ('write','rename','create') AND isdir = 0
+    AND time IS NOT NULL AND cmd IN (`+SaveCmds+`) AND isdir = 0
     AND coalesce(username,'') <> '';
 DELETE FROM smb_saves WHERE time < %d;`, SMBDB, now-KeepDays*86400)
 }

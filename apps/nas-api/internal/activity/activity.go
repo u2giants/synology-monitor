@@ -19,6 +19,14 @@ import (
 const (
 	SMBDB   = "/volume1/@database/synolog/.SMBXFERDB"
 	DriveDB = "/volume1/@synologydrive/@sync/log-db.sqlite"
+	// File Station transfer log (DSM Log Center > File Transfer > File Station).
+	FileStationDB = "/volume1/@database/synolog/.DSMFMXFERDB"
+
+	// SaveCmds are the SMB log commands "saved by" uses. move and delete let
+	// the caller tell a single transfer from a replaced file.
+	SaveCmds = "'write','rename','create','move','delete'"
+	// FileStationCmds are the File Station log commands that change a file.
+	FileStationCmds = "'upload','rename','move','copy','create','delete'"
 
 	MaxWindow = 6 * time.Hour
 	MaxRows   = 2000
@@ -35,7 +43,7 @@ type Request struct {
 
 // Event is one save-like action by a named person.
 type Event struct {
-	Source   string `json:"source"` // "smb" or "drive"
+	Source   string `json:"source"` // "smb", "filestation" or "drive"
 	Time     int64  `json:"time"`
 	Username string `json:"username"`
 	Action   string `json:"action"`
@@ -76,7 +84,17 @@ func Validate(r Request) error {
 // SMBQuery and DriveQuery are built from integers only.
 func SMBQuery(r Request) string {
 	q := fmt.Sprintf("select 'smb' as source, time, coalesce(username,'') as username, cmd as action, coalesce(filesize,0) as size, coalesce(filename,'') as path "+
-		"from logs where time between %d and %d and cmd in ('write','rename','create') and isdir = 0 and coalesce(username,'') <> ''", r.Since, r.Until)
+		"from logs where time between %d and %d and cmd in ("+SaveCmds+") and isdir = 0 and coalesce(username,'') <> ''", r.Since, r.Until)
+	if r.Size > 0 {
+		q += fmt.Sprintf(" and filesize = %d", r.Size)
+	}
+	return q + fmt.Sprintf(" order by time limit %d", MaxRows)
+}
+
+// FileStationQuery has the same shape as SMBQuery; the log uses the same table layout.
+func FileStationQuery(r Request) string {
+	q := fmt.Sprintf("select 'filestation' as source, time, coalesce(username,'') as username, cmd as action, coalesce(filesize,0) as size, coalesce(filename,'') as path "+
+		"from logs where time between %d and %d and cmd in ("+FileStationCmds+") and isdir = 0 and coalesce(username,'') <> ''", r.Since, r.Until)
 	if r.Size > 0 {
 		q += fmt.Sprintf(" and filesize = %d", r.Size)
 	}
@@ -97,6 +115,7 @@ func Lookup(ctx context.Context, r Request, run Runner) Response {
 	for _, src := range []struct{ name, db, sql string }{
 		{"smb", SMBDB, SMBQuery(r)},
 		{"smb-archive", ArchiveDB, ArchiveQuery(r)},
+		{"filestation", FileStationDB, FileStationQuery(r)},
 		{"drive", DriveDB, DriveQuery(r)},
 	} {
 		raw, err := run(ctx, "nsenter", "-t", "1", "-m", "--", "sqlite3", "-readonly", "-json", src.db, src.sql)
