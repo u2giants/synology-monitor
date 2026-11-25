@@ -76,7 +76,7 @@ func contains(xs []string, s string) bool {
 
 func TestArchiveSQLIsBoundedAndReadOnlyOnSource(t *testing.T) {
 	q := ArchiveSQL(1795617934)
-	for _, want := range []string{"mode=ro", "WITHOUT ROWID", "INSERT OR IGNORE", "cmd IN ('write','rename','create')",
+	for _, want := range []string{"mode=ro", "WITHOUT ROWID", "INSERT OR IGNORE", "cmd IN ('write','rename','create','move','delete')",
 		"DELETE FROM smb_saves WHERE time < 1761057934"} {
 		if !strings.Contains(q, want) {
 			t.Fatalf("archive SQL missing %q:\n%s", want, q)
@@ -114,5 +114,29 @@ func TestLookupMergesArchiveWithoutDuplicates(t *testing.T) {
 	res := Lookup(context.Background(), Request{Since: 1, Until: 100}, run)
 	if len(res.Events) != 2 || len(res.Errors) != 0 {
 		t.Fatalf("want live+archived event once each, got %+v %v", res.Events, res.Errors)
+	}
+}
+
+func TestFileStationAndTransferCommands(t *testing.T) {
+	r := Request{Since: 10, Until: 20}
+	if q := FileStationQuery(r); !strings.Contains(q, "'filestation' as source") || !strings.Contains(q, "'upload'") {
+		t.Fatalf("file station query: %s", q)
+	}
+	for _, q := range []string{SMBQuery(r), ArchiveSQL(100)} {
+		if !strings.Contains(q, "'move'") || !strings.Contains(q, "'delete'") {
+			t.Fatalf("move/delete missing: %s", q)
+		}
+	}
+	var dbs []string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		dbs = append(dbs, args[len(args)-2])
+		if strings.Contains(args[len(args)-2], "DSMFMXFERDB") {
+			return []byte(`[{"source":"filestation","time":15,"username":"ai","action":"upload","size":63,"path":"/mac/x.txt"}]`), nil
+		}
+		return []byte(""), nil
+	}
+	res := Lookup(context.Background(), r, run)
+	if len(res.Events) != 1 || res.Events[0].Source != "filestation" {
+		t.Fatalf("events %+v (dbs %v)", res.Events, dbs)
 	}
 }
