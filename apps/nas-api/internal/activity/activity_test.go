@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidate(t *testing.T) {
@@ -71,4 +72,47 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func TestArchiveSQLIsBoundedAndReadOnlyOnSource(t *testing.T) {
+	q := ArchiveSQL(1795617934)
+	for _, want := range []string{"mode=ro", "WITHOUT ROWID", "INSERT OR IGNORE", "cmd IN ('write','rename','create')",
+		"DELETE FROM smb_saves WHERE time < 1761057934"} {
+		if !strings.Contains(q, want) {
+			t.Fatalf("archive SQL missing %q:\n%s", want, q)
+		}
+	}
+}
+
+func TestArchiveOnceWritesOnlyTheArchive(t *testing.T) {
+	var calls [][]string
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return nil, nil
+	}
+	if err := ArchiveOnce(context.Background(), time.Unix(1795617934, 0), run); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !contains(calls[1], ArchiveDB) || contains(calls[1], SMBDB) {
+		t.Fatalf("unexpected calls: %v", calls)
+	}
+}
+
+func TestLookupMergesArchiveWithoutDuplicates(t *testing.T) {
+	ev := `[{"source":"smb","time":10,"username":"IML\\asilva","action":"write","size":5,"path":"/mac/x.ai"}]`
+	old := `[{"source":"smb","time":3,"username":"IML\\b","action":"rename","size":5,"path":"/mac/y.ai"}]`
+	run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+		all := strings.Join(args, " ")
+		switch {
+		case strings.Contains(all, "SMBXFERDB"):
+			return []byte(ev), nil
+		case strings.Contains(all, ArchiveDB):
+			return []byte(ev[:len(ev)-1] + "," + old[1:]), nil
+		}
+		return []byte("[]"), nil
+	}
+	res := Lookup(context.Background(), Request{Since: 1, Until: 100}, run)
+	if len(res.Events) != 2 || len(res.Errors) != 0 {
+		t.Fatalf("want live+archived event once each, got %+v %v", res.Events, res.Errors)
+	}
 }

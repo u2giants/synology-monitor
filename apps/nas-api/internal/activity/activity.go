@@ -93,8 +93,10 @@ func Lookup(ctx context.Context, r Request, run Runner) Response {
 		run = hostRunner
 	}
 	out := Response{Events: []Event{}}
+	seen := map[string]bool{} // the live SMB log and its archive overlap
 	for _, src := range []struct{ name, db, sql string }{
 		{"smb", SMBDB, SMBQuery(r)},
+		{"smb-archive", ArchiveDB, ArchiveQuery(r)},
 		{"drive", DriveDB, DriveQuery(r)},
 	} {
 		raw, err := run(ctx, "nsenter", "-t", "1", "-m", "--", "sqlite3", "-readonly", "-json", src.db, src.sql)
@@ -116,6 +118,11 @@ func Lookup(ctx context.Context, r Request, run Runner) Response {
 			}
 		}
 		for _, e := range rows {
+			k := fmt.Sprintf("%s|%d|%s|%s|%s", e.Source, e.Time, e.Username, e.Action, e.Path)
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
 			if r.Contains != "" && !strings.Contains(strings.ToLower(e.Path), strings.ToLower(r.Contains)) {
 				continue
 			}

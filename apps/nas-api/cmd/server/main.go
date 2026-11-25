@@ -86,6 +86,9 @@ func main() {
 		log.Printf("WARNING: jobs dir %s not writable — inventory endpoints will return 503 until `docker compose up -d` materializes the mount", jobsDir)
 	}
 
+	// Keep save rows past DSM's ~1-week SMB log cap for "saved by" lookups.
+	go activity.RunArchiver(context.Background())
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", requireAuth(v, handleExec(v)))
