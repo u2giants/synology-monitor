@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,4 +130,21 @@ func (v *Verifier) signExec(command string, tier int, toolName, expiresAt string
 	mac := hmac.New(sha256.New, []byte(v.signingKey))
 	mac.Write([]byte(fmt.Sprintf("exec-v2\n%s\n%d\n%s\n%s", command, tier, toolName, expiresAt)))
 	return fmt.Sprintf("%x", mac.Sum(nil))
+}
+
+// ScopedKey derives a bearer key that is valid for one named purpose only,
+// so a narrow client (e.g. PopDAM's "saved by" lookup) never holds the full
+// API key: hex(HMAC-SHA256(apiKey, "scope:" + purpose)).
+func (v *Verifier) ScopedKey(purpose string) string {
+	m := hmac.New(sha256.New, []byte(v.apiKey))
+	m.Write([]byte("scope:" + purpose))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// VerifyScopedKey accepts the full API key or the key scoped to purpose.
+func (v *Verifier) VerifyScopedKey(bearer, purpose string) bool {
+	if v.VerifyAPIKey(bearer) {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(v.ScopedKey(purpose)), []byte(bearer)) == 1
 }

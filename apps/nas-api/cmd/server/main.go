@@ -92,7 +92,8 @@ func main() {
 	mux.HandleFunc("POST /preview", requireAuth(v, handlePreview))
 	// Read-only "who saved this file" lookup over the SMB and Drive logs
 	// (u2giants/popdam3#1342). Fixed SQL, integer parameters only.
-	mux.HandleFunc("POST /file-activity", requireAuth(v, handleFileActivity))
+	// Accepts the full key or the key scoped to "file-activity" (auth.ScopedKey).
+	mux.HandleFunc("POST /file-activity", requireScopedAuth(v, "file-activity", handleFileActivity))
 	// Functional config check (docs/nas-config-drift.md §8): 200 when every probe
 	// passes, 409 when any fails; the body lists each probe.
 	mux.HandleFunc("GET /drift", requireAuth(v, func(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +266,17 @@ func requireAuth(v *auth.Verifier, next http.HandlerFunc) http.HandlerFunc {
 		raw := r.Header.Get("Authorization")
 		bearer := strings.TrimPrefix(raw, "Bearer ")
 		if !v.VerifyAPIKey(bearer) {
+			writeJSON(w, http.StatusUnauthorized, errResp{"unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func requireScopedAuth(v *auth.Verifier, purpose string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !v.VerifyScopedKey(bearer, purpose) {
 			writeJSON(w, http.StatusUnauthorized, errResp{"unauthorized"})
 			return
 		}
