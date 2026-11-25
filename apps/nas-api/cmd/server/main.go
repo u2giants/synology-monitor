@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/synology-monitor/nas-api/internal/activity"
 	"github.com/synology-monitor/nas-api/internal/auth"
 	"github.com/synology-monitor/nas-api/internal/drift"
 	"github.com/synology-monitor/nas-api/internal/executor"
@@ -88,6 +90,10 @@ func main() {
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", requireAuth(v, handleExec(v)))
 	mux.HandleFunc("POST /preview", requireAuth(v, handlePreview))
+	// Read-only "who saved this file" lookup over the SMB and Drive logs
+	// (u2giants/popdam3#1342). Fixed SQL, integer parameters only.
+	// Accepts the full key or the key scoped to "file-activity" (auth.ScopedKey).
+	mux.HandleFunc("POST /file-activity", requireScopedAuth(v, "file-activity", handleFileActivity))
 	// Functional config check (docs/nas-config-drift.md §8): 200 when every probe
 	// passes, 409 when any fails; the body lists each probe.
 	mux.HandleFunc("GET /drift", requireAuth(v, func(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +141,21 @@ func main() {
 }
 
 // handleHealth responds with 200 OK and basic build info.
+func handleFileActivity(w http.ResponseWriter, r *http.Request) {
+	var req activity.Request
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if err := activity.Validate(req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	writeJSON(w, http.StatusOK, activity.Lookup(ctx, req, nil))
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":     "ok",
@@ -245,6 +266,17 @@ func requireAuth(v *auth.Verifier, next http.HandlerFunc) http.HandlerFunc {
 		raw := r.Header.Get("Authorization")
 		bearer := strings.TrimPrefix(raw, "Bearer ")
 		if !v.VerifyAPIKey(bearer) {
+			writeJSON(w, http.StatusUnauthorized, errResp{"unauthorized"})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func requireScopedAuth(v *auth.Verifier, purpose string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !v.VerifyScopedKey(bearer, purpose) {
 			writeJSON(w, http.StatusUnauthorized, errResp{"unauthorized"})
 			return
 		}

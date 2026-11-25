@@ -76,3 +76,20 @@ func TestExecApprovalTokenRejectsLegacyUnsignedContext(t *testing.T) {
 		t.Fatal("legacy token with unsigned tier/tool context unexpectedly verified")
 	}
 }
+
+func TestScopedKeyOnlyForItsPurpose(t *testing.T) {
+	v := NewVerifier("full-api-key-123", "sign")
+	k := v.ScopedKey("file-activity")
+	if !v.VerifyScopedKey(k, "file-activity") {
+		t.Fatal("scoped key rejected for its purpose")
+	}
+	if v.VerifyScopedKey(k, "exec") || v.VerifyAPIKey(k) {
+		t.Fatal("scoped key accepted outside its purpose")
+	}
+	if !v.VerifyScopedKey("full-api-key-123", "file-activity") {
+		t.Fatal("full key rejected")
+	}
+	if v.VerifyScopedKey("wrong-key-xxxxxxxx", "file-activity") {
+		t.Fatal("wrong key accepted")
+	}
+}
