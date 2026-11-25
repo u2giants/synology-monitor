@@ -296,3 +296,11 @@ Whole-batch retry recreates an unbounded backlog.
 More component-level constraints are in `docs/architecture.md`; operational traps
 are in the relevant incident or subsystem document.
 
+
+### nas-api keeps its own copy of SMB save rows
+
+Looks like:
+`/volume1/docker/synology-monitor-agent/file-activity/smb-saves.sqlite` duplicates DSM's SMB transfer log.
+
+Actually:
+DSM's `synologrotated` caps `/volume1/@database/synolog/.SMBXFERDB` at a fixed row count, which is hard-coded and not configurable. About 60% of those rows are reads, so the log covers only about 7 days. Every 10 minutes nas-api copies just the save rows (write/rename/create/move/delete by a named user) into that file and keeps them for 400 days, at about 0.6 MB/day. It opens the source read-only. `POST /file-activity` reads the live logs and the archive and deduplicates the results; PopDAM's "Saved by" names depend on it (u2giants/popdam3#1342). The archive started 2026-11-25, with rows back to 2026-11-17. Don't delete the file or "fix" the duplication.
