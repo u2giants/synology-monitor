@@ -412,7 +412,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "mount | awk '$3 ~ /^\\/volume[0-9]+$/ {printf \"%s %s %s\\n\", $3, $1, $5}' | sort -u || true",
       "echo ''",
       "echo '=== FILESYSTEM USAGE ==='",
-      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/'",
       "echo ''",
       "echo '=== BTRFS / EXT STATUS ==='",
       "for v in /volume[0-9]*; do [ -d \"$v\" ] || continue; printf '%s\\n' \"$v\"; findmnt -no FSTYPE,SOURCE,TARGET \"$v\" 2>/dev/null || mount | awk -v vol=\"$v\" '$3==vol{print $5, $1, $3}'; done",
@@ -483,10 +483,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== DATA VOLUME USAGE ==='",
-      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/' || df -h /volume1",
+      "df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/' || df -h /volume1",
       "echo ''",
       "echo '=== INODE USAGE ==='",
-      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/' || df -i /volume1",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/' || df -i /volume1",
     ].join("\n"),
   },
 
@@ -1159,7 +1159,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
       "mount | grep -E '/volume[0-9]+'",
       "echo ''",
       "echo '=== INODE USAGE (all volumes) ==='",
-      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/'",
       "echo ''",
       "echo '=== FILESYSTEM DETAIL (all volumes) ==='",
       "for v in /volume[0-9]*; do",
@@ -1901,10 +1901,10 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
     params: { target },
     buildCommand: () => [
       "echo '=== INODE USAGE (all volumes) ==='",
-      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+      "df -i 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/'",
       "echo ''",
       "echo '=== INODE PRESSURE ALERT (>85% used) ==='",
-      "df -i 2>/dev/null | awk '$6 ~ /^\\/volume[0-9]+$/ && $5+0 > 85 {print \"HIGH INODE USAGE:\", $0}' || echo 'No volumes at >85% inode usage'",
+      "df -i 2>/dev/null | awk '$6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/ && $5+0 > 85 {print \"HIGH INODE USAGE:\", $0}' || echo 'No volumes at >85% inode usage'",
       "echo ''",
       "echo '=== BTRFS QGROUP QUOTA STATE ==='",
       "found=0",
@@ -2461,7 +2461,7 @@ export const ALL_TOOL_DEFS: McpToolDef[] = [
         `echo "Collected: $(date)"`,
         "echo ''",
         "echo '=== SYSTEM BASELINE ==='",
-        "uptime && free -h && df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/volume[0-9]+$/'",
+        "uptime && free -h && df -h 2>/dev/null | awk 'NR==1 || $6 ~ /^\\/(btrfs\\/)?volume[0-9]+$/'",
         "echo ''",
       ];
       if (incidentType === "drive" || incidentType === "general") {
