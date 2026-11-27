@@ -99,7 +99,7 @@ All images are public in GHCR under the `u2giants` organization. Tags: `:latest`
 
 1. Push to `main` with changes under `apps/web/`, `packages/shared/`, or the web workflow file.
 2. `web-image.yml` builds the image. It passes `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `BUILD_SHA` as Docker build args — these are baked into the Next.js client bundle.
-3. The workflow calls the Coolify redeploy webhook: `GET http://178.156.180.212:8000/api/v1/deploy?uuid=${COOLIFY_WEBHOOK_UUID}&force=false` with `Authorization: Bearer ${COOLIFY_TOKEN}`.
+3. The workflow calls the Coolify redeploy webhook: `GET https://coolify.designflow.app/api/v1/deploy?uuid=${COOLIFY_WEBHOOK_UUID}&force=false` with `Authorization: Bearer ${COOLIFY_TOKEN}`.
 4. Coolify pulls the new `:latest` image and recreates the container.
 
 **Env vars that must exist in Coolify before the first deploy** (runtime, server-side only — not build-time):
